@@ -1,0 +1,8 @@
+[package]
+name = "gnx-jax"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gnx = { version = "0.1.0", path = "../gnx" }
+pyo3 = "0.27.1"

@@ -1,0 +1,94 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = "==3.13.*"
+# dependencies = [
+#   "gnx",
+#   "jax[cuda]"
+# ]
+#
+# [tool.uv.sources]
+# gnx = { path = "../", editable = true }
+#
+# ///
+
+import logging
+from pathlib import Path
+
+import click
+import cloudpickle
+
+from gnx.core import graph, nn
+from gnx.core.dataclasses import dataclass
+from gnx.datasets import Dataset
+from gnx.util import cli
+from gnx.main import common, setup_logging
+from gnx.eval import EvaluatePlugin
+from gnx.util.cli.option import OptionParser
+from gnx.util.experiment import Artifact
+
+logger = logging.getLogger("gnx.eval_checkpoint")
+
+
+@dataclass
+class CheckpointEvalConfig:
+    seed: int
+    dataset_url: str
+    checkpoint_path: str
+    evaluations: dict[str, common.EvalConfig]
+
+
+def main(config: CheckpointEvalConfig):
+    setup_logging()
+    logger.info("Loading checkpoint...")
+    checkpoint = config.checkpoint_path
+    if "://" not in checkpoint:
+        checkpoint = f"file://{checkpoint}"
+    checkpoint = Artifact.from_url(checkpoint)
+    model = checkpoint.get()
+    if hasattr(model, "eval_model"):
+        model = model.eval_model()
+    model.eval()  # put into eval mode
+    total_parameters = nn.num_params(model)
+    logger.info(f"Model has {total_parameters} parameters.")
+    logger.info("Loading dataset...")
+    dataset = Dataset.from_url(config.dataset_url)
+
+    rngs = nn.Rngs(config.seed)
+    if not config.evaluations:
+        logger.warning("No evaluations specified, exiting.")
+        return
+    for eval_name, eval in config.evaluations.items():
+        logger.info(f"Running evaluation: {eval_name}")
+        plugin = eval.create_plugin(eval_name, dataset, dataset, rngs)
+        if isinstance(plugin, EvaluatePlugin):
+            evaluator = plugin.evaluator
+            evaluation = evaluator(rngs.eval(), model)
+            logger.info(f"Evaluation results: {evaluation}")
+        else:
+            logger.warning(
+                f"Plugin of type {type(plugin)} is not an EvaluatePlugin, skipping."
+            )
+
+
+@cli.option("--seed", type=int, default=42)
+@cli.option("--dataset", "dataset_url", type=str)
+@cli.option("--checkpoint", type=str)
+@common.eval.options("--eval")
+@cli.command
+def run_config(checkpoint, seed, dataset_url, eval):
+    config = CheckpointEvalConfig(
+        seed=seed,
+        dataset_url=dataset_url,
+        checkpoint_path=checkpoint,
+        evaluations=eval,
+    )
+    main(config)
+
+
+if __name__ == "__main__":
+    import sys
+
+    parser = OptionParser()
+    pos_args, opts = parser.parse_args(sys.argv[1:])
+    assert len(pos_args) == 0, f"Unexpected positional arguments: {pos_args}"
+    run_config.run(sys.argv[0], opts)

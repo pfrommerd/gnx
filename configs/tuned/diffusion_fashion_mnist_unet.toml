@@ -1,0 +1,27 @@
+[entrypoint]
+entrypoint = "gnx.main.diffusion:train"
+provider = "unet"
+
+[general]
+seed = 42
+dataset = "hf://zalando-datasets/fashion_mnist"
+
+[train]
+lr = 1e-3
+iterations = 30_000
+batch_size = 1024
+ema = 0.9
+
+[diffusion]
+nfe = 32
+min_sigma = 0.01
+max_sigma = 35
+
+[model]
+channels = 64
+channel_mults = "1,1,2"
+attention_levels = "2,"
+
+embed_features = 256
+time_features = 64
+dropout = 0.1

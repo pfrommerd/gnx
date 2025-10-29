@@ -1,0 +1,22 @@
+program: toy_methods
+method: grid
+parameters:
+    config:
+        values:
+            - configs/toy_diffusion_mlp.toml
+            - configs/toy_gan_mlp.toml
+            - configs/toy_meanflow_mlp.toml
+            - configs/toy_sinkhorn_mlp.toml
+    dataset:
+        value: hf://ylecun/mnist
+    eval_interval:
+        value: 50
+    ckpt_interval:
+        value: 100
+
+command:
+    - ${env}
+    - launch
+    - ${args}
+    - --experiment
+    - wandb://

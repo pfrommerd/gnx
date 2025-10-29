@@ -1,0 +1,27 @@
+include = [
+    "../../configs/methods/diffusion.toml",
+    "../../configs/models/mlp_flow.toml",
+    "../../configs/datasets/dino.toml",
+]
+
+[general]
+# special for unit-tests
+test-metric-name = "ot.train"
+test-metric-lt = 0.15
+
+generate-interval = 0
+
+[diffusion]
+show_reference = true
+
+# change the evaluation interval
+# to only include the final checkpoint
+[eval.ot]
+enabled = true
+samples = 5_000
+interval = 0
+
+[train]
+lr=2e-4
+iterations=1_000
+batch_size = 4096

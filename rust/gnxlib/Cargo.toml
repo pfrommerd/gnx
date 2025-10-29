@@ -1,0 +1,15 @@
+[package]
+name = "gnxlib"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "gnxlib"
+crate-type = ["cdylib"]
+
+[dependencies]
+gnx = { version = "0.1.0", path = "../gnx" }
+pyo3 = { version = "0.27.1", features = ["num-bigint"] }
+num-bigint = "0.4.6"
+gnx-jax = { version = "0.1.0", path = "../gnx-jax" }

@@ -1,0 +1,218 @@
+#!/usr/bin/env -S uv run --script
+#
+# /// script
+# requires-python = "==3.13.*"
+# dependencies = [
+#     "click>=8.3.0",
+#     "inquirerpy",
+#     "rich>=14.1.0",
+# ]
+# ///
+#
+
+import os
+import rich
+import click
+import json
+import time
+import subprocess
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from InquirerPy.base.control import Choice # type: ignore
+from InquirerPy import inquirer # type: ignore
+from rich.table import Table
+
+@dataclass
+class GRES:
+    name: str
+    free: int
+    total: int
+
+@dataclass
+class Availability:
+    gres: GRES | None
+    nodes_alloc: int
+    nodes_idle: int
+    cpus_idle: int
+    cpus_alloc: int
+    cpus_offline: int
+
+@dataclass
+class PartitionInfo:
+    name: str
+    availability: list[Availability]
+
+def sinfo_raw() -> dict:
+    CACHE_PATH = Path.home() / ".cache" / "sinfo_cache.json"
+    ts = int(time.time())
+    if CACHE_PATH.exists():
+        with open(CACHE_PATH, "r") as f:
+            res = json.load(f)
+        if res["timestamp"] >= ts - 30:
+            return res
+    res = subprocess.run(["sinfo", "-O", "PartitionName,Nodes,CPUsState,Gres,GresUsed", "--json"], capture_output=True)
+    res = json.loads(res.stdout.decode())
+    res["timestamp"] = ts
+    with open(CACHE_PATH, "w") as f:
+        json.dump(res, f)
+    return res
+
+def sinfo() -> dict[str, PartitionInfo]:
+    raw = sinfo_raw()
+    partitions: dict[str, PartitionInfo] = {}
+    for s in raw["sinfo"]:
+        partition_name = s["partition"]["name"]
+        nodes_alloc, nodes_idle = s["nodes"]["allocated"], s["nodes"]["idle"]
+        p = partitions.setdefault(partition_name,
+            PartitionInfo(name=partition_name, availability=[])
+        )
+        if s["gres"]["total"]:
+            gres_total, gres_used = s["gres"]["total"], s["gres"]["used"]
+            gres_name, gres_total = gres_total.rsplit("(", 1)[0].rsplit(":", 1)
+            gres_used = gres_used.rsplit("(", 1)[0].rsplit(":", 1)[1]
+            gres_total, gres_used = int(gres_total), int(gres_used)
+            gres = GRES(
+                name=gres_name,
+                free=gres_total - gres_used,
+                total=gres_total
+            )
+        else:
+            gres = None
+
+        p.availability.append(Availability(
+            nodes_alloc=nodes_alloc,
+            nodes_idle=nodes_idle,
+            cpus_idle=s["cpus"]["idle"],
+            cpus_alloc=s["cpus"]["allocated"],
+            cpus_offline=s["cpus"]["other"],
+            gres=gres
+        ))
+
+    return partitions
+
+
+@click.group
+def cli():
+    pass
+
+@click.argument("name", default=None, required=False)
+@cli.command("info")
+def dump_info(name):
+    info = sinfo()
+    if name is None:
+        name = inquirer.fuzzy(
+            message="Choose partition:",
+            choices=sorted(info.keys())
+        ).execute()
+    partition = info.get(name)
+    if not partition:
+        rich.print(f"Partition '{name}' not found.")
+        return
+
+    table = Table()
+    table.add_column("Nodes", justify="right", style="magenta")
+    table.add_column("CPUs Idle", justify="right", style="green")
+    table.add_column("CPUs Alloc", justify="right", style="red")
+    table.add_column("CPUs Offline", justify="right", style="yellow")
+    table.add_column("GRES", justify="right", style="blue")
+
+    table.add_section()
+    for avail in partition.availability:
+        gres_str = f"{avail.gres.free}/{avail.gres.total} {avail.gres.name}" if avail.gres else "N/A"
+        table.add_row(
+            f"{avail.nodes_idle}/{avail.nodes_alloc + avail.nodes_idle}",
+            f"{avail.cpus_idle}",
+            f"{avail.cpus_alloc}",
+            f"{avail.cpus_offline}",
+            gres_str
+        )
+    rich.print(table)
+
+
+@click.argument('args', nargs=-1)
+@click.argument('cmd', nargs=1)
+@cli.command("launch")
+def launch_job(cmd, args):
+    options = ["--pty"]
+
+    info = sinfo()
+    partition = inquirer.fuzzy(
+        message="Choose partition:",
+        choices=list(info.keys())
+    ).execute()
+    options.append(f"--partition={partition}")
+    partition = info[partition]
+
+    gres_options = {}
+    for a in partition.availability:
+        if a.gres and a.gres.free > 0 and a.cpus_idle > 0:
+            gres_free = gres_options.setdefault(a.gres.name, {})
+            gres_free.setdefault(a.gres.free, 0)
+            gres_free[a.gres.free] += a.cpus_idle
+
+    if gres_options:
+        gres_choices = []
+        for gres_name, v in gres_options.items():
+            text = gres_name
+            for num, cpus in sorted(v.items(), key=lambda x: x[0], reverse=True):
+                text += f" {num} ({cpus} CPUs)"
+            gres_choices.append(Choice(
+                name=text,
+                value=(gres_name, max(v.keys()))
+            ))
+        gres_choices.append(Choice(
+                name="none",
+                value=(None, 0)
+        ))
+        gres_name, max_num = inquirer.fuzzy(
+            message="Choose GRES:",
+            choices=gres_choices
+        ).execute()
+    else:
+        gres_name, max_num = None, 0
+
+    cpus = inquirer.number(
+        message="Number of cpus:",
+        min_allowed=1,
+        max_allowed=128,
+        default=32
+    ).execute()
+
+    if gres_name is not None:
+        gres_num = inquirer.number(
+            message=f"Number of {gres_name} (max {max_num}):",
+            min_allowed=1,
+            max_allowed=max_num,
+            default=1
+        ).execute()
+        options.append(f"--gres={gres_name}:{gres_num}")
+        options.append(f"--cpus-per-gpu={cpus}")
+    else:
+        rich.print("[yellow]Note:[/yellow] Launching CPU job.")
+        options.append(f"--cpus-per-task={cpus}")
+
+    time_limit = inquirer.text(
+        message="Job Time Limit:",
+        default="6:00:00"
+    ).execute()
+
+    options.append(f"--time={time_limit}")
+    options.append(cmd)
+    options.extend(args)
+
+    rich.print("[bold]Job configuration:[/bold] srun " + " ".join(options))
+    if not inquirer.confirm(f"This will launch a the specified job on {partition.name}. Continue?", default=True).execute():
+        rich.print("[bold]Aborting.[/bold]")
+        return
+
+    env = dict(os.environ)
+    if "VIRTUAL_ENV" in env: # ignore uv environment of this script
+        del env["VIRTUAL_ENV"]
+    os.execvpe("srun", ["srun"] + options, env)
+    return
+    # Switch to the running job
+
+if __name__=="__main__":
+    cli()

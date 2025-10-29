@@ -1,0 +1,14 @@
+include = [
+    "../methods/mean_flow.toml",
+    "../models/mlp_flow.toml",
+    "../datasets/dino.toml",
+]
+
+[mean_flow]
+nfe = 1
+
+# Any combo-specific overrides...
+[train]
+lr = 1e-3
+iterations = 40_000
+batch_size = 512

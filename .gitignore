@@ -1,0 +1,6 @@
+wandb
+artifacts
+
+.pytest_cache
+.venv
+__pycache__

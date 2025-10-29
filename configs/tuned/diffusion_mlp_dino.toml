@@ -1,0 +1,15 @@
+include = [
+    "../methods/diffusion.toml",
+    "../models/mlp_flow.toml",
+    "../datasets/dino.toml",
+]
+
+
+# Any combo-specific overrides...
+[train]
+lr = 1e-3
+lr_schedule = "cosine"
+iterations = 2_000
+batch_size = 2048
+
+cosine_decay.iterations = 2_000

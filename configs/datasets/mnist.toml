@@ -1,0 +1,8 @@
+[general]
+dataset = "hf://ylecun/mnist"
+gen_samples = 128
+
+[eval.fid]
+enabled = true
+interval = 3000
+samples = 20_000

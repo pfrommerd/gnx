@@ -1,0 +1,106 @@
+#!/usr/bin/env -S uv run --script --python 3.13
+# /// script
+# requires-python = "==3.13.*"
+# dependencies = [
+#   "gnx",
+#   "jax[cuda]"
+# ]
+#
+# [tool.uv.sources]
+# gnx = { path = "../", editable = true }
+#
+# ///
+
+import itertools
+import typing as tp
+from pathlib import Path
+
+import click
+import jax
+import numpy as np
+import rich.progress
+from PIL import Image as PILImage
+
+from gnx.core import graph, nn
+from gnx.util.experiment import Artifact
+from gnx.datasets import Dataset
+from gnx.datasets.image import Image
+
+
+# If we should output the dataset samples to a directory as well
+@click.option("--dataset", type=str, default=None)
+@click.option("--seed", type=int, default=42)
+@click.option("--batch_size", type=int, default=128)
+@click.option("--n", type=int, default=None)
+@click.option("--nfe", type=int, default=None)
+@click.option(
+    "--checkpoint",
+    type=str,
+    default=None,
+)
+@click.argument("out_path", type=str)
+@click.command()
+def main(checkpoint, out_path, n, nfe, batch_size, seed, dataset):
+    out_path = Path(out_path)
+    out_path.mkdir(parents=True, exist_ok=True)
+    if checkpoint is not None:
+        if "://" not in checkpoint:
+            checkpoint = f"file://{checkpoint}"
+        checkpoint = Artifact.from_url(checkpoint)
+        model = checkpoint.get()
+        if hasattr(model, "eval_model"):
+            model = model.eval_model()
+        model.eval()
+
+        rich.print("Generating samples...")
+        if n is None:
+            rich.print(
+                "No number of samples specified, generating 1000 samples by default."
+            )
+            n = 1000
+
+        if nfe is not None:
+            assert hasattr(model, "nfe"), "Model does not have nfe attribute."
+            model.nfe = nfe
+
+        generator = enumerate(
+            itertools.islice(generate(jax.random.key(seed), model, batch_size), n)
+        )
+        samples_root = out_path / "samples"
+        samples_root.mkdir(parents=True, exist_ok=True)
+        for i, sample in rich.progress.track(generator, total=n):
+            pixels = sample.pixels
+            if pixels.shape[-1] == 1:
+                pixels = pixels.squeeze(-1)
+            # convert to [0, 255] range, assuming pixels are in [-1, 1] range
+            pixels = (255 * (pixels + 1) / 2).astype(np.uint8)
+            image = PILImage.fromarray(np.array(pixels))
+            image.save(samples_root / f"{i:06d}.png")
+
+    if dataset is not None:
+        dataset_root = out_path / "dataset"
+        dataset_root.mkdir(parents=True, exist_ok=True)
+        rich.print("Dumping dataset samples...")
+        test_split = Dataset.from_url(dataset).splits["train"]
+        for i, sample in rich.progress.track(
+            enumerate(test_split.sampler(jax.random.key(42))), total=len(test_split)
+        ):
+            pixels = sample.value.pixels
+            if pixels.shape[-1] == 1:
+                pixels = pixels.squeeze(-1)
+            # convert to [0, 255] range, assuming pixels are in [-1, 1] range
+            pixels = (255 * (pixels + 1) / 2).astype(np.uint8)
+            image = PILImage.fromarray(np.array(pixels))
+            image.save(dataset_root / f"{i:06d}.png")
+
+
+def generate(key, model, batch_size) -> tp.Iterator[Image]:
+    rng = nn.Rngs(key)
+    while True:
+        batch = model.sample(rng.gen(), (batch_size,))
+        for i in range(batch_size):
+            yield Image(batch.pixels[i])
+
+
+if __name__ == "__main__":
+    main()

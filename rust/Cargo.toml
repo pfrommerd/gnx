@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["gnxlib", "gnx", "gnx-jax", "gnx-derive"]

@@ -1,0 +1,8 @@
+[package]
+name = "gnx"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gnx-derive = { version = "0.1.0", path = "../gnx-derive" }
+paste = "1.0.15"
