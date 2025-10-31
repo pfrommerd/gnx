@@ -1,4 +1,0 @@
-[model]
-type = "mlp"
-mlp.hidden_layers = 6
-mlp.hidden_features = 64

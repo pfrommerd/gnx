@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use crate::array::{Array, ArrayRef};
-use crate::graph::Union;
+use crate::graph::LeafUnion;
 
 mod builtins;
 mod trace;
@@ -17,7 +17,6 @@ pub struct Op {
 
 pub struct Expr {}
 
-// #[derive(Union)]
 pub enum Value {
     Array(Array),
     ArrayRef(ArrayRef),

@@ -1,4 +1,5 @@
-use std::borrow::Cow;
+use std::sync::Arc;
+use std::{borrow::Cow, collections::HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
@@ -7,6 +8,15 @@ pub enum Key {
     DictIndex(i64),
     Index(usize),
 }
+
+pub enum KeyRef<'r> {
+    Attr(&'r str),
+    DictKey(&'r str),
+    DictIndex(i64),
+    Index(usize),
+}
+
+pub type Path = Vec<Key>;
 
 impl std::fmt::Display for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -39,4 +49,13 @@ impl From<GraphId> for u64 {
     fn from(value: GraphId) -> Self {
         value.0
     }
+}
+
+// A generic dag container
+pub enum Dag<V> {
+    Leaf(V),
+    Node {
+        value: Option<V>,
+        children: HashMap<Key, Arc<Dag<V>>>,
+    },
 }

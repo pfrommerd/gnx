@@ -1,9 +1,0 @@
-[general]
-dataset = "toy://spiral"
-generate-samples = 1024
-generate-interval = 200
-
-[eval.ot]
-enabled = true
-samples = 10_000
-interval = 200

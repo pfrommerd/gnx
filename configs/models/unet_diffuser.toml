@@ -1,9 +1,0 @@
-[model]
-type = "unet"
-
-[model.unet]
-channels = 64
-
-embed_features = 256
-time_features = 64
-dropout = 0.1

@@ -1,3 +1,5 @@
+#![feature(trait_alias)]
+
 pub mod array;
 pub mod backend;
 pub mod expr;
