@@ -9,9 +9,51 @@ use syn::{DeriveInput, parse_macro_input};
 
 fn impl_leaf_graph(name: Ident) -> TokenStream {
     quote! {
-        impl ::gnx::graph::Graph for #name {
-            type GraphDef<I> = ::gnx::graph::LeafDef<I>;
+        impl Graph for #name {
+            type GraphDef<
+                I: Clone + 'static,
+                R: ::gnx::graph::NonLeafRepr
+            > = ::gnx::graph::LeafDef<I, #name, R>;
+            type Owned = #name;
 
+            fn graph_def<I, L, V, F>(
+                &self,
+                viewer: V,
+                mut map: F,
+                _ctx: &mut ::gnx::graph::GraphContext,
+            ) -> Result<Self::GraphDef<I, V::NonLeafRepr>, GraphError>
+            where
+                I: Clone + 'static,
+                V: ::gnx::graph::GraphViewer<L>,
+                F: FnMut(V::Ref<'_>) -> I,
+            {
+                match viewer.try_as_leaf(self) {
+                    Ok(leaf) => Ok(::gnx::graph::LeafDef::Leaf(map(leaf))),
+                    Err(_graph) => Ok(::gnx::graph::LeafDef::NonLeaf(
+                        V::NonLeafRepr::try_to_nonleaf(self)?
+                    )),
+                }
+            }
+            fn visit<L, V, M>(&self, view: V, visitor: M) -> M::Output
+            where
+                V: ::gnx::graph::GraphViewer<L>,
+                M: ::gnx::graph::GraphVisitor<L, V>,
+            {
+                match view.try_as_leaf(self) {
+                    Ok(leaf) => visitor.leaf(Some(leaf)),
+                    Err(_graph) => visitor.leaf(None),
+                }
+            }
+            fn map<L, V, M>(self, view: V, map: M) -> M::Output
+            where
+                V: ::gnx::graph::GraphViewer<L>,
+                M: ::gnx::graph::GraphMap<L, V>,
+            {
+                match view.try_to_leaf(self) {
+                    Ok(leaf) => map.leaf(Some(leaf)),
+                    Err(_graph) => map.leaf(None),
+                }
+            }
         }
     }
 }
@@ -29,31 +71,8 @@ pub fn impl_leaf(input: ProcTokenStream) -> ProcTokenStream {
     ProcTokenStream::from(impl_leaf_graph(name))
 }
 
-struct UnionVariant {
-    name: Ident,
-    ty: Option<Type>,
-}
-struct LeafUnionInput {
-    variants: Vec<UnionVariant>,
-}
-
-#[proc_macro_derive(LeafUnion)]
-pub fn derive_leaf_union(input: ProcTokenStream) -> ProcTokenStream {
-    // Parse the input into a syntax tree
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    // Generate code
-    let expanded = quote! {
-        impl ::gnx::graph::Graph for #name {
-        }
-    };
-    ProcTokenStream::from(expanded)
-}
-
-struct GraphStruct {}
-
 #[proc_macro_derive(Graph)]
-pub fn derive_owned_graph(input: ProcTokenStream) -> ProcTokenStream {
+pub fn derive_graph(input: ProcTokenStream) -> ProcTokenStream {
     // Parse the input into a syntax tree
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;

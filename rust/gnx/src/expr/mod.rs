@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
 use crate::array::{Array, ArrayRef};
-use crate::graph::LeafUnion;
 
 mod builtins;
 mod trace;

@@ -1,3 +1,44 @@
+use gnx::graph::{Graph, Leaf};
+use num_bigint::BigInt;
+use pyo3::prelude::*;
+
+pub enum PyLeaf {
+    None,
+    Int(BigInt),
+    Float(f64),
+    Bool(bool),
+    String(String),
+    Bytes(Vec<u8>),
+    Array,
+    ArrayRef,
+    // A generic python object as a leaf
+    Other(Py<PyAny>),
+}
+
+pub struct DictKey {
+    py: Py<PyAny>,
+}
+
+pub enum PyGraph {
+    Leaf(PyLeaf),
+    Tuple(Vec<PyGraph>),
+    List(Vec<PyGraph>),
+    Dict(Vec<(Py<PyAny>, PyGraph)>),
+}
+
+pub enum PyGraphDef {
+    None,
+    Int,
+    Float,
+    Bool,
+    String,
+    Bytes,
+    Array,
+    ArrayRef,
+}
+
+// pub impl Graph for PyLeaf {}
+
 // use gnx::graph::{GraphId, Key};
 // use gnx::{Array, ArrayRef, ImBytes, ImString};
 // use num_bigint::BigInt;

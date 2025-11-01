@@ -15,6 +15,7 @@ pub trait GraphExt: Graph {
         todo!()
     }
 }
+
 impl<G: Graph> GraphExt for G {}
 
 // This file also contains Graph-specific
