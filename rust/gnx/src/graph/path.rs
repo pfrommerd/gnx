@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use std::{borrow::Cow, collections::HashMap};
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Key {
@@ -49,13 +48,4 @@ impl From<GraphId> for u64 {
     fn from(value: GraphId) -> Self {
         value.0
     }
-}
-
-// A generic dag container
-pub enum Dag<V> {
-    Leaf(V),
-    Node {
-        value: Option<V>,
-        children: HashMap<Key, Arc<Dag<V>>>,
-    },
 }

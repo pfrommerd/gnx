@@ -16,43 +16,62 @@ fn impl_leaf_graph(name: Ident) -> TokenStream {
             > = ::gnx::graph::LeafDef<I, #name, R>;
             type Owned = #name;
 
-            fn graph_def<I, L, V, F>(
+            fn graph_def<I, L, F, M>(
                 &self,
-                viewer: V,
-                mut map: F,
-                _ctx: &mut ::gnx::graph::GraphContext,
-            ) -> Result<Self::GraphDef<I, V::NonLeafRepr>, GraphError>
+                filter: F,
+                map: M,
+                ctx: &mut GraphContext,
+            ) -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
             where
                 I: Clone + 'static,
-                V: ::gnx::graph::GraphViewer<L>,
-                F: FnMut(V::Ref<'_>) -> I,
+                F: GraphFilter<L>,
+                M: FnMut(F::Ref<'_>) -> I
             {
-                match viewer.try_as_leaf(self) {
-                    Ok(leaf) => Ok(::gnx::graph::LeafDef::Leaf(map(leaf))),
-                    Err(_graph) => Ok(::gnx::graph::LeafDef::NonLeaf(
-                        V::NonLeafRepr::try_to_nonleaf(self)?
-                    )),
-                }
+                todo!();
             }
-            fn visit<L, V, M>(&self, view: V, visitor: M) -> M::Output
+
+            fn into_graph_def<I, L, F, M>(
+                self,
+                filter: F,
+                map: M,
+                ctx: &mut GraphContext,
+            ) -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
             where
-                V: ::gnx::graph::GraphViewer<L>,
-                M: ::gnx::graph::GraphVisitor<L, V>,
+                I: Clone + 'static,
+                F: GraphFilter<L>,
+                M: FnMut(GraphCow<F::Ref<'_>, L>) -> I
             {
-                match view.try_as_leaf(self) {
-                    Ok(leaf) => visitor.leaf(Some(leaf)),
-                    Err(_graph) => visitor.leaf(None),
-                }
+                todo!();
             }
-            fn map<L, V, M>(self, view: V, map: M) -> M::Output
+
+            fn visit<L, V, M>(&self, view: V, visitor: impl Into<M>) -> M::Output
             where
-                V: ::gnx::graph::GraphViewer<L>,
-                M: ::gnx::graph::GraphMap<L, V>,
+                V: GraphFilter<L>,
+                M: GraphVisitor<L, V>
             {
-                match view.try_to_leaf(self) {
-                    Ok(leaf) => map.leaf(Some(leaf)),
-                    Err(_graph) => map.leaf(None),
-                }
+                todo!()
+            }
+
+            // visit_mut will visit all mutablely accessible children, mutably.
+            // When a node contains immutable shared children (e.g. Rc<T>)
+            // these can be traversed using visit_mut_inner, which takes &self
+            // and acts like visit(), but will attempt to recursively
+            // visit children like RefCell<T> mutably if possible.
+            // This allows us to track mutation state
+            fn mut_visit<L, V, M>(&mut self, view: V, visitor: impl Into<M>) -> M::Output
+            where
+                V: GraphFilter<L>,
+                M: GraphMutVisitor<L, V>
+            {
+                todo!()
+            }
+
+            fn into_visit<L, V, M>(self, view: V, consumer: impl Into<M>) -> M::Output
+            where
+                V: GraphFilter<L>,
+                M: GraphConsumer<L, V>
+            {
+                todo!()
             }
         }
     }

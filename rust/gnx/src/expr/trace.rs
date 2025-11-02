@@ -4,12 +4,14 @@ use std::sync::Arc;
 use super::{Op, TypeInfo, TypeValue};
 use crate::array::{ArrayRefType, ArrayType, DataHandle};
 
+#[allow(unused)]
 pub struct Invocation {
     op: Op,
     inputs: Vec<GenericTracer>,
     total_outputs: usize,
 }
 
+#[allow(unused)]
 pub enum Trace {
     // A realized value
     Physical(TypeValue),
@@ -23,6 +25,7 @@ pub enum Trace {
     Error,
 }
 
+#[allow(unused)]
 pub struct Traced {
     trace: Trace,
     is_abstract: bool,

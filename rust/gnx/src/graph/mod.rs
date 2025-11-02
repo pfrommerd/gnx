@@ -1,16 +1,24 @@
 mod callable;
 mod impls;
 mod path;
-mod traits;
+mod visitors;
 
-pub use gnx_derive::{Leaf, ctx_build_shared, impl_leaf};
-pub use traits::GraphExt;
+pub mod filter;
+pub mod util;
+
+pub use filter::{GraphCow, GraphFilter, NonLeafRepr};
+pub use gnx_derive::{Leaf, impl_leaf};
+pub use impls::{LeafDef, NodeDef};
+
+pub use visitors::{Bound, View, ViewMut};
+pub use visitors::{ChildrenConsumer, ChildrenMutVisitor, ChildrenVisitor};
+pub use visitors::{GraphConsumer, GraphMutVisitor, GraphVisitor};
 
 pub use callable::Callable;
 pub use path::{GraphId, Key, KeyRef, Path};
 
 use std::any::{Any, TypeId};
-use std::borrow::Borrow;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 
@@ -21,21 +29,32 @@ pub trait Graph {
     // The "owned" graph needs to be static and cloneable
     type Owned: Graph + Clone + 'static;
 
-    fn graph_def<I, L, V, F>(
+    fn graph_def<I, L, F, M>(
         &self,
-        viewer: V,
-        map: F,
+        filter: F,
+        map: M,
         ctx: &mut GraphContext,
-    ) -> Result<Self::GraphDef<I, V::NonLeafRepr>, GraphError>
+    ) -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
     where
         I: Clone + 'static,
-        V: GraphViewer<L>,
-        F: FnMut(V::Ref<'_>) -> I;
+        F: GraphFilter<L>,
+        M: FnMut(F::Ref<'_>) -> I;
 
-    fn visit<L, V, M>(&self, view: V, visitor: M) -> M::Output
+    fn into_graph_def<I, L, F, M>(
+        self,
+        filter: F,
+        map: M,
+        ctx: &mut GraphContext,
+    ) -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
     where
-        V: GraphViewer<L>,
-        M: GraphVisitor<L, V>;
+        I: Clone + 'static,
+        F: GraphFilter<L>,
+        M: FnMut(GraphCow<F::Ref<'_>, L>) -> I;
+
+    fn visit<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
+    where
+        F: GraphFilter<L>,
+        V: GraphVisitor<L, F>;
 
     // visit_mut will visit all mutablely accessible children, mutably.
     // When a node contains immutable shared children (e.g. Rc<T>)
@@ -43,22 +62,38 @@ pub trait Graph {
     // and acts like visit(), but will attempt to recursively
     // visit children like RefCell<T> mutably if possible.
     // This allows us to track mutation state
-
-    fn map<L, V, M>(self, view: V, consumer: M) -> M::Output
+    fn mut_visit<L, F, M>(&mut self, filter: F, visitor: impl Into<M>) -> M::Output
     where
-        V: GraphViewer<L>,
-        M: GraphMap<L, V>;
+        F: GraphFilter<L>,
+        M: GraphMutVisitor<L, F>;
+
+    fn inner_mut_visit<L, F, M, O>(&self, filter: F, visitor: impl Into<M>) -> O
+    where
+        F: GraphFilter<L>,
+        M: GraphVisitor<L, F, Output = O> + GraphMutVisitor<L, F, Output = O>,
+    {
+        self.visit(filter, visitor)
+    }
+
+    fn into_visit<L, V, M>(self, view: V, consumer: impl Into<M>) -> M::Output
+    where
+        V: GraphFilter<L>,
+        M: GraphConsumer<L, V>;
 }
 
 pub trait Node: Graph {
-    fn visit_children<L, V, M>(&self, viewer: V, visitor: M) -> M::Output
+    fn visit_children<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
     where
-        V: GraphViewer<L>,
-        M: ChildrenVisitor<L, V>;
-    fn map_children<L, V, M>(self, viewer: V, map: M) -> M::Output
+        F: GraphFilter<L>,
+        V: ChildrenVisitor<L, F>;
+    fn visit_children_mut<L, F, V>(&mut self, filter: F, visitor: impl Into<V>) -> V::Output
     where
-        V: GraphViewer<L>,
-        M: ChildrenMap<L, V>;
+        F: GraphFilter<L>,
+        V: ChildrenMutVisitor<L, F>;
+    fn consume_children<L, F, C>(self, filter: F, map: impl Into<C>) -> C::Output
+    where
+        F: GraphFilter<L>,
+        C: ChildrenConsumer<L, F>;
 }
 
 pub trait GraphDef<I: Clone + 'static>: Clone + 'static {
@@ -73,85 +108,28 @@ pub trait GraphDef<I: Clone + 'static>: Clone + 'static {
     where
         B: LeafBuilder<I, L>,
         S: GraphSource<I, L>;
+
+    fn into_build<L, B, S>(
+        self,
+        builder: B,
+        source: S,
+        ctx: &mut GraphContext,
+    ) -> Result<Self::Graph, S::Error>
+    where
+        B: LeafBuilder<I, L>,
+        S: GraphSource<I, L>;
 }
 
-// Usually GraphViewer is implemented
-// for the reference type
-// (So that Bound has no lifetime parameters)
-pub trait GraphViewer<L>: Copy {
-    // A reference-like type for the viewer
-    // For instance L might be Option<T> and Ref<'l> is Option<&'l T>
-    // Thus a GraphViewer could coerce both T and Option<T> to &
-    type Ref<'l>: Borrow<L> + 'l;
-    // A viewer knows how to turn a reference to a leaf into a Self::Ref
-    fn borrow_leaf<'l>(&self, leaf: &'l L) -> Self::Ref<'l>;
-    fn try_as_leaf<'g, G: Graph>(&self, graph: &'g G) -> Result<Self::Ref<'g>, &'g G>;
-    fn try_to_leaf<G: Graph>(&self, g: G) -> Result<L, G>;
-
-    type NonLeafRepr: NonLeafRepr;
-}
-
-// A non-leaf viewer knows how to handle
-// leaves that cannot be coerced to type L
-// This is generally a marker type, hence Copy + 'static
-pub trait NonLeafRepr: 'static {
-    // For graphdefs, a viewer needs to know what to
-    // do with leaves of type T that cannot be coerced
-    // to the leaf type L. These will be stored as NonLeaf<T>
-
-    // Ideally we would be able to relax the Clone + 'static
-    // on the T parameter so that we can handle
-    // non-cloneable "static" fields
-    type NonLeaf<T: Clone + 'static>: Into<T> + Clone + 'static;
-    fn try_to_nonleaf<T: Clone + 'static>(v: &T) -> Result<Self::NonLeaf<T>, GraphError>;
-    // Note that the NonLeaf type must be 'static, so
-    // we need to be able to try and convert them back
-    // without access to self (this conversion may fail!)
-    fn try_from_nonleaf<T: Clone + 'static>(v: &Self::NonLeaf<T>) -> Result<T, GraphError>;
-}
-
-pub trait GraphVisitor<L, V: GraphViewer<L>> {
-    type Output;
-    // None if the node is logically a leaf,
-    // but it has no value under the current View
-    fn leaf(self, value: Option<V::Ref<'_>>) -> Self::Output;
-    fn node<N: Node>(self, node: View<'_, N, V>) -> Self::Output;
-    fn shared<S: Graph>(self, id: GraphId, shared: View<'_, S, V>) -> Self::Output;
-}
-
-pub trait ChildrenVisitor<L, V: GraphViewer<L>> {
-    type Output;
-    fn child<G: Graph>(&mut self, key: KeyRef<'_>, child: View<'_, G, V>) -> &mut Self;
-    fn finish(self) -> Self::Output;
-}
-
-pub trait GraphMap<L, V: GraphViewer<L>> {
-    type Output;
-    fn leaf(self, value: Option<L>) -> Self::Output;
-    fn node<N: Node>(self, node: Bound<N, V>) -> Self::Output;
-    // Once we hit a "Shared," we may have to switch to
-    // (1) to visiting the inner graph definition,
-    // (2) cloning and continue mapping
-    // (3) stop e.g. if we have seen this GraphId before
-    fn shared<S: Graph>(self, id: GraphId, shared: View<'_, S, V>) -> Self::Output;
-}
-
-pub trait ChildrenMap<L, V: GraphViewer<L>> {
-    type Output;
-    fn child<G: Graph>(&mut self, key: Key, child: Bound<G, V>) -> &mut Self;
-    fn finish(self) -> Self::Output;
-}
-
-pub trait GraphSource<I, L> {
+pub trait GraphSource<I: Clone + 'static, L> {
     type Error: Error + From<GraphError>;
     // Whether this is a shared node
     fn id(&self) -> Option<GraphId>;
     // Try to construct a leaf given a value
-    fn leaf(self, info: &I) -> Result<L, Self::Error>;
+    fn leaf(self, info: Cow<'_, I>) -> Result<L, Self::Error>;
     fn node(self) -> impl ChildrenSource<I, L, Error = Self::Error>;
 }
 
-pub trait ChildrenSource<I, L> {
+pub trait ChildrenSource<I: Clone + 'static, L> {
     type Error: Error + From<&'static str>;
 
     #[rustfmt::skip]
@@ -160,30 +138,10 @@ pub trait ChildrenSource<I, L> {
     >, Self::Error>;
 }
 
-// LeafBuilder is the counterpart to GraphViewer.
+// LeafBuilder is the counterpart to GraphFilter.
 // It allows constructing arbitrary Graph types given an associated Def and a value
 pub trait LeafBuilder<I: Clone + 'static, L>: Copy {
-    fn try_build<D: GraphDef<I>>(&self, def: &D, value: L) -> Result<D::Graph, GraphError>;
-}
-
-pub struct View<'g, G: Graph, V> {
-    pub graph: &'g G,
-    pub viewer: V,
-}
-
-impl<'g, G: Graph, V> View<'g, G, V> {
-    fn new(graph: &'g G, viewer: V) -> View<'g, G, V> {
-        View { graph, viewer }
-    }
-}
-pub struct Bound<G: Graph, V> {
-    pub graph: G,
-    pub viewer: V,
-}
-impl<G: Graph, V> Bound<G, V> {
-    fn new(graph: G, viewer: V) -> Bound<G, V> {
-        Bound { graph, viewer }
-    }
+    fn try_build<G: Graph>(&self, value: L) -> Result<G, GraphError>;
 }
 
 pub enum GraphError {
@@ -242,110 +200,18 @@ impl GraphContext {
         map.insert(id, value);
         Ok(())
     }
-}
 
-// A static non-leaf viewer
-
-struct NonLeafCloner;
-
-impl NonLeafRepr for NonLeafCloner {
-    type NonLeaf<T: Clone + 'static> = T;
-    fn try_to_nonleaf<T: Clone + 'static>(v: &T) -> Result<Self::NonLeaf<T>, GraphError> {
-        Ok(v.clone())
-    }
-    fn try_from_nonleaf<T: Clone + 'static>(v: &Self::NonLeaf<T>) -> Result<T, GraphError> {
-        Ok(v.clone())
-    }
-}
-
-// Helper types for defining GraphDefs
-// A LeafDef is either a leaf value (identified by I)
-// or a static value of type T
-
-pub enum LeafDef<I, T, R>
-where
-    I: Clone + 'static,
-    T: Graph + Clone + 'static,
-    R: NonLeafRepr,
-{
-    Leaf(I),
-    NonLeaf(R::NonLeaf<T>),
-}
-
-impl<I, T, R> Clone for LeafDef<I, T, R>
-where
-    I: Clone + 'static,
-    T: Graph + Clone + 'static,
-    R: NonLeafRepr,
-{
-    fn clone(&self) -> Self {
-        match self {
-            LeafDef::Leaf(i) => LeafDef::Leaf(i.clone()),
-            LeafDef::NonLeaf(nl) => LeafDef::NonLeaf(nl.clone()),
-        }
+    pub fn build<T: Clone + 'static, F: FnOnce(&mut Self) -> T>(
+        &mut self,
+        id: GraphId,
+        builder: F,
+    ) -> Result<T, GraphError> {
+        self._reserve::<T>(id)?
+            .ok_or(GraphError::ContextError)
+            .or_else(|_| {
+                let value = builder(self);
+                self._finish::<T>(id, value.clone())?;
+                Ok(value)
+            })
     }
 }
-
-impl<I, T, R> GraphDef<I> for LeafDef<I, T, R>
-where
-    I: Clone + 'static,
-    T: Graph + Clone + 'static,
-    R: NonLeafRepr,
-{
-    type Graph = T;
-
-    fn build<L, B, S>(
-        &self,
-        builder: B,
-        source: S,
-        _ctx: &mut GraphContext,
-    ) -> Result<Self::Graph, S::Error>
-    where
-        B: LeafBuilder<I, L>,
-        S: GraphSource<I, L>,
-    {
-        match self {
-            LeafDef::Leaf(leaf) => Ok(builder.try_build(self, source.leaf(leaf)?)?),
-            LeafDef::NonLeaf(value) => Ok(R::try_from_nonleaf(value)?),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub enum NodeDef<I, N>
-where
-    I: Clone + 'static,
-    N: GraphDef<I>,
-{
-    Leaf(I),
-    Node(N),
-}
-
-impl<I: Clone + 'static, N: GraphDef<I>> GraphDef<I> for NodeDef<I, N> {
-    type Graph = N::Graph;
-
-    fn build<L, B, S>(
-        &self,
-        builder: B,
-        source: S,
-        ctx: &mut GraphContext,
-    ) -> Result<Self::Graph, S::Error>
-    where
-        B: LeafBuilder<I, L>,
-        S: GraphSource<I, L>,
-    {
-        match self {
-            NodeDef::Leaf(leaf) => Ok(builder.try_build(self, source.leaf(leaf)?)?),
-            NodeDef::Node(node_def) => node_def.build(builder, source, ctx),
-        }
-    }
-}
-
-// LeafDef and BoundDef themselves are graphs!
-// This way we can use a graphdef to select axes to vmap over.
-// let graph = ...; // some graph
-// let target_axes = graph.graph_def(Of<Array>, |a| 0)
-//
-// zip(&mut graph, target_shapes).visit_mut(
-//    LeafMap::where(Of<(Array, Shape)>, |(x, target_shape)| x.reshape(target_shape)
-// ))
