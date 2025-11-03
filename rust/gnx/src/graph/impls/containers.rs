@@ -1,7 +1,7 @@
 use super::*;
 
 impl<T: Graph> Graph for Vec<T> {
-    type GraphDef<I: Clone + 'static, R: NonLeafRepr> = NodeDef<I, Vec<T::GraphDef<I, R>>>;
+    type GraphDef<I: Clone + 'static, R: StaticRepr> = NodeDef<I, Vec<T::GraphDef<I, R>>>;
     type Owned = Vec<T::Owned>;
 
     fn graph_def<I, L, F, M>(
@@ -9,10 +9,10 @@ impl<T: Graph> Graph for Vec<T> {
         filter: F,
         mut map: M,
         mut ctx: &mut GraphContext,
-    ) -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
+    ) -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
     where
         I: Clone + 'static,
-        F: GraphFilter<L>,
+        F: Filter<L>,
         M: FnMut(F::Ref<'_>) -> I,
     {
         match filter.try_as_ref(self) {
@@ -21,7 +21,7 @@ impl<T: Graph> Graph for Vec<T> {
                 graph
                     .iter()
                     .map(|x| x.graph_def(filter, &mut map, &mut ctx))
-                    .collect::<Result<Vec<T::GraphDef<I, F::NonLeafRepr>>, GraphError>>()?,
+                    .collect::<Result<Vec<T::GraphDef<I, F::StaticRepr>>, GraphError>>()?,
             )),
         }
     }
@@ -30,10 +30,10 @@ impl<T: Graph> Graph for Vec<T> {
         filter: F,
         mut map: M,
         ctx: &mut GraphContext,
-    ) -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
+    ) -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
     where
         I: Clone + 'static,
-        F: GraphFilter<L>,
+        F: Filter<L>,
         M: FnMut(GraphCow<F::Ref<'_>, L>) -> I,
     {
         match filter.try_to_leaf(self) {
@@ -42,14 +42,14 @@ impl<T: Graph> Graph for Vec<T> {
                 graph
                     .into_iter()
                     .map(|x| x.into_graph_def(filter, &mut map, ctx))
-                    .collect::<Result<Vec<T::GraphDef<I, F::NonLeafRepr>>, GraphError>>()?,
+                    .collect::<Result<Vec<T::GraphDef<I, F::StaticRepr>>, GraphError>>()?,
             )),
         }
     }
 
     fn visit<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
     where
-        F: GraphFilter<L>,
+        F: Filter<L>,
         V: GraphVisitor<L, F>,
     {
         let visitor = visitor.into();
@@ -60,7 +60,7 @@ impl<T: Graph> Graph for Vec<T> {
     }
     fn mut_visit<L, F, V>(&mut self, filter: F, visitor: impl Into<V>) -> V::Output
     where
-        F: GraphFilter<L>,
+        F: Filter<L>,
         V: GraphMutVisitor<L, F>,
     {
         let visitor = visitor.into();
@@ -71,7 +71,7 @@ impl<T: Graph> Graph for Vec<T> {
     }
     fn into_visit<L, F, C>(self, filter: F, consumer: impl Into<C>) -> C::Output
     where
-        F: GraphFilter<L>,
+        F: Filter<L>,
         C: GraphConsumer<L, F>,
     {
         let consumer = consumer.into();
@@ -85,18 +85,19 @@ impl<T: Graph> Graph for Vec<T> {
 impl<T: Graph> Node for Vec<T> {
     fn visit_children<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
     where
-        F: GraphFilter<L>,
+        F: Filter<L>,
         V: ChildrenVisitor<L, F>,
     {
         let mut visitor = visitor.into();
         self.iter().enumerate().for_each(|(i, x)| {
-            visitor.visit_child(KeyRef::Index(i), View::new(x, filter));
+            let r = KeyRef::Index(i);
+            visitor.visit_child(r, View::new(x, filter.child(r)));
         });
         visitor.finish()
     }
     fn visit_children_mut<L, F, V>(&mut self, filter: F, visitor: impl Into<V>) -> V::Output
     where
-        F: GraphFilter<L>,
+        F: Filter<L>,
         V: ChildrenMutVisitor<L, F>,
     {
         let mut visitor = visitor.into();
@@ -107,7 +108,7 @@ impl<T: Graph> Node for Vec<T> {
     }
     fn consume_children<L, F, C>(self, filter: F, consumer: impl Into<C>) -> C::Output
     where
-        F: GraphFilter<L>,
+        F: Filter<L>,
         C: ChildrenConsumer<L, F>,
     {
         let mut consumer = consumer.into();
@@ -173,15 +174,15 @@ macro_rules! impl_tuple_graph {
     ($($T:ty)*, $($idx:expr)*) => {
         paste::paste! {
             impl<$($T: Graph,)*> Graph for ($($T,)*) {
-                type GraphDef<I: Clone + 'static, R: NonLeafRepr> = ($($T::GraphDef<I, R>,)*);
+                type GraphDef<I: Clone + 'static, R: StaticRepr> = ($($T::GraphDef<I, R>,)*);
                 type Owned = ($($T::Owned,)*);
 
                 #[allow(unused_variables, unused_mut)]
                 fn graph_def<I, L, F, M>(&self, filter: F, mut map: M, mut ctx: &mut GraphContext)
-                    -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
+                    -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
                 where
                     I: Clone +'static,
-                    F: GraphFilter<L>,
+                    F: Filter<L>,
                     M: FnMut(F::Ref<'_>) -> I
                 {
                     let ($([<$T:lower>],)*) = self;
@@ -189,10 +190,10 @@ macro_rules! impl_tuple_graph {
                 }
                 #[allow(unused_variables, unused_mut)]
                 fn into_graph_def<I, L, F, M>(self, filter: F, mut map: M, mut ctx: &mut GraphContext)
-                    -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
+                    -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
                 where
                     I: Clone +'static,
-                    F: GraphFilter<L>,
+                    F: Filter<L>,
                     M: FnMut(GraphCow<F::Ref<'_>, L>) -> I
                 {
                     let ($([<$T:lower>],)*) = self;
@@ -201,7 +202,7 @@ macro_rules! impl_tuple_graph {
 
                 fn visit<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
                 where
-                    F: GraphFilter<L>,
+                    F: Filter<L>,
                     V: GraphVisitor<L, F>
                 {
                     let visitor = visitor.into();
@@ -212,7 +213,7 @@ macro_rules! impl_tuple_graph {
                 }
                 fn mut_visit<L, F, V>(&mut self, filter: F, visitor: impl Into<V>) -> V::Output
                 where
-                    F: GraphFilter<L>,
+                    F: Filter<L>,
                     V: GraphMutVisitor<L, F>
                 {
                     let visitor = visitor.into();
@@ -223,7 +224,7 @@ macro_rules! impl_tuple_graph {
                 }
                 fn into_visit<L, F, C>(self, filter: F, consumer: impl Into<C>) -> C::Output
                 where
-                    F: GraphFilter<L>,
+                    F: Filter<L>,
                     C: GraphConsumer<L, F>
                 {
                     let consumer = consumer.into();
@@ -237,7 +238,7 @@ macro_rules! impl_tuple_graph {
                 #[allow(unused_variables, unused_mut)]
                 fn visit_children<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
                 where
-                    F: GraphFilter<L>,
+                    F: Filter<L>,
                     V: ChildrenVisitor<L, F>
                 {
                     let mut visitor = visitor.into();
@@ -250,7 +251,7 @@ macro_rules! impl_tuple_graph {
                 #[allow(unused_variables, unused_mut)]
                 fn visit_children_mut<L, F, V>(&mut self, filter: F, visitor: impl Into<V>) -> V::Output
                 where
-                    F: GraphFilter<L>,
+                    F: Filter<L>,
                     V: ChildrenMutVisitor<L, F>
                 {
                     let mut visitor = visitor.into();
@@ -263,7 +264,7 @@ macro_rules! impl_tuple_graph {
                 #[allow(unused_variables, unused_mut)]
                 fn consume_children<L, F, C>(self, filter: F, consumer: impl Into<C>) -> C::Output
                 where
-                    F: GraphFilter<L>,
+                    F: Filter<L>,
                     C: ChildrenConsumer<L, F>
                 {
                     let mut consumer = consumer.into();

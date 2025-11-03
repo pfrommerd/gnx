@@ -1,8 +1,10 @@
+use super::*;
+
 macro_rules! impl_rc {
     ($W:ident) => {
         // Arc<T: Graph<L>> implements Graph<L>
         impl<T: Graph> Graph for $W<T> {
-            type GraphDef<I: Clone + 'static, R: NonLeafRepr> = $W<T::GraphDef<I, R>>;
+            type GraphDef<I: Clone + 'static, R: StaticRepr> = $W<T::GraphDef<I, R>>;
             type Owned = $W<T::Owned>;
 
             fn graph_def<I, L, V, F>(
@@ -10,21 +12,21 @@ macro_rules! impl_rc {
                 viewer: V,
                 map: F,
                 ctx: &mut GraphContext,
-            ) -> Result<Self::GraphDef<I, V::NonLeafRepr>, GraphError>
+            ) -> Result<Self::GraphDef<I, V::StaticRepr>, GraphError>
             where
                 I: Clone + 'static,
-                V: GraphFilter<L>,
+                V: Filter<L>,
                 F: FnMut(V::Ref<'_>) -> I,
             {
                 let id: GraphId = ($W::as_ptr(self) as u64).into();
-                ctx_build_shared!(ctx, Self::GraphDef<I, V::NonLeafRepr>, id, {
+                ctx.build(|ctx| {
                     let v = T::graph_def(self, viewer, map, ctx);
                     v.map($W::new)
                 })
             }
             fn visit<L, V, M>(&self, viewer: V, visitor: M) -> M::Output
             where
-                V: GraphFilter<L>,
+                V: Filter<L>,
                 M: GraphVisitor<L, V>,
             {
                 let id: GraphId = (($W::as_ptr(self) as *const T) as u64).into();
@@ -32,7 +34,7 @@ macro_rules! impl_rc {
             }
             fn map<L, V, M>(self, viewer: V, map: M) -> M::Output
             where
-                V: GraphFilter<L>,
+                V: Filter<L>,
                 M: GraphMap<L, V>,
             {
                 let id: GraphId = (($W::as_ptr(&self) as *const T) as u64).into();

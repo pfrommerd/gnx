@@ -1,7 +1,7 @@
 use super::*;
 
 impl<T: Graph> Graph for &T {
-    type GraphDef<I: Clone + 'static, R: NonLeafRepr> = Arc<T::GraphDef<I, R>>;
+    type GraphDef<I: Clone + 'static, R: StaticRepr> = Arc<T::GraphDef<I, R>>;
     type Owned = Arc<T::Owned>;
 
     fn graph_def<I, L, F, M>(
@@ -9,14 +9,14 @@ impl<T: Graph> Graph for &T {
         viewer: F,
         map: M,
         ctx: &mut GraphContext,
-    ) -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
+    ) -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
     where
         I: Clone + 'static,
-        F: GraphFilter<L>,
+        F: Filter<L>,
         M: FnMut(F::Ref<'_>) -> I,
     {
         let id: GraphId = ((*self) as *const T as u64).into();
-        ctx_build_shared!(ctx, Self::GraphDef<I, V::NonLeafRepr>, id, {
+        ctx_build_shared!(ctx, Self::GraphDef<I, V::StaticRepr>, id, {
             let g = T::graph_def(self, viewer, map, ctx);
             g.map(Arc::new)
         })
@@ -24,7 +24,7 @@ impl<T: Graph> Graph for &T {
 
     fn visit<L, V, M>(&self, view: V, visitor: M) -> M::Output
     where
-        V: GraphFilter<L>,
+        V: Filter<L>,
         M: GraphVisitor<L, V>,
     {
         let id: GraphId = ((*self) as *const T as u64).into();
@@ -33,7 +33,7 @@ impl<T: Graph> Graph for &T {
 
     fn into_visit<L, V, M>(self, view: V, map: M) -> M::Output
     where
-        V: GraphFilter<L>,
+        V: Filter<L>,
         M: GraphMap<L, V>,
     {
         let id: GraphId = (self as *const T as u64).into();

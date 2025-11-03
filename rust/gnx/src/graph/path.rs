@@ -8,6 +8,7 @@ pub enum Key {
     Index(usize),
 }
 
+#[derive(Clone, Copy)]
 pub enum KeyRef<'r> {
     Attr(&'r str),
     DictKey(&'r str),

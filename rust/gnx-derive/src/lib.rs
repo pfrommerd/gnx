@@ -12,7 +12,7 @@ fn impl_leaf_graph(name: Ident) -> TokenStream {
         impl Graph for #name {
             type GraphDef<
                 I: Clone + 'static,
-                R: ::gnx::graph::NonLeafRepr
+                R: ::gnx::graph::StaticRepr
             > = ::gnx::graph::LeafDef<I, #name, R>;
             type Owned = #name;
 
@@ -21,10 +21,10 @@ fn impl_leaf_graph(name: Ident) -> TokenStream {
                 filter: F,
                 map: M,
                 ctx: &mut GraphContext,
-            ) -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
+            ) -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
             where
                 I: Clone + 'static,
-                F: GraphFilter<L>,
+                F: Filter<L>,
                 M: FnMut(F::Ref<'_>) -> I
             {
                 todo!();
@@ -35,10 +35,10 @@ fn impl_leaf_graph(name: Ident) -> TokenStream {
                 filter: F,
                 map: M,
                 ctx: &mut GraphContext,
-            ) -> Result<Self::GraphDef<I, F::NonLeafRepr>, GraphError>
+            ) -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
             where
                 I: Clone + 'static,
-                F: GraphFilter<L>,
+                F: Filter<L>,
                 M: FnMut(GraphCow<F::Ref<'_>, L>) -> I
             {
                 todo!();
@@ -46,7 +46,7 @@ fn impl_leaf_graph(name: Ident) -> TokenStream {
 
             fn visit<L, V, M>(&self, view: V, visitor: impl Into<M>) -> M::Output
             where
-                V: GraphFilter<L>,
+                V: Filter<L>,
                 M: GraphVisitor<L, V>
             {
                 todo!()
@@ -60,7 +60,7 @@ fn impl_leaf_graph(name: Ident) -> TokenStream {
             // This allows us to track mutation state
             fn mut_visit<L, V, M>(&mut self, view: V, visitor: impl Into<M>) -> M::Output
             where
-                V: GraphFilter<L>,
+                V: Filter<L>,
                 M: GraphMutVisitor<L, V>
             {
                 todo!()
@@ -68,7 +68,7 @@ fn impl_leaf_graph(name: Ident) -> TokenStream {
 
             fn into_visit<L, V, M>(self, view: V, consumer: impl Into<M>) -> M::Output
             where
-                V: GraphFilter<L>,
+                V: Filter<L>,
                 M: GraphConsumer<L, V>
             {
                 todo!()
