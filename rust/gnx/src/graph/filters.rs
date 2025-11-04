@@ -4,13 +4,7 @@ use super::{Graph, GraphError, Leaf, LeafCow};
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
-// Usually Filter is implemented
-// for the reference type
-// (So that Bound has no lifetime parameters)
-pub trait Filter<L: Leaf> {
-    // A filter knows how to turn a reference
-    // to a leaf into a Self::Ref
-    type StaticRepr: StaticRepr;
+pub trait Filter<L: Leaf>: Clone {
     fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<L::Ref<'g>, &'g G>;
     fn matches_mut<'g, G: Graph>(&self, graph: &'g mut G) -> Result<L::RefMut<'g>, &'g mut G>;
     fn matches_value<G: Graph>(&self, graph: G) -> Result<L, G>;
@@ -21,6 +15,27 @@ pub trait Filter<L: Leaf> {
         Self: 's;
 
     fn child<'s>(&'s self, key: KeyRef<'s>) -> Self::ChildFilter<'s>;
+}
+
+impl<L: Leaf, F: Filter<L>> Filter<L> for &F {
+    fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<L::Ref<'g>, &'g G> {
+        (*self).matches_ref(graph)
+    }
+    fn matches_mut<'g, G: Graph>(&self, graph: &'g mut G) -> Result<L::RefMut<'g>, &'g mut G> {
+        (*self).matches_mut(graph)
+    }
+    fn matches_value<G: Graph>(&self, graph: G) -> Result<L, G> {
+        (*self).matches_value(graph)
+    }
+
+    type ChildFilter<'s>
+        = F::ChildFilter<'s>
+    where
+        Self: 's;
+
+    fn child<'s>(&'s self, key: KeyRef<'s>) -> Self::ChildFilter<'s> {
+        (*self).child(key)
+    }
 }
 
 // A non-leaf viewer knows how to handle
@@ -83,16 +98,14 @@ impl<L: Leaf> OfType<L> {
 }
 
 impl<L: Leaf> Filter<L> for OfType<L> {
-    type StaticRepr = CloneNonLeaf;
-
     fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<<L as Leaf>::Ref<'g>, &'g G> {
-        L::try_as_ref(graph)
+        L::try_from_ref(graph)
     }
     fn matches_mut<'g, G: Graph>(
         &self,
         graph: &'g mut G,
     ) -> Result<<L as Leaf>::RefMut<'g>, &'g mut G> {
-        L::try_as_mut(graph)
+        L::try_from_mut(graph)
     }
     fn matches_value<G: Graph>(&self, graph: G) -> Result<L, G> {
         L::try_from_value(graph)
@@ -113,5 +126,24 @@ pub struct IgnoreAll<L: Leaf>(PhantomData<L>);
 impl<L: Leaf> IgnoreAll<L> {
     pub fn filter() -> Self {
         Self(PhantomData)
+    }
+}
+
+#[rustfmt::skip]
+impl<L: Leaf> Filter<L> for IgnoreAll<L> {
+    fn matches_ref<'g, G: Graph>(&self, _graph: &'g G)
+      -> Result<<L as Leaf>::Ref<'g>, &'g G> { Err(_graph) }
+    fn matches_mut<'g, G: Graph>(&self, _graph: &'g mut G)
+      -> Result<<L as Leaf>::RefMut<'g>, &'g mut G> { Err(_graph) }
+    fn matches_value<G: Graph>(&self, _graph: G)
+      -> Result<L, G> { Err(_graph) }
+
+    type ChildFilter<'s>
+        = Self
+    where
+        Self: 's;
+
+    fn child<'s>(&'s self, _key: crate::graph::KeyRef<'s>) -> Self::ChildFilter<'s> {
+        self.clone()
     }
 }

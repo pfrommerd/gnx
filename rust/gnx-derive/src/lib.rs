@@ -2,76 +2,69 @@ use proc_macro::TokenStream as ProcTokenStream;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{
-    Block, Ident, Token, Type,
+    Block, Ident, Path, Token, Type, TypePath,
     parse::{Parse, ParseStream, Result},
 };
 use syn::{DeriveInput, parse_macro_input};
 
-fn impl_leaf_graph(name: Ident) -> TokenStream {
+fn impl_leaf_graph(name: Type) -> TokenStream {
     quote! {
         impl Graph for #name {
-            type GraphDef<
-                I: Clone + 'static,
-                R: ::gnx::graph::StaticRepr
-            > = ::gnx::graph::LeafDef<I, #name, R>;
             type Owned = #name;
+            type Builder<'g, L: Leaf, F: Filter<L>> = View<'g, #name, F>
+                where Self: 'g;
+            type OwnedBuilder<L: Leaf> = gnx::graph::LeafBuilder<#name>;
 
-            fn graph_def<I, L, F, M>(
-                &self,
-                filter: F,
-                map: M,
-                ctx: &mut GraphContext,
-            ) -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
-            where
-                I: Clone + 'static,
-                F: Filter<L>,
-                M: FnMut(F::Ref<'_>) -> I
-            {
-                todo!();
+            fn builder<'g, L: Leaf, F: Filter<L>>(&'g self, filter: F) -> Self::Builder<'g, L, F> {
+                View::new(self, filter)
             }
 
-            fn into_graph_def<I, L, F, M>(
-                self,
-                filter: F,
-                map: M,
-                ctx: &mut GraphContext,
-            ) -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
-            where
-                I: Clone + 'static,
-                F: Filter<L>,
-                M: FnMut(GraphCow<F::Ref<'_>, L>) -> I
-            {
-                todo!();
+            fn visit<L: Leaf, F: Filter<L>, V: GraphVisitor<Self, L>>(
+                &self, filter: F, visitor: impl Into<V>
+            ) -> V::Output {
+                match filter.matches_ref(self) {
+                    Ok(r) => visitor.into().visit_leaf(r),
+                    Err(s) => visitor.into().visit_static::<Self>(s.as_ref())
+                }
             }
-
-            fn visit<L, V, M>(&self, view: V, visitor: impl Into<M>) -> M::Output
-            where
-                V: Filter<L>,
-                M: GraphVisitor<L, V>
-            {
-                todo!()
+            fn mut_visit<L: Leaf, F: Filter<L>, V: GraphMutVisitor<Self, L>>(
+                &mut self, filter: F, visitor: impl Into<V>
+            ) -> V::Output {
+                match filter.matches_mut(self) {
+                    Ok(r) => visitor.into().visit_leaf_mut(r),
+                    Err(s) => visitor.into().visit_static_mut::<Self>(s.as_mut())
+                }
             }
-
-            // visit_mut will visit all mutablely accessible children, mutably.
-            // When a node contains immutable shared children (e.g. Rc<T>)
-            // these can be traversed using visit_mut_inner, which takes &self
-            // and acts like visit(), but will attempt to recursively
-            // visit children like RefCell<T> mutably if possible.
-            // This allows us to track mutation state
-            fn mut_visit<L, V, M>(&mut self, view: V, visitor: impl Into<M>) -> M::Output
-            where
-                V: Filter<L>,
-                M: GraphMutVisitor<L, V>
-            {
-                todo!()
+            fn into_visit<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+                self, filter: F, consumer: impl Into<C>
+            ) -> C::Output {
+                match filter.matches_value(self) {
+                    Ok(v) => consumer.into().consume_leaf(v),
+                    Err(s) => consumer.into().consume_static::<Self>(s)
+                }
             }
-
-            fn into_visit<L, V, M>(self, view: V, consumer: impl Into<M>) -> M::Output
-            where
-                V: Filter<L>,
-                M: GraphConsumer<L, V>
-            {
-                todo!()
+        }
+        impl TypedGraph<#name> for #name {}
+        impl Leaf for #name {
+            type Ref<'l> = &'l Self
+                where Self: 'l;
+            type RefMut<'l> = &'l mut Self
+                where Self: 'l;
+            fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
+            fn as_mut<'l>(&'l mut self) -> Self::RefMut<'l> { self }
+            fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
+            fn clone_mut(v: Self::RefMut<'_>) -> Self { v.clone() }
+            fn try_from_value<V>(g: V) -> Result<Self, V> {
+                ::castaway::cast!(g, Self)
+            }
+            fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
+                ::castaway::cast!(graph, &Self)
+            }
+            fn try_from_mut<'v, V>(graph: &'v mut V) -> Result<Self::RefMut<'v>, &'v mut V> {
+                ::castaway::cast!(graph, &mut Self)
+            }
+            fn try_into_value<V: 'static>(self) -> Result<V, Self> {
+                ::castaway::cast!(self, V)
             }
         }
     }
@@ -81,12 +74,16 @@ fn impl_leaf_graph(name: Ident) -> TokenStream {
 pub fn derive_leaf(input: ProcTokenStream) -> ProcTokenStream {
     // Parse the input into a syntax tree
     let input = parse_macro_input!(input as DeriveInput);
-    ProcTokenStream::from(impl_leaf_graph(input.ident))
+    let ty = Type::Path(TypePath {
+        qself: None,
+        path: Path::from(input.ident),
+    });
+    ProcTokenStream::from(impl_leaf_graph(ty))
 }
 
 #[proc_macro]
 pub fn impl_leaf(input: ProcTokenStream) -> ProcTokenStream {
-    let name = parse_macro_input!(input as Ident);
+    let name = parse_macro_input!(input as Type);
     ProcTokenStream::from(impl_leaf_graph(name))
 }
 
@@ -125,35 +122,4 @@ impl Parse for BuildSharedArgs {
             body: input.parse()?,
         })
     }
-}
-
-#[proc_macro]
-pub fn ctx_build_shared(input: ProcTokenStream) -> ProcTokenStream {
-    let input = parse_macro_input!(input as BuildSharedArgs);
-    let (ctx, tp, id, body) = (input.ctx, input.tp, input.id, input.body);
-    let expanded = quote! {
-        {
-            let res = #ctx._reserve::<#tp>(#id);
-            match res {
-                Err(e) => Err(e.into()),
-                Ok(opt) => match opt {
-                    Some(v) => Ok(v),
-                    None => {
-                        let value: Result<#tp, _> = #body;
-                        match value {
-                            Ok(v) => {
-                                let fv = #ctx._finish::<#tp>(#id, v.clone());
-                                match fv {
-                                    Ok(_) => Ok(v),
-                                    Err(e) => Err(e.into()),
-                                }
-                            },
-                            Err(e) => Err(e)
-                        }
-                    }
-                }
-            }
-        }
-    };
-    ProcTokenStream::from(expanded)
 }

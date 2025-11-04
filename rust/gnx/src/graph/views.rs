@@ -4,6 +4,14 @@ pub struct View<'g, G: Graph, F> {
     pub graph: &'g G,
     pub filter: F,
 }
+impl<'g, G: Graph, F: Clone> Clone for View<'g, G, F> {
+    fn clone(&self) -> Self {
+        Self {
+            graph: self.graph,
+            filter: self.filter.clone(),
+        }
+    }
+}
 pub struct ViewMut<'g, G: Graph, F> {
     pub graph: &'g mut G,
     pub filter: F,

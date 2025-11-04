@@ -1,93 +1,58 @@
 use super::*;
 
 impl<T: Graph> Graph for Vec<T> {
-    type GraphDef<I: Clone + 'static, R: StaticRepr> = NodeDef<I, Vec<T::GraphDef<I, R>>>;
+    type Builder<'g, L: Leaf, F: Filter<L>>
+        = View<'g, Self, F>
+    where
+        Self: 'g;
+    type OwnedBuilder<L: Leaf> = NodeBuilder<Vec<T::OwnedBuilder<L>>>;
     type Owned = Vec<T::Owned>;
 
-    fn graph_def<I, L, F, M>(
-        &self,
-        filter: F,
-        mut map: M,
-        mut ctx: &mut GraphContext,
-    ) -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
-    where
-        I: Clone + 'static,
-        F: Filter<L>,
-        M: FnMut(F::Ref<'_>) -> I,
-    {
-        match filter.try_as_ref(self) {
-            Ok(leaf) => Ok(NodeDef::Leaf(map(leaf))),
-            Err(graph) => Ok(NodeDef::Node(
-                graph
-                    .iter()
-                    .map(|x| x.graph_def(filter, &mut map, &mut ctx))
-                    .collect::<Result<Vec<T::GraphDef<I, F::StaticRepr>>, GraphError>>()?,
-            )),
-        }
-    }
-    fn into_graph_def<I, L, F, M>(
-        self,
-        filter: F,
-        mut map: M,
-        ctx: &mut GraphContext,
-    ) -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
-    where
-        I: Clone + 'static,
-        F: Filter<L>,
-        M: FnMut(GraphCow<F::Ref<'_>, L>) -> I,
-    {
-        match filter.try_to_leaf(self) {
-            Ok(leaf) => Ok(NodeDef::Leaf(map(GraphCow::Owned(leaf)))),
-            Err(graph) => Ok(NodeDef::Node(
-                graph
-                    .into_iter()
-                    .map(|x| x.into_graph_def(filter, &mut map, ctx))
-                    .collect::<Result<Vec<T::GraphDef<I, F::StaticRepr>>, GraphError>>()?,
-            )),
-        }
+    fn builder<'g, L: Leaf, F: Filter<L>>(&'g self, filter: F) -> Self::Builder<'g, L, F> {
+        View::new(self, filter)
     }
 
-    fn visit<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
-    where
-        F: Filter<L>,
-        V: GraphVisitor<L, F>,
-    {
+    fn visit<L: Leaf, F: Filter<L>, V: GraphVisitor<Self, L>>(
+        &self,
+        filter: F,
+        visitor: impl Into<V>,
+    ) -> V::Output {
         let visitor = visitor.into();
-        match filter.try_as_ref(self) {
-            Ok(leaf) => visitor.visit_leaf(Some(leaf)),
+        match filter.matches_ref(self) {
+            Ok(leaf) => visitor.visit_leaf(leaf),
             Err(graph) => visitor.visit_node(View::new(graph, filter)),
         }
     }
-    fn mut_visit<L, F, V>(&mut self, filter: F, visitor: impl Into<V>) -> V::Output
-    where
-        F: Filter<L>,
-        V: GraphMutVisitor<L, F>,
-    {
+    fn mut_visit<L: Leaf, F: Filter<L>, V: GraphMutVisitor<Self, L>>(
+        &mut self,
+        filter: F,
+        visitor: impl Into<V>,
+    ) -> V::Output {
         let visitor = visitor.into();
-        match filter.try_as_mut(self) {
-            Ok(leaf) => visitor.visit_leaf_mut(Some(leaf)),
-            Err(graph) => visitor.visit_node_mut(ViewMut::new(graph, filter)),
+        match filter.matches_mut(self) {
+            Ok(leaf) => visitor.visit_leaf_mut(leaf),
+            Err(graph) => visitor.visit_node_mut(ViewMut::new(graph, &filter)),
         }
     }
-    fn into_visit<L, F, C>(self, filter: F, consumer: impl Into<C>) -> C::Output
-    where
-        F: Filter<L>,
-        C: GraphConsumer<L, F>,
-    {
+    fn into_visit<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+        self,
+        filter: F,
+        consumer: impl Into<C>,
+    ) -> C::Output {
         let consumer = consumer.into();
-        match filter.try_to_leaf(self) {
-            Ok(leaf) => consumer.consume_leaf(Some(leaf)),
+        match filter.matches_value(self) {
+            Ok(leaf) => consumer.consume_leaf(leaf),
             Err(graph) => consumer.consume_node(Bound::new(graph, filter)),
         }
     }
 }
 
 impl<T: Graph> Node for Vec<T> {
-    fn visit_children<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
-    where
-        F: Filter<L>,
-        V: ChildrenVisitor<L, F>,
-    {
+    fn visit_children<L: Leaf, F: Filter<L>, V: ChildrenVisitor<Self, L>>(
+        &self,
+        filter: F,
+        visitor: impl Into<V>,
+    ) -> V::Output {
         let mut visitor = visitor.into();
         self.iter().enumerate().for_each(|(i, x)| {
             let r = KeyRef::Index(i);
@@ -95,78 +60,92 @@ impl<T: Graph> Node for Vec<T> {
         });
         visitor.finish()
     }
-    fn visit_children_mut<L, F, V>(&mut self, filter: F, visitor: impl Into<V>) -> V::Output
-    where
-        F: Filter<L>,
-        V: ChildrenMutVisitor<L, F>,
-    {
+    fn visit_children_mut<L: Leaf, F: Filter<L>, V: ChildrenMutVisitor<Self, L>>(
+        &mut self,
+        filter: F,
+        visitor: impl Into<V>,
+    ) -> V::Output {
         let mut visitor = visitor.into();
         self.iter_mut().enumerate().for_each(|(i, x)| {
-            visitor.visit_child_mut(KeyRef::Index(i), ViewMut::new(x, filter));
+            visitor.visit_child_mut(KeyRef::Index(i), ViewMut::new(x, &filter));
         });
         visitor.finish()
     }
-    fn consume_children<L, F, C>(self, filter: F, consumer: impl Into<C>) -> C::Output
-    where
-        F: Filter<L>,
-        C: ChildrenConsumer<L, F>,
-    {
+    fn consume_children<L: Leaf, F: Filter<L>, C: ChildrenConsumer<Self, L>>(
+        self,
+        filter: F,
+        consumer: impl Into<C>,
+    ) -> C::Output {
         let mut consumer = consumer.into();
         self.into_iter().enumerate().for_each(|(i, x)| {
-            consumer.consume_child(Key::Index(i), Bound::new(x, filter));
+            consumer.consume_child(Key::Index(i), Bound::new(x, &filter));
         });
         consumer.finish()
     }
 }
 
 // Vec<D: GraphDef<L>> implements GraphDef<L>
+impl<'g, L: Leaf, F: Filter<L>, T: Graph> Builder<L> for View<'g, Vec<T>, F> {
+    type Graph = Vec<T::Owned>;
+    type Owned = NodeBuilder<Vec<T::OwnedBuilder<L>>>;
 
-impl<I: Clone + 'static, T: GraphDef<I>> GraphDef<I> for Vec<T> {
-    type Graph = Vec<T::Graph>;
-
-    fn build<L, B, S>(
-        &self,
-        builder: B,
+    fn build<S: GraphSource<(), L>>(
+        self,
         source: S,
         ctx: &mut GraphContext,
-    ) -> Result<Self::Graph, S::Error>
-    where
-        B: LeafBuilder<I, L>,
-        S: GraphSource<I, L>,
-    {
-        let mut ns = source.node();
-        self.iter()
+    ) -> Result<Self::Graph, S::Error> {
+        match self.filter.matches_ref(self.graph) {
+            Ok(_) => Ok(source
+                .leaf(())?
+                .try_into_value()
+                .map_err(|_| GraphError::InvalidLeaf)?),
+            Err(node) => {
+                let mut ns = source.node()?;
+                node.iter()
+                    .enumerate()
+                    .map(|(i, g)| {
+                        let key = KeyRef::Index(i);
+                        let builder = g.builder(self.filter.child(key));
+                        builder.build(ns.child(key)?.ok_or(GraphError::MissingChild)?, ctx)
+                    })
+                    .collect()
+            }
+        }
+    }
+    fn owned_builder(&self, mut ctx: &mut GraphContext) -> Self::Owned {
+        NodeBuilder::Node(
+            self.graph
+                .iter()
+                .enumerate()
+                .map(|(i, g)| {
+                    let key = KeyRef::Index(i);
+                    let builder = g.builder(self.filter.child(key));
+                    builder.owned_builder(&mut ctx)
+                })
+                .collect(),
+        )
+    }
+}
+impl<'g, L: Leaf, B: Builder<L>> Builder<L> for Vec<B> {
+    type Graph = Vec<B::Graph>;
+    type Owned = Vec<B::Owned>;
+
+    fn build<S: GraphSource<(), L>>(
+        self,
+        source: S,
+        ctx: &mut GraphContext,
+    ) -> Result<Self::Graph, S::Error> {
+        let mut ns = source.node()?;
+        self.into_iter()
             .enumerate()
-            .map(|(i, def)| {
-                def.build(
-                    builder,
-                    ns.child(KeyRef::Index(i))?.ok_or(GraphError::MissingNode)?,
-                    ctx,
-                )
+            .map(|(i, b)| {
+                let key = KeyRef::Index(i);
+                b.build(ns.child(key)?.ok_or(GraphError::MissingChild)?, ctx)
             })
             .collect()
     }
-    fn into_build<L, B, S>(
-        self,
-        builder: B,
-        source: S,
-        ctx: &mut GraphContext,
-    ) -> Result<Self::Graph, S::Error>
-    where
-        B: LeafBuilder<I, L>,
-        S: GraphSource<I, L>,
-    {
-        let mut ns = source.node();
-        self.into_iter()
-            .enumerate()
-            .map(|(i, def)| {
-                def.into_build(
-                    builder,
-                    ns.child(KeyRef::Index(i))?.ok_or(GraphError::MissingNode)?,
-                    ctx,
-                )
-            })
-            .collect()
+    fn owned_builder(&self, ctx: &mut GraphContext) -> Self::Owned {
+        self.iter().map(|b| b.owned_builder(ctx)).collect()
     }
 }
 
@@ -174,127 +153,99 @@ macro_rules! impl_tuple_graph {
     ($($T:ty)*, $($idx:expr)*) => {
         paste::paste! {
             impl<$($T: Graph,)*> Graph for ($($T,)*) {
-                type GraphDef<I: Clone + 'static, R: StaticRepr> = ($($T::GraphDef<I, R>,)*);
                 type Owned = ($($T::Owned,)*);
+                type Builder<'g, L: Leaf, F: Filter<L>>
+                    = View<'g, Self, F>
+                where
+                    Self: 'g;
+                type OwnedBuilder<L: Leaf> = NodeBuilder<($($T::OwnedBuilder<L>,)*)>;
 
-                #[allow(unused_variables, unused_mut)]
-                fn graph_def<I, L, F, M>(&self, filter: F, mut map: M, mut ctx: &mut GraphContext)
-                    -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
-                where
-                    I: Clone +'static,
-                    F: Filter<L>,
-                    M: FnMut(F::Ref<'_>) -> I
-                {
-                    let ($([<$T:lower>],)*) = self;
-                    Ok(($([<$T:lower>].graph_def(filter, &mut map, &mut ctx)?,)*))
-                }
-                #[allow(unused_variables, unused_mut)]
-                fn into_graph_def<I, L, F, M>(self, filter: F, mut map: M, mut ctx: &mut GraphContext)
-                    -> Result<Self::GraphDef<I, F::StaticRepr>, GraphError>
-                where
-                    I: Clone +'static,
-                    F: Filter<L>,
-                    M: FnMut(GraphCow<F::Ref<'_>, L>) -> I
-                {
-                    let ($([<$T:lower>],)*) = self;
-                    Ok(($([<$T:lower>].into_graph_def(filter, &mut map, &mut ctx)?,)*))
+                fn builder<'g, L: Leaf, F: Filter<L>>(&'g self, filter: F) -> Self::Builder<'g, L, F> {
+                    View::new(self, filter)
                 }
 
-                fn visit<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
-                where
-                    F: Filter<L>,
-                    V: GraphVisitor<L, F>
-                {
+                fn visit<L: Leaf, F: Filter<L>, V: GraphVisitor<Self, L>>(
+                    &self, filter: F, visitor: impl Into<V>
+                ) -> V::Output {
                     let visitor = visitor.into();
-                    match filter.try_as_ref(self) {
-                        Ok(leaf) => visitor.visit_leaf(Some(leaf)),
+                    match filter.matches_ref(self) {
+                        Ok(leaf) => visitor.visit_leaf(leaf),
                         Err(graph) => visitor.visit_node(View::new(graph, filter))
                     }
                 }
-                fn mut_visit<L, F, V>(&mut self, filter: F, visitor: impl Into<V>) -> V::Output
-                where
-                    F: Filter<L>,
-                    V: GraphMutVisitor<L, F>
-                {
+                fn mut_visit<L: Leaf, F: Filter<L>, V: GraphMutVisitor<Self, L>>(
+                    &mut self, filter: F, visitor: impl Into<V>
+                ) -> V::Output {
                     let visitor = visitor.into();
-                    match filter.try_as_mut(self) {
-                        Ok(leaf) => visitor.visit_leaf_mut(Some(leaf)),
+                    match filter.matches_mut(self) {
+                        Ok(leaf) => visitor.visit_leaf_mut(leaf),
                         Err(graph) => visitor.visit_node_mut(ViewMut::new(graph, filter))
                     }
                 }
-                fn into_visit<L, F, C>(self, filter: F, consumer: impl Into<C>) -> C::Output
-                where
-                    F: Filter<L>,
-                    C: GraphConsumer<L, F>
-                {
+                fn into_visit<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+                    self, filter: F, consumer: impl Into<C>
+                ) -> C::Output {
                     let consumer = consumer.into();
-                    match filter.try_to_leaf(self) {
-                        Ok(leaf) => consumer.consume_leaf(Some(leaf)),
+                    match filter.matches_value(self) {
+                        Ok(leaf) => consumer.consume_leaf(leaf),
                         Err(graph) => consumer.consume_node(Bound::new(graph, filter))
                     }
                 }
             }
             impl<$($T: Graph,)*> Node for ($($T,)*) {
                 #[allow(unused_variables, unused_mut)]
-                fn visit_children<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
-                where
-                    F: Filter<L>,
-                    V: ChildrenVisitor<L, F>
-                {
+                fn visit_children<L: Leaf, F: Filter<L>, V: ChildrenVisitor<Self, L>>(
+                    &self, filter: F, visitor: impl Into<V>
+                ) -> V::Output {
                     let mut visitor = visitor.into();
                     let ($([<$T:lower>],)*) = self;
                     $(
-                      visitor.visit_child(KeyRef::Index($idx), View::new([<$T:lower>], filter));
+                      visitor.visit_child(KeyRef::Index($idx), View::new([<$T:lower>], &filter));
                     )*
                     visitor.finish()
                 }
                 #[allow(unused_variables, unused_mut)]
-                fn visit_children_mut<L, F, V>(&mut self, filter: F, visitor: impl Into<V>) -> V::Output
-                where
-                    F: Filter<L>,
-                    V: ChildrenMutVisitor<L, F>
-                {
+                fn visit_children_mut<L: Leaf, F: Filter<L>, V: ChildrenMutVisitor<Self, L>>(
+                    &mut self, filter: F, visitor: impl Into<V>
+                ) -> V::Output {
                     let mut visitor = visitor.into();
                     let ($([<$T:lower>],)*) = self;
                     $(
-                      visitor.visit_child_mut(KeyRef::Index($idx), ViewMut::new([<$T:lower>], filter));
+                      visitor.visit_child_mut(KeyRef::Index($idx), ViewMut::new([<$T:lower>], &filter));
                     )*
                     visitor.finish()
                 }
                 #[allow(unused_variables, unused_mut)]
-                fn consume_children<L, F, C>(self, filter: F, consumer: impl Into<C>) -> C::Output
-                where
-                    F: Filter<L>,
-                    C: ChildrenConsumer<L, F>
-                {
+                fn consume_children<L: Leaf, F: Filter<L>, C: ChildrenConsumer<Self, L>>(
+                    self, filter: F, consumer: impl Into<C>
+                ) -> C::Output {
                     let mut consumer = consumer.into();
                     let ($([<$T:lower>],)*) = self;
                     $(
-                      consumer.consume_child(Key::Index($idx), Bound::new([<$T:lower>], filter));
+                      consumer.consume_child(Key::Index($idx), Bound::new([<$T:lower>], &filter));
                     )*
                     consumer.finish()
                 }
             }
-            impl<I: Clone + 'static, $($T: GraphDef<I>,)*> GraphDef<I> for ($($T,)*) {
-                type Graph = ($($T::Graph,)*);
+            impl<'g, L: Leaf, F: Filter<L>, $($T: Graph,)*> Builder<L> for View<'g, ($($T,)*), F> {
+                type Graph = ($($T::Owned,)*);
+                type Owned = NodeBuilder<($($T::OwnedBuilder<L>,)*)>;
 
                 #[allow(unused_variables, unused_mut)]
-                fn build<L, B, S>(
-                    &self,
-                    builder: B,
+                fn build<S>(
+                    self,
                     mut source: S,
                     mut ctx: &mut GraphContext,
                 ) -> Result<Self::Graph, S::Error>
                 where
-                    B: LeafBuilder<I, L>,
-                    S: GraphSource<I, L>,
+                    S: GraphSource<(), L>,
                 {
-                    let ($([<$T:lower>],)*) = self;
-                    let mut ns = source.node();
+                    let ($([<$T:lower>],)*) = self.graph;
+                    let mut ns = source.node()?;
                     $(
-                        let [<$T:lower>] = [<$T:lower>].build(
-                            builder, ns.child(KeyRef::Index($idx))?.ok_or(
-                                GraphError::MissingNode
+                        let [<$T:lower>] = [<$T:lower>].builder(&self.filter).build(
+                            ns.child(KeyRef::Index($idx))?.ok_or(
+                                GraphError::MissingChild
                             )?, &mut ctx
                         )?;
                     )*
@@ -302,33 +253,54 @@ macro_rules! impl_tuple_graph {
                 }
 
                 #[allow(unused_variables, unused_mut)]
-                fn into_build<L, B, S>(
+                fn owned_builder(&self, mut ctx: &mut GraphContext) -> Self::Owned {
+                    let ($([<$T:lower>],)*) = self.graph;
+                    NodeBuilder::Node((
+                        $(
+                            [<$T:lower>].builder(&self.filter).owned_builder(&mut ctx),
+                        )*
+                    ))
+                }
+            }
+            impl<L: Leaf, $($T: Builder<L>,)*> Builder<L> for ($($T,)*) {
+                type Graph = ($($T::Graph,)*);
+                type Owned = ($($T::Owned,)*);
+
+                #[allow(unused_variables, unused_mut)]
+                fn build<S>(
                     self,
-                    builder: B,
                     mut source: S,
                     mut ctx: &mut GraphContext,
                 ) -> Result<Self::Graph, S::Error>
                 where
-                    B: LeafBuilder<I, L>,
-                    S: GraphSource<I, L>,
+                    S: GraphSource<(), L>,
                 {
                     let ($([<$T:lower>],)*) = self;
-                    let mut ns = source.node();
+                    let mut ns = source.node()?;
                     $(
-                        let [<$T:lower>] = [<$T:lower>].into_build(
-                            builder, ns.child(KeyRef::Index($idx))?.ok_or(
-                                GraphError::MissingNode
+                        let [<$T:lower>] = [<$T:lower>].build(
+                            ns.child(KeyRef::Index($idx))?.ok_or(
+                                GraphError::MissingChild
                             )?, &mut ctx
                         )?;
                     )*
                     Ok(($([<$T:lower>],)*))
+                }
+
+                #[allow(unused_variables, unused_mut)]
+                fn owned_builder(&self, mut ctx: &mut GraphContext) -> Self::Owned {
+                    let ($([<$T:lower>],)*) = self;
+                    (
+                        $(
+                            [<$T:lower>].owned_builder(&mut ctx),
+                        )*
+                    )
                 }
             }
         }
     };
 }
 
-impl_tuple_graph!(,);
 impl_tuple_graph!(A, 0);
 impl_tuple_graph!(A BB, 0 1);
 impl_tuple_graph!(A BB CC, 0 1 2);

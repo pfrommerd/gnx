@@ -16,6 +16,13 @@ pub enum KeyRef<'r> {
     Index(usize),
 }
 
+pub enum KeyCow<'r> {
+    Attr(Cow<'r, str>),
+    DictKey(Cow<'r, str>),
+    DictIndex(i64),
+    Index(usize),
+}
+
 pub type Path = Vec<Key>;
 
 impl std::fmt::Display for Key {

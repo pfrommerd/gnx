@@ -1,4 +1,4 @@
-use gnx::filter::Of;
+use gnx::graph::{Graph, OfType};
 
 #[test]
 fn test_graph() {
