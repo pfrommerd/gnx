@@ -12,6 +12,7 @@ impl<'g, G: Graph, F: Clone> Clone for View<'g, G, F> {
         }
     }
 }
+
 pub struct ViewMut<'g, G: Graph, F> {
     pub graph: &'g mut G,
     pub filter: F,
@@ -25,15 +26,74 @@ impl<'g, G: Graph, F> View<'g, G, F> {
     pub fn new(graph: &'g G, filter: F) -> Self {
         View { graph, filter }
     }
+    pub fn as_source<L>(&self) -> AsSource<'g, G, F>
+    where
+        L: Leaf,
+        F: Filter<L>,
+    {
+        AsSource::new(self.graph, self.filter.clone())
+    }
+
+    pub fn visit<V, L>(&self, visitor: V) -> V::Output
+    where
+        L: Leaf,
+        V: GraphVisitor<'g, G, L>,
+        F: Filter<L>,
+    {
+        self.graph.visit(&self.filter, visitor)
+    }
+    pub fn visit_children<L, V>(&self, visitor: V) -> V::Output
+    where
+        G: Node,
+        L: Leaf,
+        V: ChildrenVisitor<'g, G, L>,
+        F: Filter<L>,
+    {
+        self.graph.visit_children(&self.filter, visitor)
+    }
 }
+
 impl<'g, G: Graph, F> ViewMut<'g, G, F> {
     pub fn new(graph: &'g mut G, filter: F) -> Self {
         ViewMut { graph, filter }
     }
+    pub fn as_source<L>(self) -> AsSource<'g, G, F>
+    where
+        L: Leaf,
+        F: Filter<L>,
+    {
+        AsSource::new(self.graph, self.filter.clone())
+    }
+    pub fn mut_visit<V, L>(self, visitor: V) -> V::Output
+    where
+        L: Leaf,
+        V: GraphMutVisitor<'g, G, L>,
+        F: Filter<L>,
+    {
+        self.graph.mut_visit(self.filter, visitor)
+    }
+    pub fn mut_visit_children<L, V>(self, visitor: V) -> V::Output
+    where
+        G: Node,
+        L: Leaf,
+        V: ChildrenMutVisitor<'g, G, L>,
+        F: Filter<L>,
+    {
+        self.graph.mut_visit_children(&self.filter, visitor)
+    }
 }
+
 impl<G: Graph, F> Bound<G, F> {
     pub fn new(graph: G, filter: F) -> Self {
         Bound { graph, filter }
+    }
+    pub fn into_visit<V, L>(self, visitor: V) -> V::Output
+    where
+        L: Leaf,
+        V: GraphConsumer<G, L>,
+        F: Filter<L>,
+    {
+        self.graph.into_visit(self.filter, visitor)
     }
 }
 // TODO: The view types should implement

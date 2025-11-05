@@ -3,7 +3,7 @@
 use super::*;
 
 mod containers;
-// mod rc;
+mod rc;
 mod refs;
 
 use gnx_derive::impl_leaf;
@@ -22,9 +22,40 @@ impl_leaf!(i64);
 impl_leaf!(f32);
 impl_leaf!(f64);
 
-// A view of type L of a leaf knows how
-// to build the leaf from a source of type L
-impl<'g, L: Leaf, F: Filter<L>, V: Leaf> Builder<L> for View<'g, V, F> {
+// Owned builders helper types for leaves and nodes
+
+pub struct ViewBuilder<'g, G: Graph, F> {
+    pub graph: &'g G,
+    pub filter: F,
+}
+impl<'g, G: Graph, F: Clone> Clone for ViewBuilder<'g, G, F> {
+    fn clone(&self) -> Self {
+        Self {
+            graph: self.graph,
+            filter: self.filter.clone(),
+        }
+    }
+}
+
+impl<'g, G: Graph, F> ViewBuilder<'g, G, F> {
+    pub fn new(graph: &'g G, filter: F) -> Self {
+        Self { graph, filter }
+    }
+}
+
+#[derive(Clone)]
+pub enum LeafBuilder<V: Leaf> {
+    Leaf,
+    Static(V),
+}
+
+#[derive(Clone)]
+pub enum NodeBuilder<B> {
+    Leaf,    // Build from a leaf value
+    Node(B), // The owned builder for the node
+}
+
+impl<'g, L: Leaf, F: Filter<L>, V: Leaf> Builder<L> for ViewBuilder<'g, V, F> {
     type Graph = V;
     type Owned = LeafBuilder<V>;
     fn build<S: GraphSource<(), L>>(
@@ -37,26 +68,18 @@ impl<'g, L: Leaf, F: Filter<L>, V: Leaf> Builder<L> for View<'g, V, F> {
                 Ok(v) => Ok(v),
                 Err(l) => Ok(V::try_from_value(l).map_err(|_| GraphError::InvalidLeaf)?),
             },
-            Err(s) => Ok(s.clone()),
+            Err(s) => {
+                source.empty_leaf()?;
+                Ok(s.clone())
+            }
         }
     }
-    fn owned_builder(&self, _ctx: &mut GraphContext) -> Self::Owned {
-        LeafBuilder::Leaf
+    fn to_owned_builder(&self, _ctx: &mut GraphContext) -> Self::Owned {
+        match self.filter.matches_ref(self.graph) {
+            Ok(_) => LeafBuilder::Leaf,
+            Err(s) => LeafBuilder::Static(s.clone()),
+        }
     }
-}
-
-// Owned builders helper types for leaves and nodes
-
-#[derive(Clone)]
-pub enum LeafBuilder<V: Leaf> {
-    Leaf,
-    Static(V),
-}
-
-#[derive(Clone)]
-pub enum NodeBuilder<B> {
-    Leaf,    // Build from a leaf value
-    Node(B), // The owned builder for the node
 }
 
 impl<L: Leaf, V: Leaf> Builder<L> for LeafBuilder<V> {
@@ -75,10 +98,13 @@ impl<L: Leaf, V: Leaf> Builder<L> for LeafBuilder<V> {
                 Ok(v) => Ok(v),
                 Err(l) => Ok(V::try_from_value(l).map_err(|_| GraphError::InvalidLeaf)?),
             },
-            LeafBuilder::Static(v) => Ok(v),
+            LeafBuilder::Static(v) => {
+                source.empty_leaf()?;
+                Ok(v)
+            }
         }
     }
-    fn owned_builder(&self, _ctx: &mut GraphContext) -> Self::Owned {
+    fn to_owned_builder(&self, _ctx: &mut GraphContext) -> Self::Owned {
         self.clone()
     }
 }
@@ -102,7 +128,7 @@ where
             NodeBuilder::Node(b) => b.build(source, ctx),
         }
     }
-    fn owned_builder(&self, _ctx: &mut GraphContext) -> Self::Owned {
+    fn to_owned_builder(&self, _ctx: &mut GraphContext) -> Self::Owned {
         self.clone()
     }
 }

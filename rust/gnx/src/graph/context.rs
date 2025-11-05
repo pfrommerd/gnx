@@ -53,15 +53,15 @@ impl GraphContext {
         Ok(())
     }
 
-    pub fn build<T: Clone + 'static, F: FnOnce(&mut Self) -> T>(
+    pub fn build<T: Clone + 'static, E: From<GraphError>, F: FnOnce(&mut Self) -> Result<T, E>>(
         &mut self,
         id: GraphId,
         builder: F,
-    ) -> Result<T, GraphError> {
+    ) -> Result<T, E> {
         self._reserve::<T>(id)?
             .ok_or(GraphError::ContextError)
             .or_else(|_| {
-                let value = builder(self);
+                let value = builder(self)?;
                 self._finish::<T>(id, value.clone())?;
                 Ok(value)
             })

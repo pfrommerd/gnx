@@ -105,6 +105,8 @@ impl Array {
 
 // Wraps ArrayInfo so that Array/ArrayRef have different info types
 
+#[allow(unused)]
 pub struct ArrayRefType(ArrayType);
 
+#[allow(unused)]
 pub struct ArrayRef(ArrayRefTracer);

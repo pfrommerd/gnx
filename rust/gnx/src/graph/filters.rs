@@ -5,6 +5,10 @@ use std::borrow::Cow;
 use std::marker::PhantomData;
 
 pub trait Filter<L: Leaf>: Clone {
+    type Owned: Filter<L> + 'static;
+
+    fn to_owned_filter(&self) -> Self::Owned;
+
     fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<L::Ref<'g>, &'g G>;
     fn matches_mut<'g, G: Graph>(&self, graph: &'g mut G) -> Result<L::RefMut<'g>, &'g mut G>;
     fn matches_value<G: Graph>(&self, graph: G) -> Result<L, G>;
@@ -18,6 +22,11 @@ pub trait Filter<L: Leaf>: Clone {
 }
 
 impl<L: Leaf, F: Filter<L>> Filter<L> for &F {
+    type Owned = F::Owned;
+    fn to_owned_filter(&self) -> Self::Owned {
+        (*self).to_owned_filter()
+    }
+
     fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<L::Ref<'g>, &'g G> {
         (*self).matches_ref(graph)
     }
@@ -89,15 +98,20 @@ impl StaticRepr for DiscardNonLeaf {
 // Basic filter types
 
 #[derive(Clone)]
-pub struct OfType<L: Leaf>(PhantomData<L>);
+pub struct Of<L: Leaf>(PhantomData<L>);
 
-impl<L: Leaf> OfType<L> {
+impl<L: Leaf> Of<L> {
     pub fn filter() -> Self {
         Self(PhantomData)
     }
 }
 
-impl<L: Leaf> Filter<L> for OfType<L> {
+impl<L: Leaf> Filter<L> for Of<L> {
+    type Owned = Self;
+    fn to_owned_filter(&self) -> Self::Owned {
+        self.clone()
+    }
+
     fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<<L as Leaf>::Ref<'g>, &'g G> {
         L::try_from_ref(graph)
     }
@@ -131,6 +145,11 @@ impl<L: Leaf> IgnoreAll<L> {
 
 #[rustfmt::skip]
 impl<L: Leaf> Filter<L> for IgnoreAll<L> {
+    type Owned = Self;
+    fn to_owned_filter(&self) -> Self::Owned {
+        self.clone()
+    }
+
     fn matches_ref<'g, G: Graph>(&self, _graph: &'g G)
       -> Result<<L as Leaf>::Ref<'g>, &'g G> { Err(_graph) }
     fn matches_mut<'g, G: Graph>(&self, _graph: &'g mut G)

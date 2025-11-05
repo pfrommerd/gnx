@@ -2,6 +2,7 @@ mod callable;
 mod context;
 mod impls;
 mod path;
+mod source;
 mod views;
 mod visitors;
 
@@ -12,6 +13,7 @@ pub use context::*;
 pub use filters::*;
 pub use impls::*;
 pub use path::*;
+pub use source::*;
 pub use views::*;
 pub use visitors::*;
 
@@ -19,7 +21,7 @@ pub use gnx_derive::{Graph, Leaf};
 
 pub use callable::Callable;
 
-use std::error::Error;
+use std::{borrow::Borrow, error::Error};
 
 pub trait Builder<L: Leaf>: Clone {
     type Graph: Graph + Clone + 'static;
@@ -31,7 +33,7 @@ pub trait Builder<L: Leaf>: Clone {
         ctx: &mut GraphContext,
     ) -> Result<Self::Graph, S::Error>;
 
-    fn owned_builder(&self, ctx: &mut GraphContext) -> Self::Owned;
+    fn to_owned_builder(&self, ctx: &mut GraphContext) -> Self::Owned;
 }
 
 #[rustfmt::skip]
@@ -46,58 +48,47 @@ pub trait Graph {
 
     fn builder<'g, L: Leaf, F: Filter<L>>(&'g self, filter: F) -> Self::Builder<'g, L, F>;
 
-    fn owned_graph(&self, ctx: &mut GraphContext) -> Self::Owned {
-        let builder = self.builder(IgnoreAll::<()>::filter());
-        builder.build(NullSource, ctx).unwrap()
-    }
-
-    fn visit<L: Leaf, F: Filter<L>, V: GraphVisitor<Self, L>>(
-        &self, filter: F, visitor: impl Into<V>
+    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+        &'g self, filter: F, visitor: V
     ) -> V::Output;
 
-    fn into_visit<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
-        self, filter: F, consumer: impl Into<C>
+    fn mut_visit<'g, L: Leaf, F: Filter<L>, V: GraphMutVisitor<'g, Self, L>>(
+        &'g mut self, filter: F, visitor: V
+    ) -> V::Output;
+
+    fn into_visit<'g, L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+        self, filter: F, consumer: C
     ) -> C::Output;
 
-    // visit_mut will visit all mutablely accessible children, mutably.
-    // When a node contains immutable shared children (e.g. Rc<T>)
-    // these can be traversed using visit_mut_inner, which takes &self
-    // and acts like visit(), but will attempt to recursively
-    // visit children like RefCell<T> mutably if possible.
-    // This allows us to track mutation state
-    fn mut_visit<L: Leaf, F: Filter<L>, V: GraphMutVisitor<Self, L>>(
-        &mut self, filter: F, visitor: impl Into<V>
-    ) -> V::Output;
-
-    fn inner_mut_visit<L, F, V, O>(&self, filter: F, visitor: impl Into<V>) -> O
-    where
-        L: Leaf,
-        F: Filter<L>,
-        V: GraphVisitor<Self, L, Output = O> + GraphMutVisitor<Self, L, Output = O>,
-    {
-        self.visit(filter, visitor)
+    fn to_owned_graph(&self, ctx: &mut GraphContext) -> Self::Owned {
+        let builder = self.builder(IgnoreAll::<()>::filter());
+        builder.build(NullSource, ctx).unwrap()
     }
 }
 
 pub trait Node: Graph {
-    fn visit_children<L, F, V>(&self, filter: F, visitor: impl Into<V>) -> V::Output
+    fn visit_children<'g, L, F, V>(&'g self, filter: F, visitor: V) -> V::Output
     where
         L: Leaf,
         F: Filter<L>,
-        V: ChildrenVisitor<Self, L>;
-    fn visit_children_mut<L, F, V>(&mut self, filter: F, visitor: impl Into<V>) -> V::Output
+        V: ChildrenVisitor<'g, Self, L>;
+    fn mut_visit_children<'g, L, F, V>(&'g mut self, filter: F, visitor: V) -> V::Output
     where
         L: Leaf,
         F: Filter<L>,
-        V: ChildrenMutVisitor<Self, L>;
-    fn consume_children<L, F, C>(self, filter: F, consumer: impl Into<C>) -> C::Output
+        V: ChildrenMutVisitor<'g, Self, L>;
+    fn into_visit_children<L, F, C>(self, filter: F, consumer: C) -> C::Output
     where
         L: Leaf,
         F: Filter<L>,
         C: ChildrenConsumer<Self, L>;
 }
 
-pub trait TypedGraph<L: Leaf>: Graph {}
+pub trait TypedGraph<L: Leaf>: Graph {
+    fn as_source<'g>(&'g self) -> AsSource<'g, Self, Of<L>> {
+        AsSource::new(self, Of::<L>::filter())
+    }
+}
 
 pub trait Leaf: TypedGraph<Self> + Clone + 'static {
     type Ref<'l>: Copy
@@ -134,67 +125,28 @@ impl<'l, L: Leaf + 'l> LeafCow<'l, L> {
     }
 }
 
-pub trait GraphSource<I, L> {
-    type Error: Error + From<GraphError>;
-    type ChildrenSource: ChildrenSource<I, L, Error = Self::Error>;
-    // Whether this is a shared node
-    fn id(&self) -> Option<GraphId>;
-    // Try to construct a leaf given a value
-    fn leaf(self, info: I) -> Result<L, Self::Error>;
-    fn node(self) -> Result<Self::ChildrenSource, Self::Error>;
-}
-
-// TODO:
-// impl<L: Leaf, G: TypedGraph<L>> GraphSource<(), L> for G {
-// }
-
-pub trait ChildrenSource<I, L> {
-    type Error: Error + From<GraphError>;
-    type ChildSource: GraphSource<I, L, Error = Self::Error>;
-    #[rustfmt::skip]
-    fn child(&mut self, key: KeyRef<'_>) -> Result<Option<Self::ChildSource>, Self::Error>;
-    #[rustfmt::skip]
-    fn next(&mut self) -> Result<Option<(Key, Self::ChildSource)>, Self::Error>;
-}
-
-pub struct NullSource;
-
-impl<I, L> GraphSource<I, L> for NullSource {
-    type Error = GraphError;
-    type ChildrenSource = NullSource;
-
-    fn id(&self) -> Option<GraphId> {
-        None
-    }
-
-    fn leaf(self, _info: I) -> Result<L, Self::Error> {
-        Err(GraphError::MissingChild)
-    }
-
-    fn node(self) -> Result<NullSource, Self::Error> {
-        Ok(NullSource)
-    }
-}
-impl<I, L> ChildrenSource<I, L> for NullSource {
-    type Error = GraphError;
-    type ChildSource = NullSource;
-
-    fn child(&mut self, _key: KeyRef<'_>) -> Result<Option<NullSource>, Self::Error> {
-        Ok(Some(NullSource))
-    }
-
-    fn next(&mut self) -> Result<Option<(Key, NullSource)>, Self::Error> {
-        Err(GraphError::MissingChild)
-    }
-}
-
 #[derive(Debug)]
 pub enum GraphError {
     GraphDefUnsupported,
     ReprUnsupported,
-    MissingChild,
     InvalidLeaf,
     ContextError,
+    MissingChild,
+    MissingLeaf,
+    MissingNode,
+    Other,
+}
+
+impl GraphError {
+    fn is_missing(&self) -> bool {
+        use GraphError::*;
+        match self {
+            MissingChild => true,
+            MissingLeaf => true,
+            MissingNode => true,
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for GraphError {
@@ -202,9 +154,12 @@ impl std::fmt::Display for GraphError {
         match self {
             GraphError::GraphDefUnsupported => write!(f, "Graph definition is unsupported"),
             GraphError::ReprUnsupported => write!(f, "Static representation is unsupported"),
-            GraphError::MissingChild => write!(f, "Missing node in graph"),
             GraphError::ContextError => write!(f, "Graph context error"),
             GraphError::InvalidLeaf => write!(f, "Invalid leaf value"),
+            GraphError::MissingChild => write!(f, "Missing child of node"),
+            GraphError::MissingNode => write!(f, "Not a node!"),
+            GraphError::MissingLeaf => write!(f, "Not a leaf!"),
+            GraphError::Other => write!(f, "Other"),
         }
     }
 }

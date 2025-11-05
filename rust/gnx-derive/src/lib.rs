@@ -11,36 +11,36 @@ fn impl_leaf_graph(name: Type) -> TokenStream {
     quote! {
         impl Graph for #name {
             type Owned = #name;
-            type Builder<'g, L: Leaf, F: Filter<L>> = View<'g, #name, F>
+            type Builder<'g, L: Leaf, F: Filter<L>> = ::gnx::graph::ViewBuilder<'g, #name, F>
                 where Self: 'g;
-            type OwnedBuilder<L: Leaf> = gnx::graph::LeafBuilder<#name>;
+            type OwnedBuilder<L: Leaf> = ::gnx::graph::LeafBuilder<#name>;
 
             fn builder<'g, L: Leaf, F: Filter<L>>(&'g self, filter: F) -> Self::Builder<'g, L, F> {
-                View::new(self, filter)
+                ::gnx::graph::ViewBuilder::new(self, filter)
             }
 
-            fn visit<L: Leaf, F: Filter<L>, V: GraphVisitor<Self, L>>(
-                &self, filter: F, visitor: impl Into<V>
+            fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+                &'g self, filter: F, visitor: V
             ) -> V::Output {
                 match filter.matches_ref(self) {
-                    Ok(r) => visitor.into().visit_leaf(r),
-                    Err(s) => visitor.into().visit_static::<Self>(s.as_ref())
+                    Ok(r) => visitor.visit_leaf(r),
+                    Err(s) => visitor.visit_static::<Self>(s.as_ref())
                 }
             }
-            fn mut_visit<L: Leaf, F: Filter<L>, V: GraphMutVisitor<Self, L>>(
-                &mut self, filter: F, visitor: impl Into<V>
+            fn mut_visit<'g, L: Leaf, F: Filter<L>, V: GraphMutVisitor<'g, Self, L>>(
+                &'g mut self, filter: F, visitor: V
             ) -> V::Output {
                 match filter.matches_mut(self) {
-                    Ok(r) => visitor.into().visit_leaf_mut(r),
-                    Err(s) => visitor.into().visit_static_mut::<Self>(s.as_mut())
+                    Ok(r) => visitor.visit_leaf_mut(r),
+                    Err(s) => visitor.visit_static_mut::<Self>(s.as_mut())
                 }
             }
             fn into_visit<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
-                self, filter: F, consumer: impl Into<C>
+                self, filter: F, consumer: C
             ) -> C::Output {
                 match filter.matches_value(self) {
-                    Ok(v) => consumer.into().consume_leaf(v),
-                    Err(s) => consumer.into().consume_static::<Self>(s)
+                    Ok(v) => consumer.consume_leaf(v),
+                    Err(s) => consumer.consume_static::<Self>(s)
                 }
             }
         }

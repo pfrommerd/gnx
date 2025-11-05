@@ -1,64 +1,85 @@
 use super::*;
 
+use std::rc::Rc;
+use std::sync::Arc;
+
+#[rustfmt::skip]
 macro_rules! impl_rc {
     ($W:ident) => {
         // Arc<T: Graph<L>> implements Graph<L>
         impl<T: Graph> Graph for $W<T> {
-            type GraphDef<I: Clone + 'static, R: StaticRepr> = $W<T::GraphDef<I, R>>;
             type Owned = $W<T::Owned>;
+            type Builder<'g, L: Leaf, F: Filter<L>> = ViewBuilder<'g, Self, F>
+            where
+                Self: 'g;
+            type OwnedBuilder<L: Leaf> = $W<T::OwnedBuilder<L>>;
 
-            fn graph_def<I, L, V, F>(
-                &self,
-                viewer: V,
-                map: F,
-                ctx: &mut GraphContext,
-            ) -> Result<Self::GraphDef<I, V::StaticRepr>, GraphError>
-            where
-                I: Clone + 'static,
-                V: Filter<L>,
-                F: FnMut(V::Ref<'_>) -> I,
-            {
-                let id: GraphId = ($W::as_ptr(self) as u64).into();
-                ctx.build(|ctx| {
-                    let v = T::graph_def(self, viewer, map, ctx);
-                    v.map($W::new)
-                })
+            fn builder<'g, L: Leaf, F: Filter<L>>(&'g self, filter: F)
+                -> Self::Builder<'g, L, F> { ViewBuilder::new(self, filter) }
+
+            fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+                &'g self, filter: F, visitor: V
+            ) -> V::Output {
+                let id = GraphId::from($W::as_ptr(self) as u64);
+                visitor.visit_shared(id, View::new(self.as_ref(), filter))
             }
-            fn visit<L, V, M>(&self, viewer: V, visitor: M) -> M::Output
-            where
-                V: Filter<L>,
-                M: GraphVisitor<L, V>,
-            {
-                let id: GraphId = (($W::as_ptr(self) as *const T) as u64).into();
-                visitor.shared::<T>(id, View::new(self, viewer))
+            fn mut_visit<'g, L: Leaf, F: Filter<L>, V: GraphMutVisitor<'g, Self, L>>(
+                &'g mut self, filter: F, visitor: V
+            ) -> V::Output {
+                let id = GraphId::from($W::as_ptr(self) as u64);
+                let s: &'g Self = self;
+                let v: &'g T = s.as_ref();
+                visitor.visit_shared_mut(id, View::new(v, filter))
             }
-            fn map<L, V, M>(self, viewer: V, map: M) -> M::Output
-            where
-                V: Filter<L>,
-                M: GraphMap<L, V>,
-            {
-                let id: GraphId = (($W::as_ptr(&self) as *const T) as u64).into();
-                map.shared::<T>(id, View::new(&self, viewer))
+            fn into_visit<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+                self, filter: F, consumer: C
+            ) -> C::Output {
+                let id = GraphId::from($W::as_ptr(&self) as u64);
+                consumer.consume_shared(id, View::new(self.as_ref(), filter))
             }
         }
-        impl<I: Clone + 'static, T: GraphDef<I>> GraphDef<I> for $W<T> {
-            type Graph = $W<T::Graph>;
-
-            fn build<L, B, S>(
-                &self,
-                builder: B,
+        impl<L: Leaf, S: TypedGraph<L>> TypedGraph<L> for $W<S> {}
+        impl<'g, L: Leaf, F: Filter<L>, S: Graph> Builder<L> for ViewBuilder<'g, $W<S>, F> {
+            type Graph = $W<S::Owned>;
+            type Owned = $W<S::OwnedBuilder<L>>;
+            fn build<GS: GraphSource<(), L>>(
+                self,
+                source: GS,
+                ctx: &mut GraphContext,
+            ) -> Result<Self::Graph, GS::Error> {
+                let id = GraphId::from($W::as_ptr(self.graph) as u64);
+                ctx.build(id, |ctx| {
+                    self.graph.as_ref().builder(self.filter).build(source, ctx)
+                       .map($W::new)
+                })
+            }
+            fn to_owned_builder(&self, ctx: &mut GraphContext) -> Self::Owned {
+                let id = GraphId::from($W::as_ptr(self.graph) as u64);
+                ctx.build(id, |ctx| -> Result<Self::Owned, GraphError> {
+                    let builder = self.graph.as_ref().builder(&self.filter);
+                    Ok($W::new(builder.to_owned_builder(ctx)))
+                }).unwrap()
+            }
+        }
+        impl<L: Leaf, B: Builder<L>> Builder<L> for $W<B> {
+            type Graph = $W<B::Graph>;
+            type Owned = $W<B::Owned>;
+            fn build<S: GraphSource<(), L>>(
+                self,
                 source: S,
                 ctx: &mut GraphContext,
-            ) -> Result<Self::Graph, S::Error>
-            where
-                B: LeafBuilder<I, L>,
-                S: GraphSource<I, L>,
-            {
-                let id: GraphId = (($W::as_ptr(self) as *const T) as u64).into();
-                ctx_build_shared!(ctx, Self::Graph, id, {
-                    let g = (**self).build(builder, source, ctx)?;
-                    Ok($W::new(g))
+            ) -> Result<Self::Graph, S::Error> {
+                let id = GraphId::from($W::as_ptr(&self) as u64);
+                ctx.build(id, |ctx| {
+                    self.as_ref().clone().build(source, ctx)
+                       .map($W::new)
                 })
+            }
+            fn to_owned_builder(&self, ctx: &mut GraphContext) -> Self::Owned {
+                let id = GraphId::from($W::as_ptr(&self) as u64);
+                ctx.build(id, |ctx| -> Result<Self::Owned, GraphError> {
+                    Ok($W::new(self.as_ref().to_owned_builder(ctx)))
+                }).unwrap()
             }
         }
     };

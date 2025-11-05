@@ -15,6 +15,16 @@ pub enum KeyRef<'r> {
     DictIndex(i64),
     Index(usize),
 }
+impl<'r> KeyRef<'r> {
+    pub fn to_value(&self) -> Key {
+        match self {
+            KeyRef::Attr(name) => Key::Attr(Cow::Owned(name.to_string())),
+            KeyRef::DictKey(key) => Key::DictKey(Cow::Owned(key.to_string())),
+            KeyRef::DictIndex(index) => Key::DictIndex(*index),
+            KeyRef::Index(index) => Key::Index(*index),
+        }
+    }
+}
 
 pub enum KeyCow<'r> {
     Attr(Cow<'r, str>),
