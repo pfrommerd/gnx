@@ -1,22 +1,33 @@
 use proc_macro::TokenStream as ProcTokenStream;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{
-    Block, Ident, Path, Token, Type, TypePath,
-    parse::{Parse, ParseStream, Result},
-};
 use syn::{DeriveInput, parse_macro_input};
+use syn::{Path, Type, TypePath};
 
 fn impl_leaf_graph(name: Type) -> TokenStream {
     quote! {
         impl Graph for #name {
-            type Owned = #name;
-            type Builder<'g, L: Leaf, F: Filter<L>> = ::gnx::graph::ViewBuilder<'g, #name, F>
-                where Self: 'g;
-            type OwnedBuilder<L: Leaf> = ::gnx::graph::LeafBuilder<#name>;
+            type Owned = Self;
+            type Builder<L: Leaf> = ::gnx::graph::LeafBuilder<Self>;
 
-            fn builder<'g, L: Leaf, F: Filter<L>>(&'g self, filter: F) -> Self::Builder<'g, L, F> {
-                ::gnx::graph::ViewBuilder::new(self, filter)
+            fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+                &'g self, filter: F, source: S, mut ctx: &mut GraphContext,
+            ) -> Result<Self::Owned, S::Error> {
+                match filter.matches_ref(self) {
+                    Ok(r) => Ok(source.leaf(r)?
+                        .try_into_value()
+                        .or_else(<Self as ::gnx::graph::Leaf>::try_from_value)
+                        .map_err(|_| GraphError::InvalidLeaf)?),
+                    Err(_) => Ok(self.clone())
+                }
+            }
+            fn builder<'g, L: Leaf, F: Filter<L>>(
+                &'g self, filter: F, ctx: &mut GraphContext
+            ) -> Result<Self::Builder<L>, GraphError> {
+                match filter.matches_ref(self) {
+                    Ok(_) => Ok(::gnx::graph::LeafBuilder::Leaf),
+                    Err(_) => Ok(::gnx::graph::LeafBuilder::Static(self.clone())),
+                }
             }
 
             fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
@@ -24,18 +35,10 @@ fn impl_leaf_graph(name: Type) -> TokenStream {
             ) -> V::Output {
                 match filter.matches_ref(self) {
                     Ok(r) => visitor.visit_leaf(r),
-                    Err(s) => visitor.visit_static::<Self>(s.as_ref())
+                    Err(s) => visitor.visit_static::<Self>(<Self as ::gnx::graph::Leaf>::as_ref(s))
                 }
             }
-            fn mut_visit<'g, L: Leaf, F: Filter<L>, V: GraphMutVisitor<'g, Self, L>>(
-                &'g mut self, filter: F, visitor: V
-            ) -> V::Output {
-                match filter.matches_mut(self) {
-                    Ok(r) => visitor.visit_leaf_mut(r),
-                    Err(s) => visitor.visit_static_mut::<Self>(s.as_mut())
-                }
-            }
-            fn into_visit<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+            fn visit_into<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
                 self, filter: F, consumer: C
             ) -> C::Output {
                 match filter.matches_value(self) {
@@ -44,27 +47,20 @@ fn impl_leaf_graph(name: Type) -> TokenStream {
                 }
             }
         }
-        impl TypedGraph<#name> for #name {}
-        impl Leaf for #name {
+        impl ::gnx::graph::TypedGraph<#name> for #name {}
+        impl ::gnx::graph::Leaf for #name {
             type Ref<'l> = &'l Self
                 where Self: 'l;
-            type RefMut<'l> = &'l mut Self
-                where Self: 'l;
             fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
-            fn as_mut<'l>(&'l mut self) -> Self::RefMut<'l> { self }
             fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
-            fn clone_mut(v: Self::RefMut<'_>) -> Self { v.clone() }
             fn try_from_value<V>(g: V) -> Result<Self, V> {
-                ::castaway::cast!(g, Self)
+                ::gnx::util::try_specialize!(g, Self)
             }
             fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-                ::castaway::cast!(graph, &Self)
-            }
-            fn try_from_mut<'v, V>(graph: &'v mut V) -> Result<Self::RefMut<'v>, &'v mut V> {
-                ::castaway::cast!(graph, &mut Self)
+                ::gnx::util::try_specialize!(graph, &Self)
             }
             fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-                ::castaway::cast!(self, V)
+                ::gnx::util::try_specialize!(self, V)
             }
         }
     }
@@ -98,28 +94,4 @@ pub fn derive_graph(input: ProcTokenStream) -> ProcTokenStream {
         }
     };
     ProcTokenStream::from(expanded)
-}
-
-struct BuildSharedArgs {
-    ctx: Ident,
-    _comma1: Token![,],
-    tp: Type,
-    _comma2: Token![,],
-    id: Ident,
-    _comma3: Token![,],
-    body: Block,
-}
-
-impl Parse for BuildSharedArgs {
-    fn parse(input: ParseStream) -> Result<Self> {
-        Ok(BuildSharedArgs {
-            ctx: input.parse()?,
-            _comma1: input.parse()?,
-            tp: input.parse()?,
-            _comma2: input.parse()?,
-            id: input.parse()?,
-            _comma3: input.parse()?,
-            body: input.parse()?,
-        })
-    }
 }

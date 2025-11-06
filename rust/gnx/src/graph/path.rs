@@ -8,6 +8,17 @@ pub enum Key {
     Index(usize),
 }
 
+impl Key {
+    pub fn as_ref<'r>(&'r self) -> KeyRef<'r> {
+        match self {
+            Key::Attr(name) => KeyRef::Attr(name.as_ref()),
+            Key::DictKey(key) => KeyRef::DictKey(key.as_ref()),
+            Key::DictIndex(index) => KeyRef::DictIndex(*index),
+            Key::Index(index) => KeyRef::Index(*index),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum KeyRef<'r> {
     Attr(&'r str),

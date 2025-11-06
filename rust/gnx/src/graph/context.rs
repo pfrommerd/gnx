@@ -53,7 +53,7 @@ impl GraphContext {
         Ok(())
     }
 
-    pub fn build<T: Clone + 'static, E: From<GraphError>, F: FnOnce(&mut Self) -> Result<T, E>>(
+    pub fn create<T: Clone + 'static, E: From<GraphError>, F: FnOnce(&mut Self) -> Result<T, E>>(
         &mut self,
         id: GraphId,
         builder: F,

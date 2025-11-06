@@ -1,3 +1,4 @@
+use gnx::util::LifetimeFree;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -29,6 +30,7 @@ impl AsRef<[u8]> for ImBytes {
 pub struct ImBytes {
     inner: BytesImpl,
 }
+unsafe impl LifetimeFree for ImBytes {}
 
 impl ImBytes {
     pub fn as_slice(&self) -> &[u8] {

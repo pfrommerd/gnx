@@ -126,10 +126,10 @@ impl<'g, G: ?Sized, F> AsSource<'g, G, F> {
     }
 }
 
-impl<'g, L: Leaf, G: Graph, F: Filter<L>> GraphSource<(), L> for AsSource<'g, G, F> {
+impl<'g, A, L: Leaf, G: Graph, F: Filter<L>> GraphSource<A, L> for AsSource<'g, G, F> {
     type Error = GraphError;
     type ChildrenSource = GenericChildren<'g, L>;
-    fn leaf(self, _: ()) -> Result<L, Self::Error> {
+    fn leaf(self, _: A) -> Result<L, Self::Error> {
         self.0.visit(&self.1, ToLeaf)
     }
     fn empty_leaf(self) -> Result<(), Self::Error> {
@@ -157,7 +157,7 @@ use std::collections::HashMap;
 pub struct GenericChildren<'g, L>(HashMap<Key, GenericSource<'g, L>>);
 type GenericSource<'g, L> = Box<dyn _AnySource<'g, L> + 'g>;
 
-impl<'g, L: 'g> ChildrenSource<(), L> for GenericChildren<'g, L> {
+impl<'g, A, L: 'g> ChildrenSource<A, L> for GenericChildren<'g, L> {
     type Error = GraphError;
     type ChildSource = Box<dyn _AnySource<'g, L> + 'g>;
 
@@ -233,7 +233,7 @@ impl<'g, N: Node, L: Leaf> ChildrenVisitor<'g, N, L> for CollectChildren<'g, L> 
         key: KeyRef<'_>,
         child: View<'g, C, F>,
     ) -> &mut Self {
-        let filter = child.filter.to_owned_filter();
+        let filter = child.filter.owned();
         let child = Box::new(AsSource(child.graph, filter));
         self.0.insert(key.to_value(), child);
         self
@@ -265,11 +265,11 @@ impl<'g, L: Leaf, G: Graph, F: Filter<L>> _AnySource<'g, L> for AsSource<'g, G, 
         self.0.visit(&self.1, ToChildren)
     }
 }
-impl<'g, L: 'g> GraphSource<(), L> for Box<dyn _AnySource<'g, L> + 'g> {
+impl<'g, A, L: 'g> GraphSource<A, L> for Box<dyn _AnySource<'g, L> + 'g> {
     type Error = GraphError;
     type ChildrenSource = GenericChildren<'g, L>;
 
-    fn leaf(self, _: ()) -> Result<L, Self::Error> {
+    fn leaf(self, _: A) -> Result<L, Self::Error> {
         self.leaf_any()
     }
     fn empty_leaf(self) -> Result<(), Self::Error> {

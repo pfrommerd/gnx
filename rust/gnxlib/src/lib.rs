@@ -1,4 +1,7 @@
+pub mod bytes;
 pub mod graph;
+pub mod leaf;
+pub mod string;
 
 use pyo3::prelude::*;
 

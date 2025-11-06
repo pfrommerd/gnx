@@ -1,9 +1,11 @@
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::PyString;
-use pyo3::{BoundObject, prelude::*};
+use pyo3::{prelude::*, BoundObject};
 
 use std::sync::OnceLock;
 use std::{borrow::Borrow, sync::Arc};
+
+use gnx::util::LifetimeFree;
 
 // We store both a Rust and Python representation of the string
 // and convert between them as needed.
@@ -49,6 +51,7 @@ enum StringImpl {
 
 #[derive(Clone)]
 pub struct ImString(StringImpl);
+unsafe impl LifetimeFree for ImString {}
 
 impl From<String> for ImString {
     fn from(s: String) -> Self {

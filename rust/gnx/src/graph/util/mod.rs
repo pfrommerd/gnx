@@ -1,8 +1,10 @@
 use crate::graph::*;
 
 mod dag;
+mod traits;
 
 pub use dag::{Dag, ToDag};
+pub use traits::{GraphEq, GraphHash};
 
 #[rustfmt::skip]
 pub trait GraphExt: Graph {

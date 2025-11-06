@@ -1,5 +1,8 @@
 use crate::graph::Graph;
 
+pub use castaway::LifetimeFree;
+pub use castaway::cast as try_specialize;
+
 #[rustfmt::skip]
 pub trait Callable<Input: Graph, Output: Graph> {
     fn call(&self, input: Input) -> Output;
