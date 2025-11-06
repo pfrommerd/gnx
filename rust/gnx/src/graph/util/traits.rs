@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use crate::graph::*;
 
 pub trait GraphHash {
-    fn graph_hash<H, L, F>(&self, hasher: &mut H, exclude: F, ctx: &mut GraphContext)
+    fn graph_hash<H, L, F>(&self, hasher: &mut H, filter: F, ctx: &mut GraphContext)
     where
         H: Hasher,
         L: Leaf,
@@ -12,7 +12,7 @@ pub trait GraphHash {
 }
 
 pub trait GraphEq {
-    fn graph_eq<L, F>(&self, other: &Self, exclude: F, ctx: &mut GraphContext) -> bool
+    fn graph_eq<L, F>(&self, other: &Self, filter: F, ctx: &mut GraphContext) -> bool
     where
         L: Leaf,
         F: Filter<L>;

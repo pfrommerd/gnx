@@ -17,6 +17,11 @@ pub trait Filter<L: Leaf>: Clone {
         Self: 's;
 
     fn child<'s>(&'s self, key: KeyRef<'s>) -> Self::ChildFilter<'s>;
+
+    // helpers
+    fn invert(self) -> Invert<L, Self> {
+        Invert(self, PhantomData)
+    }
 }
 
 impl<L: Leaf, F: Filter<L>> Filter<L> for &F {
@@ -103,5 +108,62 @@ impl<L: Leaf> Filter<L> for Nothing<L> {
 
     fn child<'s>(&'s self, _key: crate::graph::KeyRef<'s>) -> Self::ChildFilter<'s> {
         self.clone()
+    }
+}
+
+#[derive(Clone)]
+pub struct All;
+
+impl Filter<()> for All {
+    type Owned = Self;
+    fn owned(&self) -> Self::Owned {
+        self.clone()
+    }
+
+    fn matches_ref<'g, G: Graph>(&self, _graph: &'g G) -> Result<&'g (), &'g G> {
+        Ok(&())
+    }
+    fn matches_value<G: Graph>(&self, _graph: G) -> Result<(), G> {
+        Ok(())
+    }
+
+    type ChildFilter<'s>
+        = Self
+    where
+        Self: 's;
+
+    fn child<'s>(&'s self, _key: crate::graph::KeyRef<'s>) -> Self::ChildFilter<'s> {
+        self.clone()
+    }
+}
+
+#[derive(Clone)]
+pub struct Invert<L: Leaf, F: Filter<L>>(F, PhantomData<L>);
+
+impl<L: Leaf, F: Filter<L>> Filter<()> for Invert<L, F> {
+    type Owned = Invert<L, F::Owned>;
+    fn owned(&self) -> Self::Owned {
+        Invert(self.0.owned(), PhantomData)
+    }
+
+    fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<&'g (), &'g G> {
+        match self.0.matches_ref(graph) {
+            Ok(_) => Err(graph),
+            Err(_) => Ok(&()),
+        }
+    }
+    fn matches_value<G: Graph>(&self, graph: G) -> Result<(), G> {
+        match self.0.matches_ref(&graph) {
+            Ok(_) => Err(graph),
+            Err(_) => Ok(()),
+        }
+    }
+
+    type ChildFilter<'s>
+        = Invert<L, F::ChildFilter<'s>>
+    where
+        Self: 's;
+    fn child<'s>(&'s self, key: crate::graph::KeyRef<'s>) -> Self::ChildFilter<'s> {
+        Invert(self.0.child(key), PhantomData)
     }
 }
