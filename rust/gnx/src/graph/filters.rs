@@ -19,7 +19,7 @@ pub trait Filter<L: Leaf>: Clone {
     fn child<'s>(&'s self, key: KeyRef<'s>) -> Self::ChildFilter<'s>;
 
     // helpers
-    fn invert(self) -> Invert<L, Self> {
+    fn inv(self) -> Invert<L, Self> {
         Invert(self, PhantomData)
     }
 }
