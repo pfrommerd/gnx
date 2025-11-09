@@ -1,7 +1,9 @@
 use std::fmt::Display;
 use std::marker::PhantomData;
 
+use gnx::array::Array;
 use gnx::util::Error;
+use gnx::graph::{GraphId, GraphContext};
 
 use crate::*;
 
@@ -23,6 +25,19 @@ impl<'a, E: Expecting> Display for Expected<'a, E> {
 #[rustfmt::skip]
 pub trait DesVisitor<'de> : Sized + Expecting {
     type Value;
+
+    fn visit_shared<D: GraphDeserializer<'de>>(self, id: GraphId, inner: D, ctx: &mut GraphContext) -> Result<Self::Value, D::Error> {
+        let _ = (id, ctx);
+        inner.deserialize_any(self)
+    }
+    fn visit_hinted<H: GraphDeserialize<'de>, D: GraphDeserializer<'de>>(self, hint: H, value: D) -> Result<Self::Value, D::Error> {
+        let _ = hint;
+        value.deserialize_any(self)
+    }
+
+    fn visit_array<E: Error>(self, array: Array) -> Result<Self::Value, E> {
+        Err(Error::invalid_type(Some(array.shape().to_string()), "array", Expected(&self)))
+    }
 
     fn visit_bool<E: Error>(self, v: bool) -> Result<Self::Value, E> {
         Err(Error::invalid_type(Some(v), "bool", Expected(&self)))
