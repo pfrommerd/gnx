@@ -16,10 +16,10 @@ pub use source::*;
 pub use views::*;
 pub use visitors::*;
 
+use crate::util::Error;
 pub use gnx_derive::{Graph, Leaf};
 
 use std::borrow::Borrow;
-use std::error::Error;
 
 pub trait Builder<L: Leaf>: Clone {
     type Graph: Graph + Clone + 'static;
@@ -107,6 +107,7 @@ pub enum GraphError {
     MissingChild,
     MissingLeaf,
     MissingNode,
+    Custom(String),
     Other,
 }
 
@@ -132,9 +133,15 @@ impl std::fmt::Display for GraphError {
             GraphError::MissingChild => write!(f, "Missing child of node"),
             GraphError::MissingNode => write!(f, "Not a node!"),
             GraphError::MissingLeaf => write!(f, "Not a leaf!"),
+            GraphError::Custom(v) => write!(f, "{}", v),
             GraphError::Other => write!(f, "Other"),
         }
     }
 }
-
 impl std::error::Error for GraphError {}
+
+impl Error for GraphError {
+    fn custom<T: std::fmt::Display>(msg: T) -> Self {
+        GraphError::Custom(msg.to_string())
+    }
+}

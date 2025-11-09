@@ -18,8 +18,6 @@ pub trait GraphEq {
         F: Filter<L>;
 }
 
-pub trait GraphSerialize {}
-
 // Derive Hash for builtin types
 
 macro_rules! derive_traits {

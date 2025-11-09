@@ -1,0 +1,6 @@
+{
+
+    "rust-analyzer.cargo.extraEnv": {
+        "VIRTUAL_ENV": "${workspaceFolder}/python/.venv",
+    }
+}

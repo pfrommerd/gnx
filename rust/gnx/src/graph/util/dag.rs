@@ -173,7 +173,32 @@ impl<I: Leaf> Node for Dag<I> {
         filter: F,
         visitor: V,
     ) -> V::Output {
-        todo!()
+        match self {
+            Dag::Node(DagNode::Map(children)) => {
+                let mut v = visitor;
+                for (k, child) in children {
+                    let child = match child {
+                        DagChild::Owned(v) => v,
+                        DagChild::Shared(v) => v.as_ref(),
+                    };
+                    v.visit_child(k.as_ref(), View::new(child, filter.child(k.as_ref())));
+                }
+                v.finish()
+            }
+            Dag::Node(DagNode::List(children)) => {
+                let mut v = visitor;
+                for (i, child) in children.iter().enumerate() {
+                    let child = match child {
+                        DagChild::Owned(v) => v,
+                        DagChild::Shared(v) => v.as_ref(),
+                    };
+                    let k = KeyRef::Index(i);
+                    v.visit_child(k, View::new(child, filter.child(k)));
+                }
+                v.finish()
+            }
+            _ => visitor.finish(),
+        }
     }
     fn visit_into_children<L, F, C>(self, filter: F, consumer: C) -> C::Output
     where
@@ -181,7 +206,34 @@ impl<I: Leaf> Node for Dag<I> {
         F: Filter<L>,
         C: ChildrenConsumer<Self, L>,
     {
-        todo!()
+        match self {
+            Dag::Node(DagNode::Map(children)) => {
+                let mut c = consumer;
+                for (k, child) in children {
+                    let sk = k.clone();
+                    let f = filter.child(sk.as_ref());
+                    match child {
+                        DagChild::Owned(v) => c.consume_child(k, Bound::new(v, f)),
+                        DagChild::Shared(v) => c.consume_child(k, Bound::new(v.as_ref(), f)),
+                    };
+                }
+                c.finish()
+            }
+            Dag::Node(DagNode::List(children)) => {
+                let mut c = consumer;
+                for (i, child) in children.into_iter().enumerate() {
+                    let (k, kr) = (Key::Index(i), KeyRef::Index(i));
+                    match child {
+                        DagChild::Owned(v) => c.consume_child(k, Bound::new(v, filter.child(kr))),
+                        DagChild::Shared(v) => {
+                            c.consume_child(k, Bound::new(v.as_ref(), filter.child(kr)))
+                        }
+                    };
+                }
+                c.finish()
+            }
+            _ => consumer.finish(),
+        }
     }
 }
 impl<I: Leaf> TypedGraph<I> for Dag<I> {}

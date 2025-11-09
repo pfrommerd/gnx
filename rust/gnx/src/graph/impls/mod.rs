@@ -3,7 +3,7 @@
 use super::*;
 
 mod containers;
-mod rc;
+mod refs;
 
 use gnx_derive::impl_leaf;
 
