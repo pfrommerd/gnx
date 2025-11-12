@@ -19,55 +19,51 @@ pub unsafe trait BorrowedBuf<'s> {
     unsafe fn commit(self, filled: usize, init: usize) -> Result<()>;
 }
 
+fn _slice_len(slice: &[MaybeUninit<u8>]) -> usize {
+    slice.len()
+}
+
+unsafe impl<'s> BorrowedBuf<'s> for &'s mut [MaybeUninit<u8>] {
+    fn len(&self) -> usize { _slice_len(self) }
+    unsafe fn as_mut<'r>(&'r mut self) -> &'r mut [MaybeUninit<u8>] { self }
+    unsafe fn into_mut(self) -> &'s mut [MaybeUninit<u8>] { self }
+    unsafe fn commit(self, _filled: usize, _init: usize) -> Result<()> { Ok(()) }
+}
+
 // Wraps a BorrowedBuf and provides a safe way to fill it
 // and keep track of the filled and initialized bytes.
 pub struct Cursor<B> {
     buf: B,
     filled: usize,
     init: usize,
-    capacity: usize,
 }
 
 impl<'s, B: BorrowedBuf<'s>> Cursor<B> {
     pub fn new(
         buf: B,
     ) -> Self {
-        let capacity = buf.len();
-        Self { buf, filled: 0, init: 0, capacity }
+        Self { buf, filled: 0, init: 0 }
     }
 
     pub unsafe fn with_filled(
         buf: B,
         filled: usize,
+        init: usize,
     ) -> Self {
         let capacity = buf.len();
         let filled = filled.min(capacity);
-        Self { buf, filled, init: 0, capacity }
+        let init = init.min(capacity);
+        Self { buf, filled, init }
     }
+
+    pub fn capacity(&self) -> usize { self.buf.len() }
+    pub fn filled_len(&self) -> usize { self.filled }
+    pub fn unfilled_len(&self) -> usize { self.capacity() - self.filled }
 
     pub fn commit(self) -> Result<()> {
         unsafe {
             self.buf.commit(self.filled, self.init)
         }
-    }
-
-    pub fn shrink(&mut self, capacity: usize) -> &mut Self {
-        self.filled = self.filled.min(capacity);
-        self.init = self.init.min(capacity);
-        self.capacity = capacity;
-        self
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-    pub fn filled(&self) -> usize {
-        self.filled
-    }
-
-    pub fn rewind(&mut self, amt: usize) -> &mut Self {
-        self.filled = usize::saturating_sub(self.filled, amt);
-        self
     }
 
     pub fn clear(&mut self) -> &mut Self {
@@ -178,6 +174,36 @@ unsafe impl<'s, B: BorrowedBuf<'s>> BorrowedBuf<'s> for LimitedBuf<'s, B> {
             *self.total_filled = *self.total_filled + filled;
             self.buffer.commit(filled, init)
         }
+    }
+}
+
+pub struct LimitedSink<S: DataSink> {
+    sink: S,
+    total_filled: usize,
+    total_limit: usize,
+}
+
+impl<S: DataSink> DataSink for LimitedSink<S> {
+    type Output = S::Output;
+    type BorrowedBuf<'s> = LimitedBuf<'s, S::BorrowedBuf<'s>> where Self: 's;
+
+    fn is_full(&self) -> bool {
+        self.total_filled >= self.total_limit
+    }
+    fn cursor(&mut self) -> Cursor<Self::BorrowedBuf<'_>> {
+        let cursor = self.sink.cursor();
+        let buf = LimitedBuf { buffer: cursor.buf, total_filled: &mut self.total_filled, total_limit: self.total_limit };
+        let init = cursor.init.min(buf.len());
+        let filled = cursor.filled.min(buf.len());
+        // SAFETY: LimitedBuf does not
+        // change the bytes of the underlying buffer.
+        unsafe { Cursor::with_filled(buf, init, filled) }
+    }
+    fn rejected(&mut self) -> Option<&[u8]> {
+        self.sink.rejected()
+    }
+    fn finish(self) -> Result<Self::Output> {
+        self.sink.finish()
     }
 }
 
@@ -331,8 +357,7 @@ impl<S: BorrowMut<String>> DataSink for StringSink<S> {
         } else { 0 };
 
         let buf = StringBuf::new(s, &mut self.remainder, &mut self.remainder_len);
-        
-        unsafe { Cursor::with_filled(buf, remainder) }
+        unsafe { Cursor::with_filled(buf, remainder, remainder) }
     }
     // Look at the remainder for rejected bytes.
     fn rejected(&mut self) -> Option<&[u8]> {

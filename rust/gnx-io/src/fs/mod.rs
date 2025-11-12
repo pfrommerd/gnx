@@ -13,7 +13,30 @@ pub use buffer::*;
 pub mod local;
 
 pub trait Read {
-    fn read<T: ReadTarget>(&mut self, target: T) -> Result<T::Output>;
+    fn read_buf<'s, B: BorrowedBuf<'s>>(&mut self, cursor: &mut Cursor<B>) -> Result<()>;
+    // Try and put back some number of bytes.
+    fn try_put_back(&mut self, buf: &[u8]) -> Result<()>; 
+
+    fn read<T: ReadTarget>(&mut self, target: T) -> Result<T::Output> {
+        let mut sink = target.into_sink();
+        while !sink.is_full() {
+            let mut cursor = sink.cursor();
+            let prev_filled = cursor.filled_len();
+            self.read_buf(&mut cursor)?;
+            let delta = cursor.filled_len() - prev_filled;
+            // Commit any bytes read into the sink.
+            cursor.commit()?;
+            // EOF if no bytes were read.
+            if delta == 0 { break }
+        }
+        // If the sink is full, check if any bytes were rejected
+        // and try to put them back.
+        if sink.is_full() && let Some(rejected) = sink.rejected() {
+            self.try_put_back(rejected)?;
+        }
+        sink.finish()
+    }
+
     fn as_std<'s>(&'s mut self) -> AsStdReader<'s, Self> { AsStdReader(self) }
 }
 
