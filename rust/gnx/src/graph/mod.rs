@@ -84,6 +84,9 @@ pub trait Leaf: TypedGraph<Self, Owned = Self> + Clone + 'static {
     fn try_into_value<V: 'static>(self) -> Result<V, Self>;
 }
 
+pub trait OwnedGraph: Graph<Owned=Self> + Clone + 'static {}
+impl<T: Graph<Owned=Self> + Clone + 'static> OwnedGraph for T {}
+
 pub enum LeafCow<'l, L: Leaf + 'l> {
     Borrowed(L::Ref<'l>),
     Owned(L),

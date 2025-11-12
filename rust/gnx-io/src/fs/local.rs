@@ -29,9 +29,10 @@ impl LocalFs {
     }
 }
 
+
 impl Origin for LocalFs {
-    type Reader = BufReader<File>;
-    type Writer = BufWriter<File>;
+    type Reader = StdReader<BufReader<File>>;
+    type Writer = StdWriter<BufWriter<File>>;
     type Resource<'s> = LocalResource<'s> where Self: 's;
 
     fn get<'s>(&'s self, path: &Path) -> Result<Self::Resource<'s>> {

@@ -5,5 +5,4 @@ edition = "2024"
 
 [dependencies]
 gnx = { version = "0.1.0", path = "../gnx" }
-logos = "0.15.1"
 ordered-float = "5.1.0"

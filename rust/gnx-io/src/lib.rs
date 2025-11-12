@@ -4,10 +4,9 @@ mod serialize;
 mod visitor;
 
 pub mod fs;
-pub use fs::{Origin, Resource};
+pub use fs::{Origin, Resource, Read, Write, TargetBuffer};
 
 pub mod json;
-
 pub use deserialize::*;
 pub use serialize::*;
 pub use visitor::*;
