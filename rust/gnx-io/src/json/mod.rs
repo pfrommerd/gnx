@@ -20,11 +20,3 @@ impl gnx::util::Error for JsonError {
         Self::Other(msg.to_string())
     }
 }
-
-pub trait JsonParser<'s> {
-    fn next<'p>(&'p mut self) -> Result<Option<ParsedToken<'s, 'p>>>;
-}
-
-// impl<'s, P: JsonParser<'s>> GraphDeserializer<'s> for P {
-
-// }

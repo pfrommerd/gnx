@@ -31,8 +31,8 @@ impl LocalFs {
 
 
 impl Origin for LocalFs {
-    type Reader = StdReader<BufReader<File>>;
-    type Writer = StdWriter<BufWriter<File>>;
+    type Reader = File;
+    type Writer = File;
     type Resource<'s> = LocalResource<'s> where Self: 's;
 
     fn get<'s>(&'s self, path: &Path) -> Result<Self::Resource<'s>> {
@@ -72,7 +72,7 @@ impl<'origin> Resource<'origin> for LocalResource<'origin> {
             .write(true)
             .truncate(true)
             .open(&self.path)?;
-        Ok(BufWriter::new(file))
+        Ok(file)
     }
 
     fn append(&self) -> Result<<Self::Origin as Origin>::Writer> {
@@ -84,11 +84,11 @@ impl<'origin> Resource<'origin> for LocalResource<'origin> {
             .write(true)
             .append(true)
             .open(&self.path)?;
-        Ok(BufWriter::new(file))
+        Ok(file)
     }
 
     fn read(&self) -> Result<<Self::Origin as Origin>::Reader> {
         let file = File::open(&self.path)?;
-        Ok(BufReader::new(file))
+        Ok(file)
     }
 }

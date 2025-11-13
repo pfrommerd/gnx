@@ -1,8 +1,8 @@
 use ordered_float::NotNan;
 
-use std::io::Result;
-use crate::Read;
 use super::JsonParser;
+use std::io::{Error, ErrorKind, Result};
+use crate::{Read, Write};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Token<'s> {
@@ -38,14 +38,45 @@ impl<'s> JsonParser<'s> for SourceJsonParser<'s> {
 
 pub struct StreamJsonParser<R: Read> {
     stream: R,
-    buffer: String
+    buffer: String,
 }
 
 impl<R: Read> StreamJsonParser<R> {
     pub fn new(stream: R) -> Self {
-        Self {
-            stream,
-            buffer: String::new(),
+        Self { stream, buffer: String::new() }
+    }
+}
+
+impl<'s, R: Read> JsonParser<'s> for StreamJsonParser<R> {
+    fn next<'p>(&'p mut self) -> Result<Option<ParsedToken<'s, 'p>>> {
+        let buf = self.stream.fill_buf()?;
+        let mut consumed = 0;
+        if let Some(chunk) = buf.utf8_chunks().next() {
+            if chunk.valid().is_empty() && !chunk.invalid().is_empty() {
+                return Err(Error::new(ErrorKind::InvalidData, "Invalid UTF-8"));
+            }
+            let chunk = chunk.valid();
+            let trimmed = chunk.trim_start();
+            consumed += chunk.len() - trimmed.len();
+            if trimmed.is_empty() {
+                self.stream.consume(consumed);
+                return Ok(None);
+            }
+            match chunk.chars().next().unwrap() {
+                '{' => {
+                    self.stream.consume(consumed + 1);
+                    Ok(Some(ParsedToken::Borrowed(Token::LBrace)))
+                }
+                // A string token
+                '"' => {
+
+                },
+                _ => {
+                    Err(Error::new(ErrorKind::InvalidData, "Invalid JSON"))
+                }
+            }
+        } else {
+            Ok(None)
         }
     }
 }
