@@ -19,8 +19,10 @@ impl<R: PeekRead> PeekRead for &mut R {
 }
 
 // TODO: This is a placeholder implementation
-// and slightly inefficient as it uses a fully 
-// initialized buffer.
+// which is inefficient as it always uses a fully 
+// initialized buffer. To do this efficiently, we require
+// the unstable read_buf feature of the std library such
+// that R can read into an uninitialized buffer.
 pub struct BufReader<R: Read> {
     reader: R,
     buffer: Vec<u8>,

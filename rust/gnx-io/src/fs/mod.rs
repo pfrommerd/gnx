@@ -27,19 +27,3 @@ pub trait Resource<'origin> {
 
     fn read(&self) -> Result<<Self::Origin as Origin>::Reader>;
 }
-
-
-
-
-// A wrapper around std::io::Read that
-// 
-pub struct StdRead<R: std::io::Read> {
-    reader: R,
-    buffer: Vec<u8>
-}
-
-impl<R: std::io::Read> Read for StdRead<R> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.reader.read(buf)
-    }
-}

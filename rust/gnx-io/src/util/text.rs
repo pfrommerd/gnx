@@ -1,17 +1,53 @@
-use std::io::{Result, Error, ErrorKind};
+use std::io::{Error, ErrorKind, Result};
 
+use super::scratch::{ScratchBuffer, ScratchRange, ScratchSlice, ScratchRangeBuilder};
 use super::peek::PeekRead;
 
-pub enum Text<'src, 'tmp> {
+pub enum Text<'src, 'buf> {
     Source(&'src str),
-    Temporary(&'tmp str)
+    Scratch(ScratchRange<'buf, str>),
+    Owned(String)
+}
+
+impl<'src, 'buf> Text<'src, 'buf> {
+    pub fn as_ref<'owned>(&'owned self) -> TextRef<'src, 'buf, 'owned> {
+        match self {
+            Text::Source(s) => TextRef::Source(s),
+            Text::Scratch(s) => TextRef::Scratch(s.borrow()),
+            Text::Owned(s) => TextRef::Owned(&s),
+        }
+    }
+}
+
+pub enum TextRef<'src, 'buf, 'owned> {
+    Source(&'src str),
+    Scratch(ScratchSlice<'buf, str>),
+    Owned(&'owned str)
 }
 
 impl<'src, 'tmp> Text<'src, 'tmp> {
-    pub fn as_str<'a>(&self) -> &'a str  where 'src: 'a, 'tmp: 'a {
+    pub fn pop(self) -> (Self, Option<char>) {
         match self {
-            Text::Source(s) => s,
-            Text::Temporary(s) => s,
+            Text::Source(s) => {
+                let mut chars =s.chars();
+                let c = chars.next_back();
+                (Text::Source(chars.as_str()), c)
+            }
+            Text::Scratch(mut s) => {
+                let c = s.pop(); // pop a char from the end of the range
+                (Text::Scratch(s), c)
+            }
+            Text::Owned(mut s) => {
+                let c = s.pop();
+                (Text::Owned(s), c)
+            }
+        }
+    }
+    pub fn into_string(self) -> String {
+        match self {
+            Text::Source(s) => s.to_string(),
+            Text::Scratch(s) => s.borrow().to_string(),
+            Text::Owned(s) => s
         }
     }
 }
@@ -43,6 +79,11 @@ pub trait TextSource<'src> {
         // Call the safe version by default.
         let _ = self.skip_bytes(n);
     }
+    // Start buffering raw source bytes.
+    type Buffering<'s, 'tmp> : TextSource<'src> + Into<Text<'src, 'tmp>> where Self: 's + 'tmp;
+    // Self must live as long as either the borrow on self or the borrow on the scratch buffer.
+    // This way an implementation can use an internal buffer instead of the scratch buffer, if needed.
+    fn buffering<'s, 'tmp>(&'s mut self, scratch: &'tmp ScratchBuffer<str>) -> Self::Buffering<'s, 'tmp> where Self: 's + 'tmp;
 
     // Peek a character and then call the provided function. If the function returns true
     // and the character is Some, we will also consume the character.
@@ -78,18 +119,15 @@ pub trait TextSource<'src> {
         Ok(result)
     }
 
-    // Start buffering raw source bytes.
-    type Buffering<'s: 'tmp, 'tmp> : TextSource<'tmp> + Into<Text<'src, 'tmp>> where Self: 's;
-    // The borrow on self must be as long as the borrow on the scratch buffer
-    // so that we can use an internal buffer instead of the scratch buffer, if needed.
-    fn buffering<'s: 'tmp, 'tmp>(&'s mut self, scratch: &'tmp mut Vec<u8>) -> Self::Buffering<'s, 'tmp>;
 }
 
 // Utility functions for consuming characters from a &[u8]
 // TODO: These potentially valid the entire buffer, which is inefficient.
 fn _next_char(data: &[u8]) -> Result<Option<(usize, char)>> {
     if data.is_empty() { return Ok(None); }
-    let width = match data[0] {
+    // SAFETY data is not empty
+    let first_byte = unsafe { *data.get_unchecked(0) };
+    let width = match first_byte {
         0x00..=0x7F => 1,
         0xC2..=0xDF => 2,
         0xE0..=0xEF => 3,
@@ -99,30 +137,33 @@ fn _next_char(data: &[u8]) -> Result<Option<(usize, char)>> {
     if data.len() < width {
         return Err(Error::new(ErrorKind::InvalidData, "Invalid UTF-8"));
     }
-    // We have checked the width, but not that the rest of the data is valid UTF-8.
-    let string = std::str::from_utf8(&data[width..]).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+    // We have checked the width, but not that payload is valid UTF-8.
+    let string = std::str::from_utf8(&data[..width]).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
     let char = string.chars().next().unwrap();
     Ok(Some((width, char)))
 }
 // Returns up to n characters from the data.
 fn _next_chars(data: &[u8], n: usize) -> Result<&str> {
-    if data.len() == 0 { return Ok(&""); }
+    if data.is_empty() { return Ok(&""); }
     // Figure out how many bytes to slice.
     let mut idx = 0;
     let mut count = 0;
     while count < n && idx < data.len() {
-        let width = match data[idx] {
+        // SAFETY: idx is a valid index into data
+        let next_byte = unsafe { *data.get_unchecked(idx) };
+        let width = match next_byte {
             0x00..=0x7F => 1,
             0xC2..=0xDF => 2,
             0xE0..=0xEF => 3,
             0xF0..=0xF4 => 4,
             _ => return Err(Error::new(ErrorKind::InvalidData, "Invalid UTF-8")),
         };
-        idx += width;
+        // SAFETY: ensure that idx does not go past the end of the data
+        idx = std::cmp::min(idx + width, data.len());
         count += 1;
     }
-    // Get the first count characters from the data as 
-    let string = std::str::from_utf8(&data[idx..]).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+    // Parse as a UTF-8 string
+    let string = std::str::from_utf8(&data[..idx]).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
     Ok(string)
 }
 
@@ -157,17 +198,7 @@ impl<'src, R: PeekRead> TextSource<'src> for IoSource<R> {
             // Consume up to buf bytes or n - skipped bytes, whichever is less.
             let amt = std::cmp::min(n - skipped, buf.len());
             // Validate that the skipped bytes are valid UTF-8.
-            // SAFETY: Since 0 < amt <= buf.len(), there will always be a utf8-chunk
-            //         and we can slice + unwrap() safely.
-            let chunk = unsafe { buf.get_unchecked(..amt).utf8_chunks().next().unwrap_unchecked() };
-            // If the next bytes are not valid UTF-8, return an error.
-            if chunk.valid().is_empty() && !chunk.invalid().is_empty() {
-                let valid_amt = chunk.valid().len();
-                self.reader.consume(valid_amt);
-                return Err(Error::new(ErrorKind::InvalidData, "Invalid UTF-8"));
-            }
-            // Reduces amt to the length of the valid bytes.
-            let amt = chunk.valid().len();
+            std::str::from_utf8(&buf[..amt]).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
             self.reader.consume(amt);
             skipped += amt;
         }
@@ -196,35 +227,32 @@ impl<'src, R: PeekRead> TextSource<'src> for IoSource<R> {
         _next_chars(ahead, n)
     }
 
-    type Buffering<'s: 'tmp, 'tmp> = IoSourceBuf<'tmp, &'s mut R> where Self: 's;
-    fn buffering<'s: 'tmp, 'tmp>(&'s mut self, scratch: &'tmp mut Vec<u8>) -> Self::Buffering<'s, 'tmp> {
-        let buffer_start = scratch.len();
-        IoSourceBuf { reader: &mut self.reader, buffer: scratch, buffer_start }
+    type Buffering<'s,'tmp> = IoSourceBuf<'s, 'tmp, R> where Self: 's + 'tmp;
+    fn buffering<'s, 'tmp>(&'s mut self, scratch: &'tmp ScratchBuffer<str>) -> Self::Buffering<'s, 'tmp> where Self: 's + 'tmp {
+        IoSourceBuf { reader: &mut self.reader, scratch, consumer: scratch.start() }
     }
 }
 
-pub struct IoSourceBuf<'buf, R: PeekRead> {
-    reader: R,
-    buffer: &'buf mut Vec<u8>,
-    // Offset into the vector where the buffered data starts.
-    // useful for nested buffering.
-    buffer_start: usize,
+pub struct IoSourceBuf<'p, 'tmp, R: PeekRead> {
+    reader: &'p mut R,
+    scratch: &'tmp ScratchBuffer<str>,
+    consumer: ScratchRangeBuilder<'tmp, str>,
 }
 
-impl<'tmp, 'src, R: PeekRead> Into<Text<'src, 'tmp>> for IoSourceBuf<'tmp, R> {
-    fn into(self) -> Text<'src, 'tmp> {
-        Text::Temporary(std::str::from_utf8(&self.buffer[self.buffer_start..]).unwrap())
+impl<'p, 'buf, 'src, R: PeekRead> Into<Text<'src, 'buf>> for IoSourceBuf<'p, 'buf, R> {
+    fn into(self) -> Text<'src, 'buf> {
+        Text::Scratch(self.consumer.end())
     }
 }
 
-impl<'src, 'buf, R: PeekRead> TextSource<'src> for IoSourceBuf<'buf, R> {
+impl<'p, 'buf, 'src, R: PeekRead> TextSource<'src> for IoSourceBuf<'p, 'buf, R> {
     // Buffering versions of next, skip for IoSourceBuf
     fn next(&mut self) -> Result<Option<char>> {
         let ahead = self.reader.peek(4)?;
         match _next_char(ahead)? {
             Some((len, char)) => {
                 // copy len bytes to the buffer
-                self.buffer.extend_from_slice(&ahead[..len]);
+                self.scratch.push_char(char);
                 self.reader.consume(len);
                 Ok(Some(char))
             }
@@ -242,7 +270,8 @@ impl<'src, 'buf, R: PeekRead> TextSource<'src> for IoSourceBuf<'buf, R> {
             // Consume up to buf bytes or n - skipped bytes, whichever is less.
             let amt = std::cmp::min(n - skipped, buf.len());
             // copy amt bytes to the buffer
-            self.buffer.extend_from_slice(&buf[..amt]);
+            let s = std::str::from_utf8(&buf[..amt]).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+            self.scratch.extend_from_str(s);
             // mark the bytes as read
             self.reader.consume(amt);
             skipped += amt;
@@ -262,10 +291,9 @@ impl<'src, 'buf, R: PeekRead> TextSource<'src> for IoSourceBuf<'buf, R> {
     }
     // Ignore the scratch buffer, we use the same one so that the parent buffering 
     // operation captures the buffer correctly.
-    type Buffering<'s: 'tmp, 'tmp> = IoSourceBuf<'tmp, &'s mut R> where Self: 's;
-    fn buffering<'s: 'tmp, 'tmp>(&'s mut self, _scratch: &'tmp mut Vec<u8>) -> Self::Buffering<'s, 'tmp> {
-        let buffer_start = self.buffer.len();
-        IoSourceBuf { reader: &mut self.reader, buffer: self.buffer, buffer_start }
+    type Buffering<'s, 'tmp> = IoSourceBuf<'s, 'tmp, R> where Self: 's + 'tmp;
+    fn buffering<'s, 'tmp>(&'s mut self, _scratch: &'tmp ScratchBuffer<str>) -> Self::Buffering<'s, 'tmp> where Self: 's + 'tmp {
+        IoSourceBuf { reader: &mut self.reader, scratch: self.scratch, consumer: self.scratch.start() }
     }
 }
 
@@ -279,10 +307,102 @@ pub struct RawSourceBuf<'p, 'src> {
     buffer_start: usize,
 }
 
+
+impl<'src> From<&'src [u8]> for RawSource<'src> {
+    fn from(data: &'src [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+}
+
+impl<'src> RawSource<'src> {
+    fn remaining(&self) -> &'src [u8] {
+        unsafe { &self.data.get_unchecked(self.pos..) }
+    }
+}
+
+impl<'src> TextSource<'src> for RawSource<'src> {
+    fn next(&mut self) -> Result<Option<char>> {
+        match _next_char(self.remaining())? {
+            Some((len, char)) => {
+                self.pos += len;
+                Ok(Some(char))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn peek(&mut self) -> Result<Option<char>> {
+        Ok(_next_char(self.remaining())?.map(|(_, char)| char))
+    }
+
+    fn peek_chars(&mut self, n: usize) -> Result<&str> {
+        _next_chars(self.remaining(), n)
+    }
+
+    fn skip_bytes(&mut self, n: usize) -> Result<()> {
+        if n == 0 { return Ok(()); }
+        if self.pos + n > self.data.len() {
+            return Err(Error::new(ErrorKind::UnexpectedEof, "EOF while skipping bytes"));
+        }
+        // SAFETY: self.pos is a valid start index and self.pos + n is a valid end index.
+        let skipped = unsafe { self.data.get_unchecked(self.pos..self.pos + n) };
+        // Validate that the skipped bytes are valid UTF-8
+        std::str::from_utf8(skipped).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        self.pos += n;
+        Ok(())
+    }
+
+    unsafe fn skip_bytes_unchecked(&mut self, n: usize) {
+        // SAFETY: The caller has verified that n is a valid 
+        // offset to advance us by in self.data
+        self.pos += n;
+    }
+
+    type Buffering<'s, 'tmp> = RawSourceBuf<'s, 'src> where Self: 's + 'tmp;
+    fn buffering<'s, 'tmp>(&'s mut self, _scratch: &'tmp ScratchBuffer<str>) -> Self::Buffering<'s, 'tmp>
+            where Self: 's + 'tmp {
+        // SAFETY: self.pos is a valid index into self.data
+        let buffer_start = self.pos;
+        RawSourceBuf { parent: self, buffer_start }
+    }
+}
+
+impl<'tmp, 'src, 'p> Into<Text<'src, 'tmp>> for RawSourceBuf<'p, 'src> {
+    fn into(self) -> Text<'src, 'tmp> {
+        // SAFETY: We know that buffer_start is a valid UTF-8 index 
+        // into self.parent.data and that self.parent.pos 
+        // is also a valid UTF-8 index.
+        let buffered = unsafe { std::str::from_utf8_unchecked(
+            self.parent.data.get_unchecked(self.buffer_start..self.parent.pos))
+        };
+        Text::Source(buffered)
+    }
+}
+
+impl<'src, 'p> TextSource<'src> for RawSourceBuf<'p, 'src> {
+    fn next(&mut self) -> Result<Option<char>> { self.parent.next() }
+    fn peek(&mut self) -> Result<Option<char>> { self.parent.peek() }
+    fn peek_chars(&mut self, n: usize) -> Result<&str> { self.parent.peek_chars(n) }
+    fn skip_bytes(&mut self, n: usize) -> Result<()> { self.parent.skip_bytes(n) }
+
+    unsafe fn skip_bytes_unchecked(&mut self, n: usize) {
+        // SAFETY: The caller has verified that n is a valid 
+        // offset to advance us by in self.parent.data.
+        unsafe { self.parent.skip_bytes_unchecked(n); }
+    }
+
+    type Buffering<'s, 'tmp> = RawSourceBuf<'s, 'src> where Self: 's + 'tmp;
+    fn buffering<'s, 'tmp>(&'s mut self, _scratch: &'tmp ScratchBuffer<str>) -> Self::Buffering<'s, 'tmp>
+            where Self: 's + 'tmp {
+        let buffer_start = self.parent.pos;
+        RawSourceBuf { parent: self.parent, buffer_start }
+    }
+}
+
 pub struct RawStrSource<'src> {
     // The original data that we are consuming from.
     data: &'src str,
-    left: &'src str,
+    pos: usize,
 }
 
 pub struct RawStrSourceBuf<'p, 'src> {
@@ -290,8 +410,102 @@ pub struct RawStrSourceBuf<'p, 'src> {
     buffer_start: usize,
 }
 
-impl<'src> From<&'src [u8]> for RawSource<'src> {
-    fn from(data: &'src [u8]) -> Self {
+impl<'src> From<&'src str> for RawStrSource<'src> {
+    fn from(data: &'src str) -> Self {
         Self { data, pos: 0 }
+    }
+}
+
+impl<'src> RawStrSource<'src> {
+    fn remaining(&self) -> &'src str {
+        // SAFETY: self.pos is a valid UTF-8 index into self.data
+        unsafe { self.data.get_unchecked(self.pos..) }
+    }
+}
+
+impl<'src> TextSource<'src> for RawStrSource<'src> {
+    fn next(&mut self) -> Result<Option<char>> {
+        let mut chars = self.remaining().char_indices();
+        match chars.next() {
+            Some((_, ch)) => {
+                let next_idx = chars.offset();
+                // SAFETY: pos remains a valid UTF-8 index into self.data
+                self.pos += next_idx;
+                Ok(Some(ch))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn peek(&mut self) -> Result<Option<char>> {
+        Ok(self.remaining().chars().next())
+    }
+
+    fn peek_chars(&mut self, n: usize) -> Result<&str> {
+        // Count up to n chars into the remaining string.
+        let remaining = self.remaining();
+        let mut chars = remaining.char_indices();
+        // Consume up to n chars
+        (&mut chars).take(n).last();
+        let offset = chars.offset();
+        // SAFETY: we have verified that offset is a valid UTF-8 index into remaining
+        let slice = unsafe { remaining.get_unchecked(..offset) };
+        Ok(slice)
+    }
+
+    fn skip_bytes(&mut self, n: usize) -> Result<()> {
+        if n == 0 { return Ok(()); }
+        if self.pos + n > self.data.len() {
+            return Err(Error::new(ErrorKind::UnexpectedEof, "EOF while skipping bytes"));
+        }
+        // Verify that we are moving to a valid UTF-8 index.
+        self.data.get(self.pos + n..).ok_or_else(
+            || Error::new(ErrorKind::InvalidData, "Invalid UTF-8")
+        )?;
+        // SAFETY: self.pos + n is a valid UTF-8 index into self.data
+        self.pos += n;
+        Ok(())
+    }
+
+    unsafe fn skip_bytes_unchecked(&mut self, n: usize) {
+        // SAFETY: self.pos + n is a valid UTF-8 index into self.data
+        self.pos += n;
+    }
+
+    type Buffering<'s, 'tmp> = RawStrSourceBuf<'s, 'src> where Self: 's + 'tmp;
+    fn buffering<'s, 'tmp>(&'s mut self, _scratch: &'tmp ScratchBuffer<str>)
+            -> Self::Buffering<'s, 'tmp> where Self: 's + 'tmp {
+        let buffer_start = self.pos;
+        RawStrSourceBuf { parent: self, buffer_start }
+    }
+}
+
+impl<'tmp, 'src, 'p> Into<Text<'src, 'tmp>> for RawStrSourceBuf<'p, 'src> {
+    fn into(self) -> Text<'src, 'tmp> {
+        // SAFETY: We know that buffer_start and self.parent.pos are valid UTF-8 indices
+        // into self.parent.data (they were calculated from string slice positions)
+        let buffered = unsafe {
+            self.parent.data.get_unchecked(self.buffer_start..self.parent.pos)
+        };
+        Text::Source(buffered)
+    }
+}
+
+impl<'src, 'p> TextSource<'src> for RawStrSourceBuf<'p, 'src> {
+    fn next(&mut self) -> Result<Option<char>> { self.parent.next() }
+    fn peek(&mut self) -> Result<Option<char>> { self.parent.peek() }
+    fn peek_chars(&mut self, n: usize) -> Result<&str> { self.parent.peek_chars(n) }
+    fn skip_bytes(&mut self, n: usize) -> Result<()> { self.parent.skip_bytes(n) }
+    unsafe fn skip_bytes_unchecked(&mut self, n: usize) {
+        // SAFETY: The caller has verified that n is a valid byte offset
+        unsafe { self.parent.skip_bytes_unchecked(n); }
+    }
+
+    type Buffering<'s, 'tmp> = RawStrSourceBuf<'s, 'src> where Self: 's + 'tmp;
+    fn buffering<'s, 'tmp>(&'s mut self, _scratch: &'tmp ScratchBuffer<str>)
+            -> Self::Buffering<'s, 'tmp> where Self: 's + 'tmp {
+        // SAFETY: self.parent.pos is a valid UTF-8 index into self.parent.data
+        let buffer_start = self.parent.pos;
+        RawStrSourceBuf { parent: self.parent, buffer_start }
     }
 }
