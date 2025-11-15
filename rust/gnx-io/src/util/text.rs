@@ -1,4 +1,12 @@
 use std::io::{Error, ErrorKind, Result};
+use std::io::{Seek, SeekFrom};
+
+use std::hash::Hash;
+use std::fmt::{Debug, Display};
+
+use std::ops::Deref;
+
+use crate::DataVisitor;
 
 use super::scratch::{ScratchBuffer, ScratchRange, ScratchSlice, ScratchRangeBuilder};
 use super::peek::PeekRead;
@@ -10,22 +18,25 @@ pub enum Text<'src, 'buf> {
 }
 
 impl<'src, 'buf> Text<'src, 'buf> {
-    pub fn as_ref<'owned>(&'owned self) -> TextRef<'src, 'buf, 'owned> {
+    pub fn borrow<'owned>(&'owned self) -> TextRef<'src, 'buf, 'owned> {
         match self {
             Text::Source(s) => TextRef::Source(s),
             Text::Scratch(s) => TextRef::Scratch(s.borrow()),
             Text::Owned(s) => TextRef::Owned(&s),
         }
     }
-}
 
-pub enum TextRef<'src, 'buf, 'owned> {
-    Source(&'src str),
-    Scratch(ScratchSlice<'buf, str>),
-    Owned(&'owned str)
-}
-
-impl<'src, 'tmp> Text<'src, 'tmp> {
+    pub fn visit<V: DataVisitor<'src>, E: gnx::util::Error>(self, visitor: V)
+            -> std::result::Result<V::Value, E> {
+        match self {
+            Text::Source(s) => visitor.visit_borrowed_str(s),
+            Text::Scratch(s) => {
+                let s = s.borrow();
+                visitor.visit_str(&*s)
+            },
+            Text::Owned(s) => visitor.visit_string(s),
+        }
+    }
     pub fn pop(self) -> (Self, Option<char>) {
         match self {
             Text::Source(s) => {
@@ -52,8 +63,32 @@ impl<'src, 'tmp> Text<'src, 'tmp> {
     }
 }
 
+pub enum TextRef<'src, 'buf, 'owned> {
+    Source(&'src str),
+    Scratch(ScratchSlice<'buf, str>),
+    Owned(&'owned str)
+}
+
+impl<'src, 'buf, 'owned> Deref for TextRef<'src, 'buf, 'owned> {
+    type Target = str;
+    fn deref(&self) -> &str {
+        match self {
+            TextRef::Source(s) => s,
+            TextRef::Scratch(s) => s,
+            TextRef::Owned(s) => s,
+        }
+    }
+}
+
+
+
 // A utility for consuming characters from a UTF-8 source of text.
 pub trait TextSource<'src> {
+    type Position: Copy + Eq + Ord + Hash + Debug + Display;
+
+    fn position(&mut self) -> Result<Self::Position>;
+    fn goto(&mut self, position: Self::Position) -> Result<()>;
+
     fn next(&mut self) -> Result<Option<char>>;
     fn peek(&mut self) -> Result<Option<char>>;
     // Peek the next n *characters* (not bytes!). n should be a small constant (e.g. 2 or 3)
@@ -80,7 +115,7 @@ pub trait TextSource<'src> {
         let _ = self.skip_bytes(n);
     }
     // Start buffering raw source bytes.
-    type Buffering<'s, 'tmp> : TextSource<'src> + Into<Text<'src, 'tmp>> where Self: 's + 'tmp;
+    type Buffering<'s, 'tmp> : BufferedSource<'src, 'tmp> where Self: 's + 'tmp;
     // Self must live as long as either the borrow on self or the borrow on the scratch buffer.
     // This way an implementation can use an internal buffer instead of the scratch buffer, if needed.
     fn buffering<'s, 'tmp>(&'s mut self, scratch: &'tmp ScratchBuffer<str>) -> Self::Buffering<'s, 'tmp> where Self: 's + 'tmp;
@@ -98,6 +133,7 @@ pub trait TextSource<'src> {
         }
         Ok(result)
     }
+
 
     fn peek_chars_and<R, F: FnOnce(&str) -> (usize, R)>(&mut self, n: usize, f: F) -> Result<R> {
         let peek = self.peek_chars(n)?;
@@ -119,6 +155,12 @@ pub trait TextSource<'src> {
         Ok(result)
     }
 
+}
+
+pub trait BufferedSource<'src, 'buf> : TextSource<'src> + Into<Text<'src, 'buf>> {
+    fn into_buffer(self) -> Text<'src, 'buf> {
+        self.into()
+    }
 }
 
 // Utility functions for consuming characters from a &[u8]
@@ -169,17 +211,27 @@ fn _next_chars(data: &[u8], n: usize) -> Result<&str> {
 
 
 // Any peekable source of text.
-pub struct IoSource<R: PeekRead> {
+pub struct IoSource<R: PeekRead + Seek> {
     reader: R,
 }
 
-impl<R: PeekRead> IoSource<R> {
+impl<R: PeekRead + Seek> IoSource<R> {
     pub fn new(reader: R) -> Self {
         Self { reader }
     }
 }
 
-impl<'src, R: PeekRead> TextSource<'src> for IoSource<R> {
+impl<'src, R: PeekRead + Seek> TextSource<'src> for IoSource<R> {
+    type Position = u64;
+    fn position(&mut self) -> Result<Self::Position> {
+        self.reader.stream_position()
+    }
+    fn goto(&mut self, position: Self::Position) -> Result<()> {
+        self.reader.seek(SeekFrom::Start(position))?;
+        Ok(())
+    }
+
+
     fn next(&mut self) -> Result<Option<char>> {
         let ahead = self.reader.peek(4)?;
         Ok(_next_char(ahead)?.map(|(len, char)| {
@@ -233,19 +285,27 @@ impl<'src, R: PeekRead> TextSource<'src> for IoSource<R> {
     }
 }
 
-pub struct IoSourceBuf<'p, 'tmp, R: PeekRead> {
+pub struct IoSourceBuf<'p, 'tmp, R: PeekRead + Seek> {
     reader: &'p mut R,
     scratch: &'tmp ScratchBuffer<str>,
     consumer: ScratchRangeBuilder<'tmp, str>,
 }
 
-impl<'p, 'buf, 'src, R: PeekRead> Into<Text<'src, 'buf>> for IoSourceBuf<'p, 'buf, R> {
+impl<'p, 'buf, 'src, R: PeekRead + Seek> Into<Text<'src, 'buf>> for IoSourceBuf<'p, 'buf, R> {
     fn into(self) -> Text<'src, 'buf> {
         Text::Scratch(self.consumer.end())
     }
 }
 
-impl<'p, 'buf, 'src, R: PeekRead> TextSource<'src> for IoSourceBuf<'p, 'buf, R> {
+impl<'p, 'buf, 'src, R: PeekRead + Seek> TextSource<'src> for IoSourceBuf<'p, 'buf, R> {
+    type Position = u64;
+    fn position(&mut self) -> Result<Self::Position> {
+        self.reader.stream_position()
+    }
+    fn goto(&mut self, position: Self::Position) -> Result<()> {
+        self.reader.seek(SeekFrom::Start(position))?;
+        Ok(())
+    }
     // Buffering versions of next, skip for IoSourceBuf
     fn next(&mut self) -> Result<Option<char>> {
         let ahead = self.reader.peek(4)?;
@@ -297,6 +357,9 @@ impl<'p, 'buf, 'src, R: PeekRead> TextSource<'src> for IoSourceBuf<'p, 'buf, R> 
     }
 }
 
+impl<'p, 'buf, 'src, R: PeekRead + Seek> BufferedSource<'src, 'buf>
+    for IoSourceBuf<'p, 'buf, R> {}
+
 pub struct RawSource<'src> {
     data: &'src [u8],
     pos: usize,
@@ -321,6 +384,24 @@ impl<'src> RawSource<'src> {
 }
 
 impl<'src> TextSource<'src> for RawSource<'src> {
+    type Position = usize;
+    fn position(&mut self) -> Result<Self::Position> {
+        Ok(self.pos)
+    }
+    fn goto(&mut self, position: Self::Position) -> Result<()> {
+        // Ensure that self.pos is a valid UTF-8 index into self.data
+        let prev_pos = self.pos;
+        if position > self.data.len() {
+            return Err(Error::new(ErrorKind::InvalidData, "Invalid UTF-8 index"));
+        }
+        // Verify that the bytes between prev_pos and position are valid UTF-8
+        if position > prev_pos {
+            std::str::from_utf8(&self.data[prev_pos..position]).map_err(|e| Error::new(ErrorKind::InvalidData, e))?;
+        }
+        self.pos = position;
+        Ok(())
+    }
+
     fn next(&mut self) -> Result<Option<char>> {
         match _next_char(self.remaining())? {
             Some((len, char)) => {
@@ -379,7 +460,10 @@ impl<'tmp, 'src, 'p> Into<Text<'src, 'tmp>> for RawSourceBuf<'p, 'src> {
     }
 }
 
-impl<'src, 'p> TextSource<'src> for RawSourceBuf<'p, 'src> {
+impl<'p, 'src> TextSource<'src> for RawSourceBuf<'p, 'src> {
+    type Position = usize;
+    fn position(&mut self) -> Result<Self::Position> { self.parent.position() }
+    fn goto(&mut self, position: Self::Position) -> Result<()> { self.parent.goto(position) }
     fn next(&mut self) -> Result<Option<char>> { self.parent.next() }
     fn peek(&mut self) -> Result<Option<char>> { self.parent.peek() }
     fn peek_chars(&mut self, n: usize) -> Result<&str> { self.parent.peek_chars(n) }
@@ -398,6 +482,8 @@ impl<'src, 'p> TextSource<'src> for RawSourceBuf<'p, 'src> {
         RawSourceBuf { parent: self.parent, buffer_start }
     }
 }
+
+impl<'p, 'src, 'buf> BufferedSource<'src, 'buf> for RawSourceBuf<'p, 'src> {}
 
 pub struct RawStrSource<'src> {
     // The original data that we are consuming from.
@@ -424,6 +510,18 @@ impl<'src> RawStrSource<'src> {
 }
 
 impl<'src> TextSource<'src> for RawStrSource<'src> {
+    type Position = usize;
+    fn position(&mut self) -> Result<Self::Position> {
+        Ok(self.pos)
+    }
+    fn goto(&mut self, position: Self::Position) -> Result<()> {
+        // Verify that the position is a valid UTF-8 index into self.data
+        self.data.get(0..position).ok_or_else(
+            || Error::new(ErrorKind::InvalidData, "Invalid UTF-8 index")
+        )?;
+        self.pos = position;
+        Ok(())
+    }
     fn next(&mut self) -> Result<Option<char>> {
         let mut chars = self.remaining().char_indices();
         match chars.next() {
@@ -492,6 +590,13 @@ impl<'tmp, 'src, 'p> Into<Text<'src, 'tmp>> for RawStrSourceBuf<'p, 'src> {
 }
 
 impl<'src, 'p> TextSource<'src> for RawStrSourceBuf<'p, 'src> {
+    type Position = usize;
+    fn position(&mut self) -> Result<Self::Position> {
+        Ok(self.parent.pos)
+    }
+    fn goto(&mut self, position: Self::Position) -> Result<()> {
+        self.parent.goto(position)
+    }
     fn next(&mut self) -> Result<Option<char>> { self.parent.next() }
     fn peek(&mut self) -> Result<Option<char>> { self.parent.peek() }
     fn peek_chars(&mut self, n: usize) -> Result<&str> { self.parent.peek_chars(n) }
@@ -509,3 +614,4 @@ impl<'src, 'p> TextSource<'src> for RawStrSourceBuf<'p, 'src> {
         RawStrSourceBuf { parent: self.parent, buffer_start }
     }
 }
+impl<'p, 'src, 'buf> BufferedSource<'src, 'buf> for RawStrSourceBuf<'p, 'src> {}

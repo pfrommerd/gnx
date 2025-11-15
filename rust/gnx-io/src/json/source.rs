@@ -1,4 +1,4 @@
-use crate::util::{TextSource, Text, ScratchBuffer};
+use crate::{json::Number, util::{ScratchBuffer, Text, TextSource, BufferedSource}};
 
 use super::JsonError;
 
@@ -89,9 +89,14 @@ fn skip_escaped<'src, S: TextSource<'src> + ?Sized>(source: &mut S) -> Result<()
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+// Returns true if the number is fractional, false if it purely integer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NumberType { PureInt, SciInt, Float }
+
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ValueType {
-    String, Number, Boolean, Null, Object, Array,
+    String, Number, Bool, Null, Object, Array,
 }
 
 pub trait JsonSource<'src>: TextSource<'src> {
@@ -102,9 +107,10 @@ pub trait JsonSource<'src>: TextSource<'src> {
         };
         match next {
             '"' => Ok(ValueType::String),
+            '-' => Ok(ValueType::Number),
             '0'..='9' => Ok(ValueType::Number),
-            't' => Ok(ValueType::Boolean),
-            'f' => Ok(ValueType::Boolean),
+            't' => Ok(ValueType::Bool),
+            'f' => Ok(ValueType::Bool),
             'n' => Ok(ValueType::Null),
             '{' => Ok(ValueType::Object),
             '[' => Ok(ValueType::Array),
@@ -112,20 +118,21 @@ pub trait JsonSource<'src>: TextSource<'src> {
         }
     }
 
+    // skip a value including any nested values.
+    // This will verify that the value is valid JSON
+    // Note that this does not recurse.
     fn skip(&mut self) -> Result<(), JsonError> {
         let consume_item = |s: &mut Self| -> Result<Option<ValueType>, JsonError> { match s.peek_type()?{
             ValueType::String => { s.skip_string()?; Ok(None) },
             ValueType::Number => { s.skip_number()?; Ok(None) },
-            ValueType::Boolean => { s.skip_boolean()?; Ok(None) },
+            ValueType::Bool=> { s.skip_bool()?; Ok(None) },
             ValueType::Null => { s.skip_null()?; Ok(None) },
             ValueType::Object => {
                 s.consume_object_start()?;
-                s.consume_whitespace()?;
                 Ok(Some(ValueType::Object))
             },
             ValueType::Array => {
                 s.consume_array_start()?;
-                s.consume_whitespace()?;
                 Ok(Some(ValueType::Array))
             },
         }};
@@ -162,14 +169,29 @@ pub trait JsonSource<'src>: TextSource<'src> {
                     }
                 },
                 ValueType::Array => {
-                    self.consume_array_start()?;
-                    stack.push(ValueType::Array);
+                    loop {
+                        if !self.is_array_end()? {
+                            match consume_item(self)? {
+                                Some(nested) => {
+                                    stack.push(nested);
+                                    break;
+                                },
+                                None => self.consume_delim_whitespace()?
+                            }
+                        } else {
+                            self.consume_array_end()?;
+                            if !stack.is_empty() {
+                                self.consume_delim_whitespace()?;
+                            }
+                        }
+                    }
                 },
                 _ => panic!("Unexpected value type: {:?}", value_type),
             }
         }
         Ok(())
     }
+
     // Will skip to either (1) the idx-th object in the current
     // value if the current value is an array, or
     // (2) the "{idx}" key in the current value if the current value is an object.
@@ -178,7 +200,7 @@ pub trait JsonSource<'src>: TextSource<'src> {
         // consume characters until we peek a non-whitespace character
         loop {
             let done = self.peek_and(|c| match c {
-                Some(c) => (c.is_whitespace(), c.is_whitespace()),
+                Some(c) => (c.is_whitespace(), !c.is_whitespace()),
                 None => (true, true)
             })?;
             if done { break; }
@@ -202,7 +224,10 @@ pub trait JsonSource<'src>: TextSource<'src> {
     // Object reading methods
     fn consume_object_start(&mut self) -> Result<(), JsonError> {
         match self.next()? {
-            Some('{') => Ok(()),
+            Some('{') => {
+                self.consume_whitespace()?;
+                Ok(())
+            },
             Some(c) => Err(JsonError::Unexpected(c)),
             None => Err(JsonError::UnexpectedEOF)
         }
@@ -237,14 +262,7 @@ pub trait JsonSource<'src>: TextSource<'src> {
         self.consume_whitespace()?;
         Ok(())
     }
-    fn consume_object_key<'tmp>(&mut self, scratch: &'tmp ScratchBuffer<str>) -> Result<Text<'src, 'tmp>, JsonError> 
-                                where Self: 'tmp {
-        match self.next()? {
-            Some('"') => (),
-            Some(c) => return Err(JsonError::Unexpected(c)),
-            None => return Err(JsonError::UnexpectedEOF)
-        }
-        let result = self.consume_string(scratch)?;
+    fn consume_colon_sep(&mut self) -> Result<(), JsonError> {
         self.consume_whitespace()?;
         match self.next()? {
             Some(':') => (),
@@ -252,39 +270,192 @@ pub trait JsonSource<'src>: TextSource<'src> {
             None => return Err(JsonError::UnexpectedEOF)
         }
         self.consume_whitespace()?;
-        Ok(result)
+        Ok(())
     }
 
     // Array reading methods
     fn consume_array_start(&mut self) -> Result<(), JsonError> {
-        todo!()
+        match self.next()? {
+            Some('[') => {
+                self.consume_whitespace()?;
+                Ok(())
+            },
+            Some(c) => Err(JsonError::Unexpected(c)),
+            None => Err(JsonError::UnexpectedEOF)
+        }
     }
     fn consume_array_end(&mut self) -> Result<(), JsonError> {
-        todo!()
+        match self.next()? {
+            Some(']') => Ok(()),
+            Some(c) => Err(JsonError::Unexpected(c)),
+            None => Err(JsonError::UnexpectedEOF)
+        }
     }
     fn is_array_end(&mut self) -> Result<bool, JsonError> {
-        todo!()
+        match self.peek()? {
+            Some(']') => Ok(true),
+            Some(_) => Ok(false),
+            None => Err(JsonError::UnexpectedEOF)
+        }
     }
 
+    // consume number potentially requires a scratch buffer to handle overflowing numbers.
+    fn consume_number(&mut self, scratch: &mut ScratchBuffer<str>) -> Result<Number, JsonError> {
+        // TODO: Consume without buffering for better performance?
+        let mut buffered = self.buffering(scratch);
+        let number_type = buffered.skip_number()?;
+        let text = buffered.into_buffer();
+        let text = text.borrow();
+        let opt = || -> Result<Number, JsonError> { match number_type {
+            NumberType::PureInt => {
+                if text.starts_with('-') {
+                    text.parse::<i64>().map(Number::from)
+                        .map_err(JsonError::from)
+                } else {
+                    text.parse::<u64>().map(Number::from)
+                        .map_err(JsonError::from)
+                }
+            },
+            NumberType::SciInt => {
+                let exp_offset = text.find('e').or_else(|| text.find('E')).unwrap();
+                // parse the exponent part
+                let exp: u32 = match text[exp_offset + 1..].parse() {
+                    Ok(exp) => exp,
+                    Err(_) => return Err(JsonError::InvalidNumber)
+                };
+                // parse the pre-exponent part
+                let mantisa = &text[..exp_offset];
+                if mantisa.starts_with('-') {
+                    let mantisa = mantisa.parse::<i64>()?;
+                    Ok(Number::from(mantisa * 10_i64.pow(exp)))
+                } else {
+                    let mantisa = mantisa.parse::<u64>()?;
+                    Ok(Number::from(mantisa * 10_u64.pow(exp)))
+                }
+            },
+            _ => Err(JsonError::InvalidNumber),
+        }}();
+        match opt {
+            Ok(number) => Ok(number),
+            // We cannot parse as a number, so fallback 
+            // to a floating point number
+            Err(_) => { 
+                text.parse::<f64>().map(Number::from)
+                    .map_err(JsonError::from)
+            }
+        }
+    }
 
-    // The primitive types!
-    fn consume_number(&mut self) -> Result<f64, JsonError> {
-        todo!()
-    }
-    fn skip_number(&mut self) -> Result<(), JsonError> {
-        todo!()
+    fn skip_number(&mut self) -> Result<NumberType, JsonError> {
+        // skip a minus sign if it exists
+        self.peek_and(|c| (c == Some('-'), ()))?;
+        // skip the integer part
+        let first_digit = self.peek_and(|c| match c {
+            Some(c @ '0'..='9') => (true, Ok(c as u8 - b'0')),
+            Some(c) => (false, Err(JsonError::Unexpected(c))),
+            None => (false, Err(JsonError::UnexpectedEOF))
+        })??;
+        // Ensure that the first digit is 0, 
+        // we cannot have a number like 01 or 001.
+        if first_digit == 0 && matches!(self.peek()?, Some('0'..='9')) {
+            return Err(JsonError::InvalidNumber);
+        }
+        // skip until we hit a non-digit character
+        loop {
+            let is_digit = self.peek_and(|c| match c {
+                Some('0'..='9') => (true, true),
+                _ => (false, false),
+            })?;
+            if !is_digit { break; }
+        }
+        // check for a fractional part
+        let mut has_fractional = self.peek_and(|c| match c {
+            Some('.') => (true, true),
+            _ => (false, false),
+        })?;
+        if has_fractional {
+            // skip the first digit of the fractional part
+            self.peek_and(|c| match c {
+                Some('0'..='9') => (true, Ok(())),
+                Some(c) => (false, Err(JsonError::Unexpected(c))),
+                None => (false, Err(JsonError::UnexpectedEOF))
+            })??;
+            loop {
+                let is_digit = self.peek_and(|c| match c {
+                    Some('0'..='9') => (true, true),
+                    _ => (false, false),
+                })?;
+                if !is_digit { break; }
+            }
+        }
+        // check for an exponent part
+        let has_exponent = self.peek_and(|c| match c {
+            Some('e') => (true, true),
+            Some('E') => (true, true),
+            _ => (false, false),
+        })?;
+        if has_exponent {
+            // skip a + or - sign if it exists
+            let nonpos_exp = self.peek_and(|c| match c {
+                Some('+') => (true, false),
+                Some('-') => (true, true),
+                _ => (false, false),
+            })?;
+
+            // skip the first digit of the exponent
+            let nonzero_exp = self.peek_and(|c| match c {
+                Some('0') => (true, Ok(false)),
+                Some('1'..='9') => (true, Ok(true)),
+                Some(c) => (false, Err(JsonError::Unexpected(c))),
+                None => (false, Err(JsonError::UnexpectedEOF))
+            })??;
+            // If we have a negative exponent part,
+            // we do not have a "scientific" integer.
+            if nonzero_exp && nonpos_exp {
+                has_fractional = true;
+            }
+            loop {
+                let is_digit = self.peek_and(|c| match c {
+                    Some('0'..='9') => (true, true),
+                    _ => (false, false),
+                })?;
+                if !is_digit { break; }
+            }
+        }
+        Ok(match (has_fractional, has_exponent) {
+            (true, _) => NumberType::Float,
+            (false, true) => NumberType::SciInt,
+            (false, false) => NumberType::PureInt,
+        })
     }
 
-    fn consume_boolean(&mut self) -> Result<bool, JsonError> {
-        todo!()
+    fn consume_bool(&mut self) -> Result<bool, JsonError> {
+        // check if the next 5 characters start with "true" 
+        // or are exactly "false"
+        let b = self.peek_chars_and(5, |s| {
+            let maybe_true = &s[..4.max(s.len())] == "true";
+            let maybe_false = s == "false";
+            if maybe_true { (4, Ok(true)) }
+            else if maybe_false { (5, Ok(false)) }
+            else { (0, Err(JsonError::Unexpected(s.chars().next().unwrap()))) }
+        })??;
+        Ok(b)
     }
-    fn skip_boolean(&mut self) -> Result<(), JsonError> {
-        todo!()
+
+    fn skip_bool(&mut self) -> Result<(), JsonError> {
+        self.consume_bool()?;
+        Ok(())
     }
 
     fn consume_null(&mut self) -> Result<(), JsonError> {
-        todo!()
+        // check if the next 4 characters are exactly "null"
+        self.peek_chars_and(4, |s| {
+            if s == "null" { (4, Ok(())) }
+            else { (0, Err(JsonError::Unexpected(s.chars().next().unwrap()))) }
+        })??;
+        Ok(())
     }
+
     fn skip_null(&mut self) -> Result<(), JsonError> {
         self.consume_null()
     }

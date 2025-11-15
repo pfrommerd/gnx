@@ -4,22 +4,24 @@ use gnx::util::Error;
 
 use std::fmt::Display;
 
-pub trait GraphSerialize {
-    fn serialize<S: GraphSerializer>(&self, serializer: S) -> Result<S::Ok, S::Error>;
+mod builtins;
+
+pub trait Serialize {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>;
 }
 
-impl<T: GraphSerialize + ?Sized> GraphSerialize for &T {
-    fn serialize<S: GraphSerializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl<T: Serialize + ?Sized> Serialize for &T {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         T::serialize(self, serializer)
     }
 }
-impl<T: GraphSerialize + ?Sized> GraphSerialize for &mut T {
-    fn serialize<S: GraphSerializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl<T: Serialize + ?Sized> Serialize for &mut T {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         T::serialize(self, serializer)
     }
 }
 
-pub trait GraphSerializer: Sized {
+pub trait Serializer: Sized {
     type Ok;
     type Error: Error;
     type SerializeSeq: SerializeSeq<Ok = Self::Ok, Error = Self::Error>;
@@ -30,14 +32,14 @@ pub trait GraphSerializer: Sized {
     type SerializeStruct: SerializeStruct<Ok = Self::Ok, Error = Self::Error>;
     type SerializeStructVariant: SerializeStructVariant<Ok = Self::Ok, Error = Self::Error>;
 
-    fn serialize_shared<T: ?Sized + GraphSerialize>(
+    fn serialize_shared<T: ?Sized + Serialize>(
         self,
         id: GraphId,
         value: &T,
     ) -> Result<Self::Ok, Self::Error>;
     // Serialize with some auxiliary type information (e.g. python module/class name)
     // for cases where the type cannot be statically inferred on deserialization.
-    fn serialize_hinted<H: ?Sized + GraphSerialize, T: ?Sized + GraphSerialize>(
+    fn serialize_hinted<H: ?Sized + Serialize, T: ?Sized + Serialize>(
         self,
         hint: &H,
         value: &T,
@@ -62,7 +64,7 @@ pub trait GraphSerializer: Sized {
     fn serialize_none(self) -> Result<Self::Ok, Self::Error>;
     fn serialize_some<T>(self, value: &T) -> Result<Self::Ok, Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error>;
     fn serialize_unit_struct(self, name: &'static str) -> Result<Self::Ok, Self::Error>;
     fn serialize_unit_variant(
@@ -77,7 +79,7 @@ pub trait GraphSerializer: Sized {
         value: &T,
     ) -> Result<Self::Ok, Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn serialize_newtype_variant<T>(
         self,
         name: &'static str,
@@ -86,7 +88,7 @@ pub trait GraphSerializer: Sized {
         value: &T,
     ) -> Result<Self::Ok, Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error>;
     fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple, Self::Error>;
     fn serialize_tuple_struct(
@@ -127,7 +129,7 @@ pub trait GraphSerializer: Sized {
     fn collect_seq<I>(self, iter: I) -> Result<Self::Ok, Self::Error>
     where
         I: IntoIterator,
-        <I as IntoIterator>::Item: GraphSerialize,
+        <I as IntoIterator>::Item: Serialize,
     {
         let mut iter = iter.into_iter();
         let size = match iter.size_hint() {
@@ -140,8 +142,8 @@ pub trait GraphSerializer: Sized {
     }
     fn collect_map<K, V, I>(self, iter: I) -> Result<Self::Ok, Self::Error>
     where
-        K: GraphSerialize,
-        V: GraphSerialize,
+        K: Serialize,
+        V: Serialize,
         I: IntoIterator<Item = (K, V)>,
     {
         let mut iter = iter.into_iter();
@@ -170,7 +172,7 @@ pub trait SerializeSeq {
 
     fn serialize_element<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn end(self) -> Result<Self::Ok, Self::Error>;
 }
 
@@ -180,7 +182,7 @@ pub trait SerializeTuple {
 
     fn serialize_element<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn end(self) -> Result<Self::Ok, Self::Error>;
 }
 
@@ -190,7 +192,7 @@ pub trait SerializeTupleStruct {
 
     fn serialize_field<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn end(self) -> Result<Self::Ok, Self::Error>;
 }
 
@@ -200,7 +202,7 @@ pub trait SerializeTupleVariant {
 
     fn serialize_field<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn end(self) -> Result<Self::Ok, Self::Error>;
 }
 
@@ -210,16 +212,16 @@ pub trait SerializeMap {
 
     fn serialize_key<T>(&mut self, key: &T) -> Result<(), Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn serialize_value<T>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn end(self) -> Result<Self::Ok, Self::Error>;
 
     fn serialize_entry<K, V>(&mut self, key: &K, value: &V) -> Result<(), Self::Error>
     where
-        K: ?Sized + GraphSerialize,
-        V: ?Sized + GraphSerialize,
+        K: ?Sized + Serialize,
+        V: ?Sized + Serialize,
     {
         self.serialize_key(key)?;
         self.serialize_value(value)
@@ -232,7 +234,7 @@ pub trait SerializeStruct {
 
     fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn end(self) -> Result<Self::Ok, Self::Error>;
 }
 
@@ -242,6 +244,6 @@ pub trait SerializeStructVariant {
 
     fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
     where
-        T: ?Sized + GraphSerialize;
+        T: ?Sized + Serialize;
     fn end(self) -> Result<Self::Ok, Self::Error>;
 }

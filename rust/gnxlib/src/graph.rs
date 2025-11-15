@@ -4,9 +4,9 @@ use pyo3::prelude::*;
 use std::sync::Arc;
 
 use crate::leaf::PyLeaf;
-use crate::string::ImString;
 
 #[derive(Clone)]
+#[allow(unused)]
 pub struct DictKey(Arc<Py<PyAny>>, Key);
 
 impl DictKey {

@@ -11,8 +11,8 @@ pub struct ScratchBuffer<T: ?Sized>  {
     data: RefCell<Vec<u8>>,
     // A token is used to track whether there are outstanding
     // Ranges referencing the existing data. If there are not,
-    // When start() is called, if there are no outstanding ranges,
-    // we can clear the data and reuse the capacity for new data
+    // and start() is called, we can clear the data and reuse the 
+    // existing bufer capacity for new data
     token: Rc<()>,
     _marker: PhantomData<T>,
 }

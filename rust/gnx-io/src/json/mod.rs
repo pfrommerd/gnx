@@ -1,12 +1,17 @@
-use crate::util::{ScratchBuffer, TextSource};
-
 mod source;
+mod value;
+mod parser;
+
 pub use source::*;
+pub use value::*;
+pub use parser::*;
 
 #[derive(Debug)]
 pub enum JsonError {
     UnterminatedString,
     InvalidEscape,
+    InvalidNumber,
+    InvalidBase64(base64::DecodeError),
     UnexpectedEOF,
     Unexpected(char),
     ReadError(std::io::Error),
@@ -31,18 +36,22 @@ impl From<std::io::Error> for JsonError {
     }
 }
 
-pub struct JsonParser<S> {
-    source: S,
-    scratch: ScratchBuffer<str>,
-    remaining_depth: usize,
-}
-
-impl<'src, S: TextSource<'src>> JsonParser<S> {
-    pub fn new(source: S) -> Self {
-        Self {
-            source,
-            scratch: ScratchBuffer::new(),
-            remaining_depth: 0,
-        }
+impl From<base64::DecodeError> for JsonError {
+    fn from(e: base64::DecodeError) -> Self {
+        Self::InvalidBase64(e)
     }
 }
+
+impl From<std::num::ParseIntError> for JsonError {
+    fn from(_: std::num::ParseIntError) -> Self {
+        Self::InvalidNumber
+    }
+}
+
+impl From<std::num::ParseFloatError> for JsonError {
+    fn from(_: std::num::ParseFloatError) -> Self {
+        Self::InvalidNumber
+    }   
+}
+
+type Result<T> = std::result::Result<T, JsonError>;
