@@ -1,10 +1,15 @@
-use crate::graph::*;
-
 mod dag;
 mod traits;
+mod callable;
+
+pub use castaway::LifetimeFree;
+pub use castaway::cast as try_specialize;
+
+use crate::{Graph, Leaf, Filter};
 
 pub use dag::{Dag, ToDag};
 pub use traits::{GraphEq, GraphHash};
+pub use callable::Callable;
 
 #[rustfmt::skip]
 pub trait GraphExt: Graph {
@@ -16,11 +21,3 @@ pub trait GraphExt: Graph {
 }
 
 impl<G: Graph> GraphExt for G {}
-
-// pub struct GraphDef<I: Leaf, L: Leaf, B: Builder<L>> {
-//     builder: B,
-//     values: Dag<I>,
-//     _phantom: PhantomData<L>,
-// }
-
-// impl<L: Leaf, B: Builder<L>, I: Leaf> GraphDef<I, L, B> {}

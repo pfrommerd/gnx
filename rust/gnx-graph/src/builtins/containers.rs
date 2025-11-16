@@ -4,11 +4,11 @@ impl<T: Graph> Graph for Vec<T> {
     type Owned = Vec<T::Owned>;
     type Builder<L: Leaf> = NodeBuilder<Vec<T::Builder<L>>>;
 
-    fn builder<'g, L: Leaf, F: Filter<L>>(
+    fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
         &'g self,
         filter: F,
         mut ctx: &mut GraphContext,
-    ) -> Result<Self::Builder<L>, GraphError> {
+    ) -> Result<Self::Builder<L>, E> {
         match filter.matches_ref(self) {
             Ok(_) => Ok(NodeBuilder::Leaf),
             Err(graph) => Ok(NodeBuilder::Node(
@@ -19,7 +19,7 @@ impl<T: Graph> Graph for Vec<T> {
                         let key = KeyRef::Index(i);
                         g.builder(filter.child(key), &mut ctx)
                     })
-                    .collect::<Result<Vec<T::Builder<L>>, GraphError>>()?,
+                    .collect::<Result<Vec<T::Builder<L>>, E>>()?,
             )),
         }
     }
@@ -33,7 +33,7 @@ impl<T: Graph> Graph for Vec<T> {
             Ok(r) => Ok(source
                 .leaf(r)?
                 .try_into_value()
-                .map_err(|_| GraphError::InvalidLeaf)?),
+                .map_err(|_| S::Error::invalid_leaf())?),
             Err(graph) => {
                 let mut ns = source.node()?;
                 graph
@@ -41,7 +41,7 @@ impl<T: Graph> Graph for Vec<T> {
                     .enumerate()
                     .map(|(i, g)| {
                         let key = KeyRef::Index(i);
-                        g.replace(filter.child(key), ns.child(key)?, ctx)
+                        g.replace(filter.child(key), ns.expect_child(key)?, ctx)
                     })
                     .collect()
             }
@@ -108,7 +108,7 @@ impl<'g, L: Leaf, B: Builder<L>> Builder<L> for Vec<B> {
             .enumerate()
             .map(|(i, b)| {
                 let key = KeyRef::Index(i);
-                b.build(ns.child(key)?, ctx)
+                b.build(ns.expect_child(key)?, ctx)
             })
             .collect()
     }
@@ -122,11 +122,11 @@ macro_rules! impl_tuple_graph {
 
                 type Builder<L: Leaf> = NodeBuilder<($($T::Builder<L>,)*)>;
 
-                fn builder<'g, L: Leaf, F: Filter<L>>(
+                fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
                     &'g self,
                     filter: F,
                     mut ctx: &mut GraphContext,
-                ) -> Result<Self::Builder<L>, GraphError> {
+                ) -> Result<Self::Builder<L>, E> {
                     match filter.matches_ref(self) {
                         Ok(_) => Ok(NodeBuilder::Leaf),
                         Err(_) => Ok(NodeBuilder::Node({
@@ -145,13 +145,14 @@ macro_rules! impl_tuple_graph {
                     mut ctx: &mut GraphContext,
                 ) -> Result<Self::Owned, S::Error> {
                     match filter.matches_ref(self) {
-                        Ok(r) => Ok(source.leaf(r)?.try_into_value().map_err(|_| GraphError::InvalidLeaf)?),
+                        Ok(r) => Ok(source.leaf(r)?.try_into_value()
+                                    .map_err(|_| S::Error::invalid_leaf())?),
                         Err(_) => {
                             let ($([<$T:lower>],)*) = self;
                             let mut ns = source.node()?;
                             $(
                                 let [<$T:lower>] = [<$T:lower>].replace(
-                                    filter.child(KeyRef::Index($idx)), ns.child(KeyRef::Index($idx))?, &mut ctx
+                                    filter.child(KeyRef::Index($idx)), ns.expect_child(KeyRef::Index($idx))?, &mut ctx
                                 )?;
                             )*
                             Ok(($([<$T:lower>],)*))
@@ -215,7 +216,7 @@ macro_rules! impl_tuple_graph {
                     let mut ns = source.node()?;
                     $(
                         let [<$T:lower>] = [<$T:lower>].build(
-                            ns.child(KeyRef::Index($idx))?, &mut ctx
+                            ns.expect_child(KeyRef::Index($idx))?, &mut ctx
                         )?;
                     )*
                     Ok(($([<$T:lower>],)*))
@@ -229,11 +230,11 @@ impl_tuple_graph!(A, 0);
 impl_tuple_graph!(A BB, 0 1);
 impl_tuple_graph!(A BB CC, 0 1 2);
 impl_tuple_graph!(A BB CC D, 0 1 2 3);
-impl_tuple_graph!(A BB CC D E, 0 1 2 3 4);
-impl_tuple_graph!(A BB CC D E FF, 0 1 2 3 4 5);
-impl_tuple_graph!(A BB CC D E FF G, 0 1 2 3 4 5 6);
-impl_tuple_graph!(A BB CC D E FF G H, 0 1 2 3 4 5 6 7);
-impl_tuple_graph!(A BB CC D E FF G H II, 0 1 2 3 4 5 6 7 8);
-impl_tuple_graph!(A BB CC D E FF G H II J, 0 1 2 3 4 5 6 7 8 9);
-impl_tuple_graph!(A BB CC D E FF G H II J K, 0 1 2 3 4 5 6 7 8 9 10);
-impl_tuple_graph!(A BB CC D E FF G H II J K LL, 0 1 2 3 4 5 6 7 8 9 10 11);
+impl_tuple_graph!(A BB CC D EE, 0 1 2 3 4);
+impl_tuple_graph!(A BB CC D EE FF, 0 1 2 3 4 5);
+impl_tuple_graph!(A BB CC D EE FF G, 0 1 2 3 4 5 6);
+impl_tuple_graph!(A BB CC D EE FF G H, 0 1 2 3 4 5 6 7);
+impl_tuple_graph!(A BB CC D EE FF G H II, 0 1 2 3 4 5 6 7 8);
+impl_tuple_graph!(A BB CC D EE FF G H II J, 0 1 2 3 4 5 6 7 8 9);
+impl_tuple_graph!(A BB CC D EE FF G H II J K, 0 1 2 3 4 5 6 7 8 9 10);
+impl_tuple_graph!(A BB CC D EE FF G H II J K LL, 0 1 2 3 4 5 6 7 8 9 10 11);

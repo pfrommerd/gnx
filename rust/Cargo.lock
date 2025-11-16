@@ -29,6 +29,7 @@ version = "0.1.0"
 dependencies = [
  "castaway",
  "gnx-derive",
+ "gnx-graph",
  "ordered-float",
  "paste",
 ]
@@ -40,6 +41,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "gnx-graph"
+version = "0.1.0"
+dependencies = [
+ "castaway",
+ "gnx-derive",
+ "ordered-float",
+ "paste",
 ]
 
 [[package]]
@@ -59,6 +70,10 @@ dependencies = [
  "gnx",
  "pyo3",
 ]
+
+[[package]]
+name = "gnx-json"
+version = "0.1.0"
 
 [[package]]
 name = "gnxlib"

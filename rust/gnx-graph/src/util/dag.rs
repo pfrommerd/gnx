@@ -1,5 +1,4 @@
-#[rustfmt::skip]
-use crate::graph::*;
+use crate::*;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,11 +41,11 @@ impl<I> DagChild<I> {
             }
         })
     }
-    fn builder<L: Leaf, F: Filter<L>>(
+    fn builder<L: Leaf, F: Filter<L>, E: Error>(
         &self,
         filter: F,
         ctx: &mut GraphContext,
-    ) -> Result<ChildBuilder<I>, GraphError>
+    ) -> Result<ChildBuilder<I>, E>
     where
         I: Leaf,
     {
@@ -75,7 +74,7 @@ impl<I: Leaf> Graph for Dag<I> {
             Ok(r) => source
                 .leaf(r)?
                 .try_into_value()
-                .map_err(|_| GraphError::InvalidLeaf)?,
+                .map_err(|_| S::Error::invalid_leaf())?,
             Err(graph) => match graph {
                 Dag::Leaf(None) => {
                     source.empty_leaf()?;
@@ -87,7 +86,7 @@ impl<I: Leaf> Graph for Dag<I> {
                     let children: Result<HashMap<Key, DagChild<I>>, S::Error> =
                         children.iter().map(|(k, v)| {
                             let child = v.replace(
-                                filter.child(k.as_ref()), ns.child(k.as_ref())?, ctx
+                                filter.child(k.as_ref()), ns.expect_child(k.as_ref())?, ctx
                             )?;
                             Ok((k.clone(), child))
                         }).collect();
@@ -98,7 +97,7 @@ impl<I: Leaf> Graph for Dag<I> {
                     let children: Result<Vec<DagChild<I>>, S::Error> =
                         children.iter().enumerate().map(|(i, v)| v.replace(
                             filter.child(KeyRef::Index(i)),
-                            ns.child(KeyRef::Index(i))?,
+                            ns.expect_child(KeyRef::Index(i))?,
                             ctx
                         )).collect();
                     Dag::Node(DagNode::List(children?))
@@ -106,9 +105,9 @@ impl<I: Leaf> Graph for Dag<I> {
             },
         })
     }
-    fn builder<L: Leaf, F: Filter<L>>(
+    fn builder<L: Leaf, F: Filter<L>, E: Error>(
         &self, filter: F, mut ctx: &mut GraphContext
-    ) -> Result<Self::Builder<L>, GraphError> {
+    ) -> Result<Self::Builder<L>, E> {
         Ok(match filter.matches_ref(self) {
             Ok(_) => DagBuilder::Leaf,
             Err(graph) => match graph {
@@ -118,7 +117,7 @@ impl<I: Leaf> Graph for Dag<I> {
                     Err(_) => DagBuilder::Static(x.clone()),
                 },
                 Dag::Node(DagNode::Map(children)) => {
-                    let children: Result<HashMap<Key, ChildBuilder<I>>, GraphError> =
+                    let children: Result<HashMap<Key, ChildBuilder<I>>, E> =
                         children.iter().map(|(k, v)| {
                             let child = v.builder(filter.child(k.as_ref()), &mut ctx)?;
                             Ok((k.clone(), child))
@@ -126,7 +125,7 @@ impl<I: Leaf> Graph for Dag<I> {
                     DagBuilder::MapNode(children?)
                 }
                 Dag::Node(DagNode::List(children)) => {
-                    let children: Result<Vec<ChildBuilder<I>>, GraphError> =
+                    let children: Result<Vec<ChildBuilder<I>>, E> =
                         children.iter().enumerate().map(|(i, v)| v.builder(
                             filter.child(KeyRef::Index(i)),
                             &mut ctx
@@ -254,7 +253,7 @@ impl<I: Leaf> ChildBuilder<I> {
     fn build<L: Leaf, S: GraphSource<(), L>>(
         self,
         source: S,
-        ctx: &mut crate::graph::GraphContext,
+        ctx: &mut GraphContext,
     ) -> Result<DagChild<I>, S::Error> {
         Ok(match self {
             ChildBuilder::Owned(v) => DagChild::Owned(v.build(source, ctx)?),
@@ -274,7 +273,7 @@ impl<L: Leaf, I: Leaf> Builder<L> for DagBuilder<I> {
     fn build<S: GraphSource<(), L>>(
         self,
         source: S,
-        mut ctx: &mut crate::graph::GraphContext,
+        mut ctx: &mut GraphContext,
     ) -> Result<Self::Graph, S::Error> {
         use DagBuilder::*;
         match self {
@@ -282,7 +281,7 @@ impl<L: Leaf, I: Leaf> Builder<L> for DagBuilder<I> {
                 source
                     .leaf(())?
                     .try_into_value()
-                    .map_err(|_| GraphError::InvalidLeaf)?,
+                    .map_err(|_| S::Error::invalid_leaf())?
             ))),
             Static(v) => {
                 source.empty_leaf()?;
@@ -293,7 +292,7 @@ impl<L: Leaf, I: Leaf> Builder<L> for DagBuilder<I> {
                 children
                     .into_iter()
                     .enumerate()
-                    .map(|(i, child)| child.build(ns.child(KeyRef::Index(i))?, &mut ctx))
+                    .map(|(i, child)| child.build(ns.expect_child(KeyRef::Index(i))?, &mut ctx))
                     .collect::<Result<Vec<DagChild<I>>, S::Error>>()?
             }))),
             MapNode(children) => Ok(Dag::Node(DagNode::Map({
@@ -301,7 +300,7 @@ impl<L: Leaf, I: Leaf> Builder<L> for DagBuilder<I> {
                 children
                     .into_iter()
                     .map(|(k, child)| {
-                        let child = child.build(ns.child(k.as_ref())?, &mut ctx)?;
+                        let child = child.build(ns.expect_child(k.as_ref())?, &mut ctx)?;
                         Ok((k, child))
                     })
                     .collect::<Result<HashMap<Key, DagChild<I>>, S::Error>>()?

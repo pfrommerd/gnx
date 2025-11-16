@@ -1,4 +1,4 @@
-use super::{GraphError, GraphId};
+use super::{GraphId, Error};
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 
@@ -22,9 +22,9 @@ impl GraphContext {
     // For use by the ctx_build_shared macro
     // through which you should interact with the GraphContext
     // The macro released the &mut borrow while building child nodes
-    pub fn _reserve<T: Clone + 'static>(&mut self, id: GraphId) -> Result<Option<T>, GraphError> {
+    pub fn _reserve<T: Clone + 'static, E: Error>(&mut self, id: GraphId) -> Result<Option<T>, E> {
         if self.seen.contains(&id) {
-            return Err(GraphError::ContextError);
+            return Err(E::invalid_id(id));
         }
         self.seen.insert(id);
         let map = self
@@ -33,14 +33,14 @@ impl GraphContext {
             .or_insert_with(|| Box::new(HashMap::<GraphId, T>::new()));
         let map = map
             .downcast_mut::<HashMap<GraphId, T>>()
-            .ok_or(GraphError::ContextError)?;
+            .ok_or(E::custom("Internal context error"))?;
         if let Some(s) = map.get(&id) {
             Ok(Some(s.clone()))
         } else {
             Ok(None)
         }
     }
-    pub fn _finish<T: Clone + 'static>(&mut self, id: GraphId, value: T) -> Result<(), GraphError> {
+    pub fn _finish<T: Clone + 'static, E: Error>(&mut self, id: GraphId, value: T) -> Result<(), E> {
         let map = self
             .maps
             .entry(TypeId::of::<T>())
@@ -48,22 +48,24 @@ impl GraphContext {
         // self.seen.insert(id);
         let map = map
             .downcast_mut::<HashMap<GraphId, T>>()
-            .ok_or(GraphError::ContextError)?;
+            .ok_or(E::custom("Internal context error"))?;
         map.insert(id, value);
         Ok(())
     }
 
-    pub fn create<T: Clone + 'static, E: From<GraphError>, F: FnOnce(&mut Self) -> Result<T, E>>(
+    pub fn create<T: Clone + 'static, E: Error, F: FnOnce(&mut Self) -> Result<T, E>>(
         &mut self,
         id: GraphId,
         builder: F,
     ) -> Result<T, E> {
-        self._reserve::<T>(id)?
-            .ok_or(GraphError::ContextError)
-            .or_else(|_| {
+        let value = self._reserve::<T, E>(id)?;
+        match value {
+            Some(value) => Ok(value),
+            None => {
                 let value = builder(self)?;
-                self._finish::<T>(id, value.clone())?;
+                self._finish::<T, E>(id, value.clone())?;
                 Ok(value)
-            })
+            }
+        }
     }
 }

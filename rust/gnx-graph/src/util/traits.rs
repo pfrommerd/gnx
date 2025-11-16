@@ -1,7 +1,7 @@
 use ordered_float::OrderedFloat;
 use std::hash::{Hash, Hasher};
 
-use crate::graph::*;
+use crate::*;
 
 pub trait GraphHash {
     fn graph_hash<H, L, F>(&self, hasher: &mut H, filter: F, ctx: &mut GraphContext)

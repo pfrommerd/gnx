@@ -1,4 +1,4 @@
-use gnx::util::Callable;
+use gnx_graph::util::Callable;
 
 fn f(input: u8) -> u8 {
     input + 1

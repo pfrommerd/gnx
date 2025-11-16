@@ -6,7 +6,7 @@ use std::fmt::{Debug, Display};
 
 use std::ops::Deref;
 
-use crate::DataVisitor;
+use gnx::io::DataVisitor;
 
 use super::scratch::{ScratchBuffer, ScratchRange, ScratchSlice, ScratchRangeBuilder};
 use super::peek::PeekRead;

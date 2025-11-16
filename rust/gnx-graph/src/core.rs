@@ -1,25 +1,35 @@
-mod context;
-mod impls;
-mod path;
-mod source;
-mod views;
-mod visitors;
-
-pub mod filters;
-pub mod util;
-
-pub use context::*;
-pub use filters::*;
-pub use impls::*;
-pub use path::*;
-pub use source::*;
-pub use views::*;
-pub use visitors::*;
-
-use crate::util::Error;
 pub use gnx_derive::{Graph, Leaf};
 
-use std::borrow::Borrow;
+use crate::*;
+
+use std::fmt::Display;
+
+
+pub trait Error : Sized + std::error::Error {
+    fn custom<T: Display>(msg: T) -> Self;
+
+
+    fn invalid_type(unexp_value: Option<impl Display>, unexp_type: impl Display, expected: impl Display) -> Self {
+        let _ = unexp_value;
+        Self::custom(format!("Invalid type, got {unexp_type}, expected {expected}"))
+    }
+    fn invalid_leaf() -> Self {
+        Self::custom("Invalid leaf")
+    }
+    fn invalid_id(id: GraphId) -> Self {
+        Self::custom(format!("Invalid ID: {id}"))
+    }
+
+    fn missing_leaf() -> Self { Self::custom("Missing leaf") }
+    fn missing_static_leaf() -> Self { Self::custom("Missing static leaf") }
+    fn missing_node() -> Self { Self::custom("Missing node") }
+    fn missing_child(key: Key) -> Self { Self::custom(format!("Missing child {key}")) }
+
+    fn expected_leaf() -> Self { Self::custom("Expected leaf") }
+    fn expected_static_leaf() -> Self { Self::custom("Expected static leaf") }
+    fn expected_node() -> Self { Self::custom("Expected node") }
+}
+
 
 pub trait Builder<L: Leaf>: Clone {
     type Graph: Graph + Clone + 'static;
@@ -41,9 +51,9 @@ pub trait Graph: Clone {
     ) -> Result<Self::Owned, S::Error>;
 
     type Builder<L: Leaf>: Builder<L, Graph = Self::Owned> + 'static;
-    fn builder<L: Leaf, F: Filter<L>>(
+    fn builder<L: Leaf, F: Filter<L>, E: Error>(
         &self, replace: F, ctx: &mut GraphContext
-    ) -> Result<Self::Builder<L>, GraphError>;
+    ) -> Result<Self::Builder<L>, E>;
 
     fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
         &'g self, filter: F, visitor: V
@@ -98,53 +108,5 @@ impl<'l, L: Leaf + 'l> LeafCow<'l, L> {
             LeafCow::Borrowed(r) => *r,
             LeafCow::Owned(o) => o.as_ref(),
         }
-    }
-}
-
-#[derive(Debug)]
-pub enum GraphError {
-    GraphDefUnsupported,
-    ReprUnsupported,
-    InvalidLeaf,
-    ContextError,
-    MissingChild,
-    MissingLeaf,
-    MissingNode,
-    Custom(String),
-    Other,
-}
-
-impl GraphError {
-    fn is_missing(&self) -> bool {
-        use GraphError::*;
-        match self {
-            MissingChild => true,
-            MissingLeaf => true,
-            MissingNode => true,
-            _ => false,
-        }
-    }
-}
-
-impl std::fmt::Display for GraphError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            GraphError::GraphDefUnsupported => write!(f, "Graph definition is unsupported"),
-            GraphError::ReprUnsupported => write!(f, "Static representation is unsupported"),
-            GraphError::ContextError => write!(f, "Graph context error"),
-            GraphError::InvalidLeaf => write!(f, "Invalid leaf value"),
-            GraphError::MissingChild => write!(f, "Missing child of node"),
-            GraphError::MissingNode => write!(f, "Not a node!"),
-            GraphError::MissingLeaf => write!(f, "Not a leaf!"),
-            GraphError::Custom(v) => write!(f, "{}", v),
-            GraphError::Other => write!(f, "Other"),
-        }
-    }
-}
-impl std::error::Error for GraphError {}
-
-impl Error for GraphError {
-    fn custom<T: std::fmt::Display>(msg: T) -> Self {
-        GraphError::Custom(msg.to_string())
     }
 }

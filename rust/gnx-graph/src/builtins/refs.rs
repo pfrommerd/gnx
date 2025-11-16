@@ -20,9 +20,9 @@ macro_rules! impl_rc {
                        .map($W::new)
                 })
             }
-            fn builder<L: Leaf, F: Filter<L>>(
+            fn builder<L: Leaf, F: Filter<L>, E: Error>(
                 &self, filter: F, ctx: &mut GraphContext
-            ) -> Result<Self::Builder<L>, GraphError> {
+            ) -> Result<Self::Builder<L>, E> {
                 let id = GraphId::from($W::as_ptr(self) as u64);
                 ctx.create(id, |ctx| {
                     self.as_ref().builder(filter, ctx)
@@ -80,11 +80,11 @@ impl<T: Graph> Graph for &T {
         })
     }
 
-    fn builder<L: Leaf, F: Filter<L>>(
+    fn builder<L: Leaf, F: Filter<L>, E: Error>(
         &self,
         filter: F,
         ctx: &mut GraphContext,
-    ) -> Result<Self::Builder<L>, GraphError> {
+    ) -> Result<Self::Builder<L>, E> {
         let id = GraphId::from(*self as *const T as u64);
         ctx.create(id, |ctx| Ok(Arc::new(T::builder(self, filter, ctx)?)))
     }

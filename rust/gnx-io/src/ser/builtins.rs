@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use paste;
 
-use crate::{Serialize, Serializer};
+use super::{Serialize, Serializer};
 
 macro_rules! impl_graph_serialize {
     ($($T:ty)*) => { paste::paste! {

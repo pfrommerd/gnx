@@ -1,7 +1,7 @@
 use super::*;
 
 pub trait GraphSource<I, L> {
-    type Error: Error + From<GraphError> + Borrow<GraphError>;
+    type Error: Error;
     type ChildrenSource: ChildrenSource<I, L, Error = Self::Error>;
     // Try to construct a leaf given a value
     fn leaf(self, info: I) -> Result<L, Self::Error>;
@@ -15,20 +15,27 @@ pub trait GraphSource<I, L> {
 }
 
 pub trait ChildrenSource<I, L> {
-    type Error: Error + From<GraphError> + Borrow<GraphError>;
+    type Error: Error;
     type ChildSource: GraphSource<I, L, Error = Self::Error>;
     #[rustfmt::skip]
-    fn child(&mut self, key: KeyRef<'_>) -> Result<Self::ChildSource, Self::Error>;
+    fn child(&mut self, key: KeyRef<'_>) -> Result<Option<Self::ChildSource>, Self::Error>;
+
+    fn expect_child(&mut self, key: KeyRef<'_>) -> Result<Self::ChildSource, Self::Error> {
+        match self.child(key)? {
+            Some(s) => Ok(s),
+            None => Err(Self::Error::missing_child(key.to_value())),
+        }
+    }
 }
 
 pub struct NullSource;
 
 impl<I, L> GraphSource<I, L> for NullSource {
-    type Error = GraphError;
+    type Error = SourceError;
     type ChildrenSource = NullSource;
 
     fn leaf(self, _info: I) -> Result<L, Self::Error> {
-        Err(GraphError::MissingLeaf)
+        Err(SourceError::missing_leaf())
     }
     fn empty_leaf(self) -> Result<(), Self::Error> {
         Ok(())
@@ -42,11 +49,11 @@ impl<I, L> GraphSource<I, L> for NullSource {
     }
 }
 impl<I, L> ChildrenSource<I, L> for NullSource {
-    type Error = GraphError;
+    type Error = SourceError;
     type ChildSource = NullSource;
 
-    fn child(&mut self, _key: KeyRef<'_>) -> Result<NullSource, Self::Error> {
-        Ok(NullSource)
+    fn child(&mut self, _key: KeyRef<'_>) -> Result<Option<NullSource>, Self::Error> {
+        Ok(Some(NullSource))
     }
 }
 
@@ -68,7 +75,7 @@ impl<I, L, S: GraphSource<I, L>> GraphSource<I, L> for PermissiveSource<S> {
     fn leaf(self, info: I) -> Result<L, Self::Error> {
         use PermissiveSource::*;
         match self {
-            Null => Err(GraphError::MissingLeaf.into()),
+            Null => Err(Self::Error::missing_leaf()),
             Source(s) => s.leaf(info),
         }
     }
@@ -78,41 +85,24 @@ impl<I, L, S: GraphSource<I, L>> GraphSource<I, L> for PermissiveSource<S> {
     fn node(self) -> Result<Self::ChildrenSource, Self::Error> {
         use PermissiveSource::*;
         match self {
-            Source(s) => match s.node() {
-                Ok(children) => Ok(Source(children)),
-                Err(err) => {
-                    if err.borrow().is_missing() {
-                        Ok(Null)
-                    } else {
-                        Err(err)
-                    }
-                }
-            },
+            Source(s) => Ok(Source(s.node()?)),
             Null => Ok(Null),
         }
     }
     type Permissive = Self;
-    fn permissive(self) -> Self::Permissive {
-        self
-    }
+    fn permissive(self) -> Self::Permissive { self }
 }
 impl<I, L, S: ChildrenSource<I, L>> ChildrenSource<I, L> for PermissiveSource<S> {
     type Error = S::Error;
     type ChildSource = PermissiveSource<S::ChildSource>;
 
-    fn child(&mut self, key: KeyRef<'_>) -> Result<Self::ChildSource, Self::Error> {
+    fn child(&mut self, key: KeyRef<'_>) -> Result<Option<Self::ChildSource>, Self::Error> {
         use PermissiveSource::*;
         match self {
-            Null => Ok(Null),
-            Source(s) => match s.child(key) {
-                Ok(s) => Ok(Source(s)),
-                Err(err) => {
-                    if err.borrow().is_missing() {
-                        Ok(Null)
-                    } else {
-                        Err(err)
-                    }
-                }
+            Null => Ok(Some(Null)),
+            Source(s) => match s.child(key)? {
+                Some(s) => Ok(Some(Source(s))),
+                None => Ok(Some(Null))
             },
         }
     }
@@ -127,7 +117,7 @@ impl<'g, G: ?Sized, F> AsSource<'g, G, F> {
 }
 
 impl<'g, A, L: Leaf, G: Graph, F: Filter<L>> GraphSource<A, L> for AsSource<'g, G, F> {
-    type Error = GraphError;
+    type Error = SourceError;
     type ChildrenSource = GenericChildren<'g, L>;
     fn leaf(self, _: A) -> Result<L, Self::Error> {
         self.0.visit(&self.1, ToLeaf)
@@ -136,7 +126,7 @@ impl<'g, A, L: Leaf, G: Graph, F: Filter<L>> GraphSource<A, L> for AsSource<'g, 
         if self.0.visit(&self.1, IsStaticLeaf) {
             Ok(())
         } else {
-            Err(GraphError::MissingLeaf)
+            Err(SourceError::missing_static_leaf())
         }
     }
     fn node(self) -> Result<Self::ChildrenSource, Self::Error> {
@@ -158,12 +148,12 @@ pub struct GenericChildren<'g, L>(HashMap<Key, GenericSource<'g, L>>);
 type GenericSource<'g, L> = Box<dyn _AnySource<'g, L> + 'g>;
 
 impl<'g, A, L: 'g> ChildrenSource<A, L> for GenericChildren<'g, L> {
-    type Error = GraphError;
+    type Error = SourceError;
     type ChildSource = Box<dyn _AnySource<'g, L> + 'g>;
 
     #[rustfmt::skip]
-    fn child(&mut self, key: KeyRef<'_>) -> Result<Self::ChildSource, Self::Error> {
-        self.0.remove(&key.to_value()).ok_or(GraphError::MissingChild)
+    fn child(&mut self, key: KeyRef<'_>) -> Result<Option<Self::ChildSource>, Self::Error> {
+        Ok(self.0.remove(&key.to_value()))
     }
 }
 
@@ -174,17 +164,17 @@ struct ToChildren;
 
 #[rustfmt::skip]
 impl<'g, G: Graph, L: Leaf> GraphVisitor<'g, G, L> for ToLeaf {
-    type Output = Result<L, GraphError>;
+    type Output = Result<L, SourceError>;
 
     fn visit_leaf(self, value: L::Ref<'_>)
         -> Self::Output { Ok(L::clone_ref(value)) }
     fn visit_static<S: Leaf>(self, _: S::Ref<'_>)
-        -> Self::Output { Err(GraphError::MissingLeaf) }
+        -> Self::Output { Err(SourceError::expected_leaf()) }
     fn visit_shared<S: Graph, F: Filter<L>>(
         self, _id: GraphId, shared: View<'g, S, F>,
     ) -> Self::Output { shared.visit(self) }
     fn visit_node<N: Node, F: Filter<L>>(self, _: View<'g, N, F>) -> Self::Output {
-        Err(GraphError::MissingLeaf)
+        Err(SourceError::expected_leaf())
     }
 }
 
@@ -205,12 +195,12 @@ impl<'g, G: Graph, L: Leaf> GraphVisitor<'g, G, L> for IsStaticLeaf {
 
 #[rustfmt::skip]
 impl<'g, G: Graph, L: Leaf> GraphVisitor<'g, G, L> for ToChildren {
-    type Output = Result<GenericChildren<'g, L>, GraphError>;
+    type Output = Result<GenericChildren<'g, L>, SourceError>;
 
     fn visit_leaf(self, _value: L::Ref<'_>)
-        -> Self::Output { Err(GraphError::MissingNode) }
+        -> Self::Output { Err(SourceError::expected_node()) }
     fn visit_static<S: Leaf>(self, _value: S::Ref<'_>)
-        -> Self::Output { Err(GraphError::MissingNode) }
+        -> Self::Output { Err(SourceError::expected_node()) }
     fn visit_shared<S: Graph, F: Filter<L>>(
         self, _id: GraphId, shared: View<'g, S, F>,
     ) -> Self::Output { shared.visit(self) }
@@ -246,27 +236,27 @@ impl<'g, N: Node, L: Leaf> ChildrenVisitor<'g, N, L> for CollectChildren<'g, L> 
 // Internal type-erasure machinery used to convert AsSource<'g, G, F>
 // into a a type-erased Box<dyn _AnySource<'g, L>>
 pub trait _AnySource<'g, L> {
-    fn leaf_any(&self) -> Result<L, GraphError>;
-    fn empty_leaf_any(&self) -> Result<(), GraphError>;
-    fn node_any(&self) -> Result<GenericChildren<'g, L>, GraphError>;
+    fn leaf_any(&self) -> Result<L, SourceError>;
+    fn empty_leaf_any(&self) -> Result<(), SourceError>;
+    fn node_any(&self) -> Result<GenericChildren<'g, L>, SourceError>;
 }
 impl<'g, L: Leaf, G: Graph, F: Filter<L>> _AnySource<'g, L> for AsSource<'g, G, F> {
-    fn leaf_any(&self) -> Result<L, GraphError> {
+    fn leaf_any(&self) -> Result<L, SourceError> {
         self.0.visit(&self.1, ToLeaf)
     }
-    fn empty_leaf_any(&self) -> Result<(), GraphError> {
+    fn empty_leaf_any(&self) -> Result<(), SourceError> {
         if self.0.visit(&self.1, IsStaticLeaf) {
             Ok(())
         } else {
-            Err(GraphError::MissingLeaf)
+            Err(SourceError::missing_static_leaf())
         }
     }
-    fn node_any(&self) -> Result<GenericChildren<'g, L>, GraphError> {
+    fn node_any(&self) -> Result<GenericChildren<'g, L>, SourceError> {
         self.0.visit(&self.1, ToChildren)
     }
 }
 impl<'g, A, L: 'g> GraphSource<A, L> for Box<dyn _AnySource<'g, L> + 'g> {
-    type Error = GraphError;
+    type Error = SourceError;
     type ChildrenSource = GenericChildren<'g, L>;
 
     fn leaf(self, _: A) -> Result<L, Self::Error> {
@@ -282,5 +272,34 @@ impl<'g, A, L: 'g> GraphSource<A, L> for Box<dyn _AnySource<'g, L> + 'g> {
     type Permissive = PermissiveSource<Self>;
     fn permissive(self) -> Self::Permissive {
         self.into()
+    }
+}
+
+// Erased error type
+#[derive(Debug, Eq, PartialEq, Hash, Clone)]
+pub enum SourceError {
+    ExpectedLeaf,
+    ExpectedStaticLeaf,
+    ExpectedNode,
+    Custom(String),
+    Other,
+}
+
+impl std::fmt::Display for SourceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SourceError::ExpectedNode => write!(f, "Not a node!"),
+            SourceError::ExpectedLeaf => write!(f, "Not a leaf!"),
+            SourceError::ExpectedStaticLeaf => write!(f, "Not a static leaf!"),
+            SourceError::Custom(v) => write!(f, "{}", v),
+            SourceError::Other => write!(f, "Other"),
+        }
+    }
+}
+impl std::error::Error for SourceError {}
+
+impl Error for SourceError {
+    fn custom<T: std::fmt::Display>(msg: T) -> Self {
+        SourceError::Custom(msg.to_string())
     }
 }

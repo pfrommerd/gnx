@@ -1,6 +1,4 @@
-use crate::graph::KeyRef;
-
-use super::{Graph, Leaf};
+use crate::{Graph, Leaf, KeyRef};
 use std::marker::PhantomData;
 
 pub trait Filter<L: Leaf>: Clone {
@@ -76,7 +74,7 @@ impl<L: Leaf> Filter<L> for Of<L> {
     where
         Self: 's;
 
-    fn child<'s>(&'s self, _key: crate::graph::KeyRef<'s>) -> Self::ChildFilter<'s> {
+    fn child<'s>(&'s self, _key: KeyRef<'s>) -> Self::ChildFilter<'s> {
         self.clone()
     }
 }
@@ -106,7 +104,7 @@ impl<L: Leaf> Filter<L> for Nothing<L> {
     where
         Self: 's;
 
-    fn child<'s>(&'s self, _key: crate::graph::KeyRef<'s>) -> Self::ChildFilter<'s> {
+    fn child<'s>(&'s self, _key: KeyRef<'s>) -> Self::ChildFilter<'s> {
         self.clone()
     }
 }
@@ -132,7 +130,7 @@ impl Filter<()> for All {
     where
         Self: 's;
 
-    fn child<'s>(&'s self, _key: crate::graph::KeyRef<'s>) -> Self::ChildFilter<'s> {
+    fn child<'s>(&'s self, _key: KeyRef<'s>) -> Self::ChildFilter<'s> {
         self.clone()
     }
 }
@@ -163,7 +161,7 @@ impl<L: Leaf, F: Filter<L>> Filter<()> for Invert<L, F> {
         = Invert<L, F::ChildFilter<'s>>
     where
         Self: 's;
-    fn child<'s>(&'s self, key: crate::graph::KeyRef<'s>) -> Self::ChildFilter<'s> {
+    fn child<'s>(&'s self, key: KeyRef<'s>) -> Self::ChildFilter<'s> {
         Invert(self.0.child(key), PhantomData)
     }
 }

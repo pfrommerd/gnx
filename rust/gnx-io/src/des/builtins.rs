@@ -1,4 +1,4 @@
-use crate::*;
+use super::{Deserialize, Deserializer, Expecting, DataVisitor, SeqAccess, MapAccess};
 
 use gnx::util::Error;
 

@@ -1,4 +1,4 @@
-use gnx::graph::{Graph, GraphContext, Of, TypedGraph};
+use gnx_graph::{Graph, GraphContext, Of, TypedGraph};
 
 #[test]
 fn test_graph() {

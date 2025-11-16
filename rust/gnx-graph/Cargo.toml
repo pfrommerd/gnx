@@ -1,12 +1,10 @@
 [package]
-name = "gnx"
+name = "gnx-graph"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 castaway = "0.2.4"
 gnx-derive = { version = "0.1.0", path = "../gnx-derive" }
-gnx-graph = { version = "0.1.0", path = "../gnx-graph" }
-gnx-io = { version = "0.1.0", path = "../gnx-io" }
 ordered-float = "5.1.0"
 paste = "1.0.15"

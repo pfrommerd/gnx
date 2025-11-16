@@ -1,21 +1,4 @@
-use std::fmt::Display;
-
-use crate::graph::{Graph, Key};
-
-pub use castaway::LifetimeFree;
-pub use castaway::cast as try_specialize;
-
-pub trait Error : Sized + std::error::Error {
-    fn custom<T: Display>(msg: T) -> Self;
-    
-    fn invalid_type(unexp_value: Option<impl Display>, unexp_type: impl Display, expected: impl Display) -> Self {
-        let _ = unexp_value;
-        Self::custom(format!("Invalid type, got {unexp_type}, expected {expected}"))
-    }
-    fn missing_child(key: Key) -> Self {
-        Self::custom(format!("Missing child {key}"))
-    }
-}
+use crate::{Graph, Key};
 
 #[rustfmt::skip]
 pub trait Callable<Input: Graph, Output: Graph> {
