@@ -24,7 +24,7 @@ impl std::fmt::Display for JsonError {
     }
 }
 impl std::error::Error for JsonError {}
-impl gnx::util::Error for JsonError {
+impl gnx_graph::Error for JsonError {
     fn custom<T: std::fmt::Display>(msg: T) -> Self {
         Self::Other(msg.to_string())
     }

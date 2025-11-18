@@ -1,5 +1,6 @@
 use std::io::{Read, BufRead, Result, Error, ErrorKind};
 
+
 pub trait PeekRead: BufRead {
     // Get access to the current
     // underlying buffer without readig it.

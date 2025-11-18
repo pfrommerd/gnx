@@ -51,7 +51,7 @@ impl DeviceImpl for JaxDevice {
     fn backend(&self) -> Backend {
         Backend::from(self.backend.clone())
     }
-    fn put(&self, _array: &gnx::array::Array) -> Result<gnx::array::Array, std::io::Error> {
+    fn put(&self, _array: &gnx::Array) -> Result<gnx::Array, std::io::Error> {
         Err(std::io::Error::new(
             ErrorKind::Unsupported,
             "Not implemented",

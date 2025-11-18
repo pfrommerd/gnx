@@ -44,7 +44,7 @@ impl PyLeafRef<'_> {
 #[rustfmt::skip]
 impl Graph for PyLeaf {
     type Owned = Self;
-    type Builder<L: Leaf> = ::gnx::graph::LeafBuilder<Self>;
+    type Builder<L: Leaf> = LeafBuilder<Self>;
 
     fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self, filter: F, source: S, _ctx: &mut GraphContext,
@@ -52,16 +52,16 @@ impl Graph for PyLeaf {
         match filter.matches_ref(self) {
             Ok(r) => Ok(source.leaf(r)?
                 .try_into_value()
-                .map_err(|_| GraphError::InvalidLeaf)?),
+                .map_err(|_| S::Error::invalid_leaf())?),
             Err(_) => Ok(self.clone())
         }
     }
-    fn builder<'g, L: Leaf, F: Filter<L>>(
+    fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
         &'g self, filter: F, _: &mut GraphContext
-    ) -> Result<Self::Builder<L>, GraphError> {
+    ) -> Result<Self::Builder<L>, E> {
         match filter.matches_ref(self) {
-            Ok(_) => Ok(::gnx::graph::LeafBuilder::Leaf),
-            Err(_) => Ok(::gnx::graph::LeafBuilder::Static(self.clone())),
+            Ok(_) => Ok(LeafBuilder::Leaf),
+            Err(_) => Ok(LeafBuilder::Static(self.clone())),
         }
     }
     fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(

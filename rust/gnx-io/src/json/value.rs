@@ -1,10 +1,9 @@
-use crate::{
-    Serialize, Serializer, Expecting,
+use gnx_graph::{
+    Error, Serialize, Serializer, Expecting,
     Deserialize, Deserializer, DataVisitor,
     SeqAccess, MapAccess
 };
 
-use gnx::util::Error;
 use ordered_float::NotNan;
 use super::JsonError;
 

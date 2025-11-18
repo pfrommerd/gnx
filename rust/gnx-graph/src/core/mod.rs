@@ -1,9 +1,19 @@
 pub use gnx_derive::{Graph, Leaf};
-
-use crate::*;
-
 use std::fmt::Display;
 
+mod path;
+mod source;
+mod context;
+mod visitors;
+mod views;
+mod filters;
+
+pub use path::*;
+pub use source::*;
+pub use context::*;
+pub use visitors::*;
+pub use views::*;
+pub use filters::*;
 
 pub trait Error : Sized + std::error::Error {
     fn custom<T: Display>(msg: T) -> Self;
@@ -29,7 +39,6 @@ pub trait Error : Sized + std::error::Error {
     fn expected_static_leaf() -> Self { Self::custom("Expected static leaf") }
     fn expected_node() -> Self { Self::custom("Expected node") }
 }
-
 
 pub trait Builder<L: Leaf>: Clone {
     type Graph: Graph + Clone + 'static;

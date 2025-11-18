@@ -5,6 +5,6 @@ edition = "2024"
 
 [dependencies]
 base64 = "0.22.1"
-gnx = { version = "0.1.0", path = "../gnx" }
+gnx-graph = { version = "0.1.0", path = "../gnx-graph" }
 ordered-float = "5.1.0"
 paste = "1.0.15"

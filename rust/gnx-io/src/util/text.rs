@@ -6,8 +6,6 @@ use std::fmt::{Debug, Display};
 
 use std::ops::Deref;
 
-use gnx::io::DataVisitor;
-
 use super::scratch::{ScratchBuffer, ScratchRange, ScratchSlice, ScratchRangeBuilder};
 use super::peek::PeekRead;
 
@@ -26,7 +24,7 @@ impl<'src, 'buf> Text<'src, 'buf> {
         }
     }
 
-    pub fn visit<V: DataVisitor<'src>, E: gnx::util::Error>(self, visitor: V)
+    pub fn visit<V: gnx_graph::DataVisitor<'src>, E: gnx_graph::Error>(self, visitor: V)
             -> std::result::Result<V::Value, E> {
         match self {
             Text::Source(s) => visitor.visit_borrowed_str(s),
@@ -127,9 +125,12 @@ pub trait TextSource<'src> {
         // SAFETY: Since we have captured self mutably, 
         // f cannot call self.next() or self.skip_bytes().
         let (consume, result) = f(peek);
-        if consume && let Some(c) = peek {
-            // SAFETY: We know that the next character is valid and so can consume its length in UTF-8 bytes.
-            unsafe { self.skip_bytes_unchecked(c.len_utf8()); }
+        // if consume is true and peek is Some, consume the character.
+        if consume {
+            if let Some(c) = peek {
+                // SAFETY: We know that the next character is valid and so can consume its length in UTF-8 bytes.
+                unsafe { self.skip_bytes_unchecked(c.len_utf8()); }
+            }
         }
         Ok(result)
     }

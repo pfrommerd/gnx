@@ -1,6 +1,4 @@
 [package]
-name = "gnx-json"
+name = "gnx-expr"
 version = "0.1.0"
 edition = "2024"
-
-[dependencies]

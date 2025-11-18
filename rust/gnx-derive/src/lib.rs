@@ -1,9 +1,21 @@
 use proc_macro::TokenStream as ProcTokenStream;
-use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
-use syn::{Path, Type, TypePath};
 
+mod transforms;
+
+#[proc_macro]
+pub fn jit(input: ProcTokenStream) -> ProcTokenStream {
+    transforms::jit(input)
+}
+
+#[proc_macro_attribute]
+pub fn transform(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
+    match attr.to_string().as_str() {
+        "jit" => transforms::jit_fn(attr, input),
+        _ => panic!("Invalid transform"),
+    }
+}
 
 #[proc_macro_derive(Leaf)]
 pub fn derive_leaf(input: ProcTokenStream) -> ProcTokenStream {

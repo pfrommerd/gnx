@@ -29,7 +29,9 @@ version = "0.1.0"
 dependencies = [
  "castaway",
  "gnx-derive",
+ "gnx-expr",
  "gnx-graph",
+ "gnx-io",
  "ordered-float",
  "paste",
 ]
@@ -44,11 +46,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gnx-expr"
+version = "0.1.0"
+
+[[package]]
 name = "gnx-graph"
 version = "0.1.0"
 dependencies = [
  "castaway",
  "gnx-derive",
+ "gnx-expr",
  "ordered-float",
  "paste",
 ]
@@ -58,7 +65,7 @@ name = "gnx-io"
 version = "0.1.0"
 dependencies = [
  "base64",
- "gnx",
+ "gnx-graph",
  "ordered-float",
  "paste",
 ]
@@ -70,10 +77,6 @@ dependencies = [
  "gnx",
  "pyo3",
 ]
-
-[[package]]
-name = "gnx-json"
-version = "0.1.0"
 
 [[package]]
 name = "gnxlib"

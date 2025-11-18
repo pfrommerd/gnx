@@ -1,6 +1,6 @@
 use gnx_io::util::RawStrSource;
 use gnx_io::json::{JsonParser, Value, Map, Number};
-use gnx_io::Deserialize;
+use gnx_graph::Deserialize;
 
 #[test]
 fn test_json_parse() {

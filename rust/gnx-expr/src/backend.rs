@@ -1,5 +1,5 @@
 use crate::array::Array;
-use crate::expr::{Expr, Value};
+use crate::{Expr, Value};
 
 use std::sync::{Arc, Mutex};
 

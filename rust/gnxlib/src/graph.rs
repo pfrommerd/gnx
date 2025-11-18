@@ -44,9 +44,9 @@ impl Graph for PyGraph {
     type Owned = Self;
     type Builder<L: Leaf> = PyBuilder;
 
-    fn builder<L: Leaf, F: Filter<L>>(
+    fn builder<L: Leaf, F: Filter<L>, E: Error>(
             &self, filter: F, mut ctx: &mut GraphContext
-    ) -> Result<Self::Builder<L>, GraphError> {
+    ) -> Result<Self::Builder<L>, E> {
         use PyGraph::*;
         Ok(match filter.matches_ref(self) {
             Ok(_) => PyBuilder::Leaf,
@@ -58,7 +58,7 @@ impl Graph for PyGraph {
                 },
                 Tuple(children) => PyBuilder::Tuple(children.iter().enumerate().map(|(i, child)| {
                     child.builder(filter.child(KeyRef::Index(i)), &mut ctx)
-                }).collect::<Result<Vec<PyBuilder>, GraphError>>()?),
+                }).collect::<Result<Vec<PyBuilder>, E>>()?),
                 _ => panic!()
             }
         })
@@ -69,7 +69,7 @@ impl Graph for PyGraph {
     ) -> Result<Self::Owned, S::Error> {
         use PyGraph::*;
         Ok(match filter.matches_ref(self) {
-            Ok(r) => L::try_into_value(source.leaf(r)?).map_err(|_| GraphError::InvalidLeaf)?,
+            Ok(r) => L::try_into_value(source.leaf(r)?).map_err(|_| S::Error::invalid_leaf())?,
             Err(graph) => match graph {
                 Leaf(leaf) => Leaf(match filter.matches_ref(leaf) {
                     Ok(_) => leaf.replace(filter, source, ctx)?,
@@ -78,19 +78,19 @@ impl Graph for PyGraph {
                 Tuple(children) => Tuple({
                     let mut ns = source.node()?;
                     children.iter().enumerate().map(|(i, child)| child.replace(
-                            filter.child(KeyRef::Index(i)), ns.child(KeyRef::Index(i))?, ctx
+                            filter.child(KeyRef::Index(i)), ns.expect_child(KeyRef::Index(i))?, ctx
                     )).collect::<Result<Vec<PyGraph>, S::Error>>()?
                 }),
                 List(children) => List({
                     let mut ns = source.node()?;
                     children.iter().enumerate().map(|(i, child)| child.replace(
-                        filter.child(KeyRef::Index(i)), ns.child(KeyRef::Index(i))?, ctx
+                        filter.child(KeyRef::Index(i)), ns.expect_child(KeyRef::Index(i))?, ctx
                     )).collect::<Result<Vec<PyGraph>, S::Error>>()?
                 }),
                 Dict(children) => Dict({
                     let mut ns = source.node()?;
                     children.iter().map(|(key, child)| {
-                        let child = child.replace(filter.child(key.as_ref()), ns.child(key.as_ref())?, ctx)?;
+                        let child = child.replace(filter.child(key.as_ref()), ns.expect_child(key.as_ref())?, ctx)?;
                         Ok((key.clone(), child))
                     }).collect::<Result<Vec<(DictKey, PyGraph)>, S::Error>>()?
                 }),

@@ -1,6 +1,18 @@
 use std::sync::Arc;
 
-use super::expr::{ArrayRefTracer, ArrayTracer};
+use crate::{BorrowFrom, Traceable, Tracer, Value, ValueInfo};
+
+pub enum Dim {
+    Fixed(usize),
+    // unknown size, can be converted
+    // to a fixed size by truncating if too big or padding if too small.
+    Dynamic,
+    // Dependent on another dimension
+    // to resolve the dynamic size.
+    // Contains the index of the dependent dimension.
+    // The other dimension can potentially also be jagged.
+    Jagged(usize)
+}
 
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Shape(Vec<usize>);
@@ -83,13 +95,13 @@ pub type DataHandle = Arc<dyn DataImpl>;
 
 pub struct Sharding {}
 
-pub struct ArrayType {
+pub struct ArrayInfo {
     shape: Shape,
     dtype: DType,
     sharding: Option<Sharding>,
 }
 
-pub struct Array(ArrayTracer);
+pub struct Array(Tracer<Array>);
 
 impl Array {
     pub fn sharding(&self) -> Option<&Sharding> {
@@ -102,9 +114,14 @@ impl Array {
         &self.0.info().shape
     }
 }
-// Wraps ArrayInfo so that Array/ArrayRef have different info types
-#[allow(unused)]
-pub struct ArrayRefType(ArrayType);
 
-#[allow(unused)]
-pub struct ArrayRef(ArrayRefTracer);
+impl BorrowFrom<ValueInfo> for ArrayInfo {
+    fn borrow_from(value: &ValueInfo) -> &Self {
+        todo!()
+    }
+}
+
+impl Traceable for Array {
+    type Concrete = Value;
+    type Info = ArrayInfo;
+}

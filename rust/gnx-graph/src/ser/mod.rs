@@ -1,6 +1,5 @@
-use gnx::array::Array;
-use gnx::graph::GraphId;
-use gnx::util::Error;
+use gnx_expr::Array;
+use crate::{GraphId, Error};
 
 use std::fmt::Display;
 
