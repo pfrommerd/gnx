@@ -3,6 +3,8 @@ mod trace;
 mod util;
 mod expr;
 
+mod builtins;
+
 pub mod backend;
 
 pub use array::*;

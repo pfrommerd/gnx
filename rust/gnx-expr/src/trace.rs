@@ -1,13 +1,15 @@
-use std::collections::BTreeMap;
 use std::sync::{Arc, Weak};
 use std::marker::{PhantomData, PhantomPinned};
 
-use crate::util::{ArcCell, SyncUnsafeCell};
+use crate::array::ArrayInfo;
+
+use crate::util::ArcCell;
 use crate::expr::Op;
 
 pub enum Value {
     Array,
     ArrayRef,
+    Device,
     // A generic resource handle.
     Handle
 }
@@ -18,22 +20,17 @@ impl Value {
 
 #[derive(Clone)]
 pub enum ValueInfo {
-    Array
+    Array(ArrayInfo),
+    ArrayRef(ArrayInfo),
+    Device(()),
+    Handle(())
 }
 
 pub struct Invocation {
-    op: Box<dyn Op>,
-    // Any closed-over tracers
-    closure: Vec<Tracer<Generic>>,
-    // any explicit inputs to the invocation
-    inputs: Vec<Tracer<Generic>>,
-    // This cell is populated upon construction
-    // of the invocation and then never modified again!
-    // Thus we use a sync unsafe cell to allow concurrent
-    // zero-overhead access to the weak outputs after construction.
-    outputs: SyncUnsafeCell<Vec<WeakTracer<Generic>>>,
+    op: Op,
+    captured_inputs: Vec<Tracer<Generic>>,
+    explicit_inputs: Vec<Tracer<Generic>>,
 }
-
 pub struct Returned {
     invocation: Arc<Invocation>,
     index: usize,

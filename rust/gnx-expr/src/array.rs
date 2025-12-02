@@ -42,6 +42,42 @@ pub enum DType {
     U8, U16, U32, U64,
     I8, I16, I32, I64,
     F16, F32, F64,
+    C64, C128,
+}
+
+pub enum Item {
+    Bool(bool),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    I8(i8),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    F16(f32),
+    F32(f32),
+    F64(f64),
+    C64(f32, f32),
+    C128(f64, f64),
+}
+
+use std::borrow::Cow;
+pub enum Data<'r> {
+    Bool(Cow<'r, [bool]>),
+    U8(Cow<'r, [u8]>),
+    U16(Cow<'r, [u16]>),
+    U32(Cow<'r, [u32]>),
+    U64(Cow<'r, [u64]>),
+    I8(Cow<'r, [i8]>),
+    I16(Cow<'r, [i16]>),
+    I32(Cow<'r, [i32]>),
+    I64(Cow<'r, [i64]>),
+    F16(Cow<'r, [f32]>),
+    F32(Cow<'r, [f32]>),
+    F64(Cow<'r, [f64]>),
+    C64(Cow<'r, [f32]>, Cow<'r, [f32]>),
+    C128(Cow<'r, [f64]>, Cow<'r, [f64]>),
 }
 
 impl From<&'static str> for DType {
@@ -59,6 +95,8 @@ impl From<&'static str> for DType {
             "float16" => DType::F16,
             "float32" => DType::F32,
             "float64" => DType::F64,
+            "complex64" => DType::C64,
+            "complex128" => DType::C128,
             _ => panic!("Unsupported data type: {}", s),
         }
     }
@@ -79,6 +117,8 @@ impl Into<&'static str> for DType {
             DType::F16 => "float16",
             DType::F32 => "float32",
             DType::F64 => "float64",
+            DType::C64 => "complex64",
+            DType::C128 => "complex128",
         }
     }
 }
