@@ -1,17 +1,15 @@
-use std::fmt::Display;
-use std::any::Any;
-use std::hash::{Hash, Hasher};
-
-use std::sync::Arc;
 use std::collections::BTreeMap;
 use std::borrow::Cow;
 
 use crate::ValueInfo;
 use crate::array::{Item, Data};
 
+// The static attributes of an operation.
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub enum Attrs {
     Scalar(Item),
-    Data(Data<'static>),
+    // A literal array value.
+    Literal(Data<'static>),
     String(Cow<'static, str>),
     Info(ValueInfo),
     Expr(Expr),
@@ -19,6 +17,7 @@ pub enum Attrs {
     Map(BTreeMap<Cow<'static, str>, Attrs>),
 }
 
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Op {
     pub dialect: &'static str,
     pub name: &'static str,
@@ -30,7 +29,7 @@ pub struct Var {
     id: Option<usize>, // If None, var is a "hole"
 }
 
-#[derive(Clone, Hash)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Eqn {
     op: Op,
     // closed-over inputs
@@ -39,23 +38,13 @@ pub struct Eqn {
     outputs: Vec<Var>,
 }
 
-// TODO: Why can't we derive PartialEq?
-impl PartialEq for Eqn {
-    fn eq(&self, other: &Self) -> bool {
-        self.op.dyn_eq(&other.op) &&
-        self.inputs == other.inputs &&
-        self.outputs == other.outputs
-    }
-}
-impl Eq for Eqn {}
-
 impl Eqn {
     pub fn new(op: Op,
         closure: Vec<Var>,
         inputs: Vec<Var>,
         outputs: Vec<Var>
     ) -> Self {
-        Eqn { op: Arc::new(op), closure, inputs, outputs }
+        Eqn { op, closure, inputs, outputs }
     }
     pub fn op(&self) -> &Op { &self.op }
     pub fn inputs(&self) -> &Vec<Var> { &self.inputs }
@@ -63,6 +52,7 @@ impl Eqn {
 }
 
 // Tracers can be "captured" into exprs
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Expr {
     // any closed-over inputs
     // note that these are distinct vars from 

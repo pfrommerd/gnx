@@ -48,6 +48,9 @@ dependencies = [
 [[package]]
 name = "gnx-expr"
 version = "0.1.0"
+dependencies = [
+ "ordered-float",
+]
 
 [[package]]
 name = "gnx-graph"

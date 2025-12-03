@@ -1,6 +1,8 @@
 use std::sync::Arc;
+use std::fmt::{Debug, Display};
 
 use crate::{BorrowFrom, Traceable, Tracer, Value, ValueInfo};
+use ordered_float::OrderedFloat;
 
 pub enum Dim {
     Fixed(usize),
@@ -36,7 +38,7 @@ impl std::fmt::Debug for Shape {
 }
 
 #[rustfmt::skip]
-#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum DType {
     Bool,
     U8, U16, U32, U64,
@@ -45,6 +47,7 @@ pub enum DType {
     C64, C128,
 }
 
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Item {
     Bool(bool),
     U8(u8),
@@ -55,14 +58,16 @@ pub enum Item {
     I16(i16),
     I32(i32),
     I64(i64),
-    F16(f32),
-    F32(f32),
-    F64(f64),
-    C64(f32, f32),
-    C128(f64, f64),
+    F16(OrderedFloat<f32>),
+    F32(OrderedFloat<f32>),
+    F64(OrderedFloat<f64>),
+    C64(OrderedFloat<f32>, OrderedFloat<f32>),
+    C128(OrderedFloat<f64>, OrderedFloat<f64>),
 }
 
 use std::borrow::Cow;
+
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Data<'r> {
     Bool(Cow<'r, [bool]>),
     U8(Cow<'r, [u8]>),
@@ -73,11 +78,11 @@ pub enum Data<'r> {
     I16(Cow<'r, [i16]>),
     I32(Cow<'r, [i32]>),
     I64(Cow<'r, [i64]>),
-    F16(Cow<'r, [f32]>),
-    F32(Cow<'r, [f32]>),
-    F64(Cow<'r, [f64]>),
-    C64(Cow<'r, [f32]>, Cow<'r, [f32]>),
-    C128(Cow<'r, [f64]>, Cow<'r, [f64]>),
+    F16(Cow<'r, [OrderedFloat<f32>]>),
+    F32(Cow<'r, [OrderedFloat<f32>]>),
+    F64(Cow<'r, [OrderedFloat<f64>]>),
+    C64(Cow<'r, [OrderedFloat<f32>]>, Cow<'r, [OrderedFloat<f32>]>),
+    C128(Cow<'r, [OrderedFloat<f64>]>, Cow<'r, [OrderedFloat<f64>]>),
 }
 
 impl From<&'static str> for DType {
@@ -130,23 +135,25 @@ impl std::fmt::Display for DType {
     }
 }
 
-pub trait DataImpl {}
+pub trait DataImpl: Debug + Display {
+    fn info(&self) -> &ArrayInfo;
+}
 pub type DataHandle = Arc<dyn DataImpl>;
 
-pub struct Sharding {}
+pub trait MutDataImpl: Debug + Display {
+    fn info(&self) -> &ArrayInfo;
+}
+pub type MutDataHandle = Arc<dyn MutDataImpl>;
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ArrayInfo {
     shape: Shape,
     dtype: DType,
-    sharding: Option<Sharding>,
 }
 
 pub struct Array(Tracer<Array>);
 
 impl Array {
-    pub fn sharding(&self) -> Option<&Sharding> {
-        self.0.info().sharding.as_ref()
-    }
     pub fn dtype(&self) -> DType {
         self.0.info().dtype
     }
@@ -155,13 +162,5 @@ impl Array {
     }
 }
 
-impl BorrowFrom<ValueInfo> for ArrayInfo {
-    fn borrow_from(value: &ValueInfo) -> &Self {
-        todo!()
-    }
-}
+pub struct ArrayRef(Tracer<ArrayRef>);
 
-impl Traceable for Array {
-    type Concrete = Value;
-    type Info = ArrayInfo;
-}

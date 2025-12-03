@@ -1,190 +1,208 @@
-use std::sync::{Arc, Weak};
-use std::marker::{PhantomData, PhantomPinned};
+use std::sync::{Arc, OnceLock, RwLock, Weak};
+use std::marker::PhantomData;
 
-use crate::array::ArrayInfo;
-
-use crate::util::ArcCell;
+use crate::array::{Array, ArrayRef, ArrayInfo, DataHandle, MutDataHandle};
 use crate::expr::Op;
+use crate::trace_value::TraceValue;
 
+#[derive(Clone, Debug)]
 pub enum Value {
-    Array,
-    ArrayRef,
+    // The physical (immutable) data for this array.
+    Array(DataHandle),
+    // The mutable data underlying this array.
+    ArrayRef(MutDataHandle),
+    // A handle to a device.
     Device,
     // A generic resource handle.
     Handle
 }
 
-impl Value {
-    fn matches_info(&self, info: &ValueInfo) -> bool { true }
-}
-
-#[derive(Clone)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum ValueInfo {
     Array(ArrayInfo),
-    ArrayRef(ArrayInfo),
     Device(()),
     Handle(())
 }
 
+#[derive(Clone, Debug)]
+pub enum ValueInfoRef<'r> {
+    Array(&'r ArrayInfo),
+    Device(()),
+    Handle(())
+}
+
+
+impl Value {
+    fn info(&self) -> ValueInfoRef<'_> {
+        match self {
+            Value::Array(data) => ValueInfoRef::Array(data.info()),
+            _ => todo!(),
+        }
+    }
+}
+
+pub struct Trace {
+    // Contains either the invocation, ret_idx,
+    // is a placeholder, or is a concrete value
+    value: TraceValue,
+    info: ValueInfo,
+    // The users of this trace
+    used_by: RwLock<Vec<UsedIn>>
+}
+
 pub struct Invocation {
     op: Op,
-    captured_inputs: Vec<Tracer<Generic>>,
-    explicit_inputs: Vec<Tracer<Generic>>,
+    inputs: Vec<Tracer<Generic>>,
+    outputs: OnceLock<Vec<WeakTracer<Generic>>>
 }
-pub struct Returned {
-    invocation: Arc<Invocation>,
-    index: usize,
-    info: ValueInfo,
+
+#[derive(Clone)]
+pub struct UsedIn {
+    // Weak to prevent circular references.
+    invocation: Weak<Invocation>,
+    idx: usize,
 }
 
 impl Invocation {
     // Will return a vector of the output tracers.
-    pub fn new<O: Op>(op: O,
-            closure: Vec<Tracer<Generic>>,
+    pub fn new(op: Op,
             inputs: Vec<Tracer<Generic>>,
-            outputs: Vec<ValueInfo>) -> (Arc<Invocation>, Vec<Tracer<Generic>>) {
+            outputs: Vec<ValueInfo>) -> Vec<Tracer<Generic>> {
+        let is_abstract = inputs.iter()
+            .any(|x| x.shared.value.is_abstract());
         let invocation = Arc::new(Invocation {
-            op: Box::new(op),
-            closure: closure,
-            inputs: inputs,
-            outputs: SyncUnsafeCell::new(Vec::new())
+            op,
+            inputs,
+            outputs: OnceLock::new(),
         });
+        // Add UsedIn to the inputs
+        for (idx, input) in invocation.inputs.iter().enumerate() {
+            let mut w = input.shared.used_by.write().unwrap();
+            w.push(UsedIn {
+                invocation: Arc::downgrade(&invocation),
+                idx
+            })
+        }
         let outputs: Vec<Tracer<Generic>> = outputs.into_iter().enumerate().map(|(index, info)| {
-            Tracer::new(Trace::Op(Returned {
-                invocation: invocation.clone(),
-                index: index,
+            Tracer::new(Arc::new(Trace {
+                value: if is_abstract { 
+                    TraceValue::abstract_returned(invocation.clone(), index)
+                } else {
+                    TraceValue::updatable_returned(invocation.clone(), index)
+                },
                 info: info,
+                used_by: RwLock::new(Vec::new()),
             }))
         }).collect();
-        // Populate invocation.outputs with the weak tracers.
-        // SAFETY: This is the only time we mutably access self.outputs!
-        unsafe {
-            let weak_outputs = &mut *invocation.outputs.get();
-            std::mem::swap(weak_outputs,
-                &mut outputs.iter().map(|output| output.weak()).collect()
-            );
-        }
-        (invocation, outputs)
+        // Add the outputs as outputs of the invocation
+        invocation.outputs.set(
+            outputs.iter().map(|o| o.weak()).collect()
+        ).ok().unwrap();
+        outputs
     }
 
-    pub fn op(&self) -> &dyn Op { &*self.op }
-    pub fn inputs(&self) -> &Vec<Tracer<Generic>> { &self.inputs }
-    pub fn outputs(&self) -> &Vec<WeakTracer<Generic>> {
-        // SAFETY: We only immutably access self.outputs after construction.
-        unsafe {
-            let weak_outputs = &*self.outputs.get();
-            weak_outputs
-        }
-    }
-}
-
-
-#[allow(unused)]
-pub enum Trace {
-    // A realized value and the info it was realized with.
-    // a value can match multiple possible info types
-    // (e.g. a 1-D array with known shape can match an info containing a dynamic shape)
-    Physical(Value, ValueInfo),
-    Placeholder(ValueInfo),
-    Op(Returned),
-    Error(ValueInfo),
-}
-
-impl Trace {
-    pub fn info(&self) -> &ValueInfo {
-        match self {
-            Trace::Physical(_, info) => info,
-            Trace::Placeholder(info) => info,
-            Trace::Op(returned) => &returned.info,
-            Trace::Error(info) => info,
-        }
-    }
-}
-
-// Acts like a Cell<Trace>. Uses an ArcCell
-// internally to allow atomic updates to the trace
-// without the overhead of a Mutex.
-#[derive(Clone)]
-pub struct TraceCell {
-    trace: ArcCell<Trace>,
-    // A trace cell does not allow changing the value info.
-    // This allows us to get a reference to the info 
-    // without cloning the underlying Arc<Trace>.
-    info: ValueInfo,
-    _pinned: PhantomPinned
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TracerId(usize);
-
-impl TraceCell {
-    pub fn new(trace: Trace) -> Self {
-        let info = trace.info().clone();
-        TraceCell { trace: ArcCell::new(Arc::new(trace)), info, _pinned: PhantomPinned }
-    }
-    pub fn info(&self) -> &ValueInfo {
-        &self.info
-    }
-    pub fn get(&self) -> Arc<Trace> {
-        self.trace.get()
-    }
-    // Realize the trace with a given value.
-    pub fn realize(&self, value: Value) {
-        if !value.matches_info(&self.info) {
-            panic!("Internal error: realized tracer value does not match tracer info");
-        }
-        let trace = Arc::new(Trace::Physical(value, self.info.clone()));
-        self.trace.set(trace);
-    }
+    pub fn op(&self) -> &Op { &self.op }
 }
 
 pub trait BorrowFrom<T> {
     fn borrow_from(value: &T) -> &Self;
-} 
-
-impl<T> BorrowFrom<T> for T {
-    fn borrow_from(value: &T) -> &Self { value }
 }
 
 pub trait Traceable {
-    type Concrete: BorrowFrom<Value>;
-    type Info: BorrowFrom<ValueInfo>;
+    type Concrete: Into<Value> + BorrowFrom<Value>;
+    type Info: Into<ValueInfo> + BorrowFrom<ValueInfo>;
+}
+
+impl BorrowFrom<Value> for DataHandle {
+    fn borrow_from(value: &Value) -> &Self {
+        match value {
+            Value::Array(data) => data,
+            _ => panic!("Expected Array, got {:?}", value),
+        }
+    }
+}
+impl BorrowFrom<Value> for MutDataHandle {
+    fn borrow_from(value: &Value) -> &Self {
+        match value {
+            Value::ArrayRef(data) => data,
+            _ => panic!("Expected ArrayRef, got {:?}", value),
+        }
+    }
+}
+
+impl BorrowFrom<ValueInfo> for ArrayInfo {
+    fn borrow_from(value: &ValueInfo) -> &Self {
+        match value {
+            ValueInfo::Array(info) => info,
+            _ => panic!("Expected ArrayInfo, got {:?}", value),
+        }
+    }
+}
+impl BorrowFrom<Value> for Value {
+    fn borrow_from(value: &Value) -> &Self { value }
+}
+impl BorrowFrom<ValueInfo> for ValueInfo {
+    fn borrow_from(value: &ValueInfo) -> &Self { value }
+}
+
+impl From<DataHandle> for Value {
+    fn from(value: DataHandle) -> Self { Value::Array(value) }
+}
+impl From<MutDataHandle> for Value {
+    fn from(value: MutDataHandle) -> Self { Value::ArrayRef(value) }
+}
+impl From<ArrayInfo> for ValueInfo {
+    fn from(value: ArrayInfo) -> Self { ValueInfo::Array(value) }
 }
 
 #[derive(Clone)]
 pub struct Tracer<T: Traceable> {
-    shared: Arc<TraceCell>,
+    shared: Arc<Trace>,
     _phantom: PhantomData<T>
 }
 
 #[derive(Clone)]
 pub struct WeakTracer<T: Traceable> {
-    shared: Weak<TraceCell>,
+    shared: Weak<Trace>,
     _phantom: PhantomData<T>
 }
 
 impl<T: Traceable> Tracer<T> {
-    pub fn new(trace: Trace) -> Self {
-        let cell = TraceCell::new(trace);
-        Tracer { shared: Arc::new(cell), _phantom: PhantomData }
+    // Create a placeholder tracer (used for abstract inputs, etc.)
+    fn new(shared: Arc<Trace>) -> Self {
+        Tracer { shared, _phantom: PhantomData }
     }
-    pub fn weak(&self) -> WeakTracer<T> {
-        WeakTracer { shared: Arc::downgrade(&self.shared), _phantom: PhantomData }
+
+    pub fn placeholder(info: T::Info) -> Self {
+        todo!()
     }
-    pub fn generic(&self) -> Tracer<Generic> {
-        Tracer { shared: self.shared.clone(), _phantom: PhantomData }
+    // Create a tracer from a concrete value.
+    pub fn concrete(value: T::Concrete) -> Self {
+        let value: Value = value.into();
+        todo!()
     }
-    // Always succeeds but the resulting tracer may panic when calling info()
-    pub fn cast<U: Traceable>(&self) -> Tracer<U> {
-        Tracer { shared: self.shared.clone(), _phantom: PhantomData }
+
+    pub fn is_abstract(&self) -> bool {
+        self.shared.value.is_abstract()
     }
 
     pub fn info(&self) -> &T::Info {
-        T::Info::borrow_from(self.shared.info())
+        T::Info::borrow_from(&self.shared.info)
     }
 
-    pub fn trace(&self) -> Arc<Trace> {
-        self.shared.trace.get()
+    pub fn weak(&self) -> WeakTracer<T> {
+        WeakTracer { shared: Arc::downgrade(&self.shared), _phantom: PhantomData }
+    }
+
+    // Cast to a generic tracer.
+    pub fn generic(self) -> Tracer<Generic> {
+        Tracer { shared: self.shared, _phantom: PhantomData }
+    }
+    // Cast to a particular type of tracer.
+    pub fn cast<U: Traceable>(self) -> Tracer<U> {
+        // Try to borrow from the shared info.
+        U::Info::borrow_from(&self.shared.info);
+        Tracer { shared: self.shared, _phantom: PhantomData }
     }
 }
 
@@ -200,7 +218,16 @@ impl<T: Traceable> WeakTracer<T> {
 
 pub struct Generic;
 
+
 impl Traceable for Generic {
     type Concrete = Value;
     type Info = ValueInfo;
+}
+impl Traceable for Array {
+    type Concrete = DataHandle;
+    type Info = ArrayInfo;
+}
+impl Traceable for ArrayRef {
+    type Concrete = MutDataHandle;
+    type Info = ArrayInfo;
 }
