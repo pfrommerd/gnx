@@ -1,27 +1,20 @@
+mod attr;
+
+pub use attr::*;
+
 use std::collections::BTreeMap;
 use std::borrow::Cow;
 
-use crate::ValueInfo;
+use crate::trace::{Tracer, Generic};
+use crate::value::{Value, ValueInfo};
 use crate::array::{Item, Data};
 
-// The static attributes of an operation.
-#[derive(Clone, Hash, PartialEq, Eq)]
-pub enum Attrs {
-    Scalar(Item),
-    // A literal array value.
-    Literal(Data<'static>),
-    String(Cow<'static, str>),
-    Info(ValueInfo),
-    Expr(Expr),
-    List(Vec<Attrs>),
-    Map(BTreeMap<Cow<'static, str>, Attrs>),
-}
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Op {
     pub dialect: &'static str,
     pub name: &'static str,
-    pub attrs: Attrs
+    pub attrs: AttrMap
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -57,7 +50,7 @@ pub struct Expr {
     // any closed-over inputs
     // note that these are distinct vars from 
     // the closure vars in the eqns
-    captured_inputs: Vec<Var>,
+    closure_inputs: Vec<Var>,
     explicit_inputs: Vec<Var>,
     eqns: Vec<Eqn>,
     outputs: Vec<Var>,
@@ -65,15 +58,24 @@ pub struct Expr {
 
 // A closed expression is an expression
 // with captured_inputs bound.
-pub struct ClosedExpr<'r> {
+// This is used for pretty-printing Expr
+// using the closure vars for the pretty-printing.
+pub struct ClosedExpr {
     expr: Expr,
-    captured_inputs: Cow<'r, [Var]>
+    // The vars that were closed-over by the expr
+    closure: Cow<'static, [Var]>
 }
 
-use crate::trace::{Tracer, Generic};
+// Tools for converting trace -> expr
 
 pub struct Capture {
     expr: Expr,
     // the tracers that were closed-over by the expr
     closure: Vec<Tracer<Generic>>
+}
+
+impl Capture {
+    fn from_outputs<'a>(outputs: impl IntoIterator<Item=&'a Tracer<Generic>>) -> Self {
+        todo!()
+    }
 }

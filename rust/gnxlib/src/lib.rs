@@ -3,6 +3,7 @@ pub mod graph;
 pub mod leaf;
 pub mod string;
 
+
 use pyo3::prelude::*;
 
 /// A Python module implemented in Rust.
@@ -10,6 +11,7 @@ use pyo3::prelude::*;
 #[pymodule]
 mod gnxlib {
     use gnx::backend::{Backend, Device};
+    use uuid::Uuid;
     use pyo3::prelude::*;
 
     #[pyclass(name = "Backend", eq)]
@@ -27,40 +29,23 @@ mod gnxlib {
         }
     }
 
-    #[pyclass(name = "Device", eq)]
-    #[derive(PartialEq, Eq)]
+    #[pyclass(name = "Device", eq, frozen, hash)]
+    #[derive(PartialEq, Eq, Hash)]
     struct PyDevice(Device);
 
     #[pymethods]
     impl PyDevice {
         #[getter]
-        fn platform(&self) -> &str {
-            self.0.platform()
-        }
-
+        fn uuid(&self) -> &Uuid { self.0.uuid() }
         #[getter]
-        fn platform_id(&self) -> usize {
-            self.0.platform_id()
-        }
-
+        fn platform(&self) -> &str { self.0.platform() }
         #[getter]
-        fn hardware_kind(&self) -> &str {
-            self.0.hardware_kind()
-        }
-
+        fn hardware_id(&self) -> &str { self.0.hardware_id() }
         #[getter]
-        fn backend(&self) -> PyBackend {
-            PyBackend(self.0.backend())
-        }
+        fn hardware_kind(&self) -> &str { self.0.hardware_kind() }
 
-        fn __repr__(&self) -> String {
-            format!(
-                "Device(platform='{}', platform_id={}, hardware_kind='{}', backend='{}')",
-                self.platform(),
-                self.platform_id(),
-                self.hardware_kind(),
-                self.0.backend().name()
-            )
+        fn __str__(&self) -> String {
+            format!("{}", self.0)
         }
     }
 

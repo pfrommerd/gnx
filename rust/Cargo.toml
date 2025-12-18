@@ -1,3 +1,12 @@
 [workspace]
+members = [
+    "gnx",
+    "gnx-derive",
+    "gnx-expr",
+    "gnx-graph",
+    "gnx-io",
+    "gnx-jax",
+    "gnx-track",
+    "gnxlib", "gnx-track",
+]
 resolver = "3"
-members = ["gnxlib", "gnx", "gnx-jax", "gnx-derive", "gnx-io", "gnx-graph", "gnx-expr"]

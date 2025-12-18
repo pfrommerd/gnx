@@ -1,13 +1,10 @@
-mod array;
-mod trace;
-mod trace_value;
 mod util;
-mod expr;
 
-mod builtins;
+pub mod value;
+pub mod expr;
+pub mod builtins;
 
+pub mod trace;
 pub mod backend;
-
-pub use array::*;
-pub use trace::*;
-pub use expr::*;
+pub mod device;
+pub mod array;

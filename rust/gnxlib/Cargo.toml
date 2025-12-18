@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 gnx = { version = "0.1.0", path = "../gnx" }
-pyo3 = { version = "0.27.1", features = ["num-bigint"] }
+pyo3 = { version = "0.27.1", features = ["num-bigint", "uuid"] }
 num-bigint = "0.4.6"
 gnx-jax = { version = "0.1.0", path = "../gnx-jax" }
+uuid = "1.19.0"

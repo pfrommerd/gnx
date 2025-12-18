@@ -1,53 +1,58 @@
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 use std::marker::PhantomData;
+use std::fmt::{Debug, Display};
 
-use crate::array::{Array, ArrayRef, ArrayInfo, DataHandle, MutDataHandle};
 use crate::expr::Op;
-use crate::trace_value::TraceValue;
+use crate::util::DgArc;
 
-#[derive(Clone, Debug)]
-pub enum Value {
-    // The physical (immutable) data for this array.
-    Array(DataHandle),
-    // The mutable data underlying this array.
-    ArrayRef(MutDataHandle),
-    // A handle to a device.
-    Device,
-    // A generic resource handle.
-    Handle
-}
+pub use crate::value::{
+    Traceable, Generic,
+    Value, ValueInfo,
+    ConcreteValue,
+};
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub enum ValueInfo {
-    Array(ArrayInfo),
-    Device(()),
-    Handle(())
-}
-
-#[derive(Clone, Debug)]
-pub enum ValueInfoRef<'r> {
-    Array(&'r ArrayInfo),
-    Device(()),
-    Handle(())
+// An abstract trace value cannot be updated with a concrete value.
+// These do *not* have an ArcCell and so do not need to
+// close the underlying arc in order to access the invocation.
+enum AbstractTrace {
+    Placeholder,
+    Returned { invocation: Arc<Invocation>, ret_idx: usize }
 }
 
 
-impl Value {
-    fn info(&self) -> ValueInfoRef<'_> {
-        match self {
-            Value::Array(data) => ValueInfoRef::Array(data.info()),
-            _ => todo!(),
-        }
-    }
+struct UpdatableTrace {
+    // Will be set to None if the trace is a concrete value.
+    invocation: DgArc<Invocation>,
+    ret_idx: usize,
+    // The concrete value for this tracer.
+    value: OnceLock<Value>
+}
+
+enum TraceInner {
+    Abstract(AbstractTrace),
+    Updatable(UpdatableTrace),
+    Constant(Value),
 }
 
 pub struct Trace {
-    // Contains either the invocation, ret_idx,
-    // is a placeholder, or is a concrete value
-    value: TraceValue,
+    inner: TraceInner,
     info: ValueInfo,
     // The users of this trace
     used_by: RwLock<Vec<UsedIn>>
+}
+
+impl Trace {
+    fn debug_fmt(&self, name: &str, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(name).finish()
+    }
+}
+
+// For debugging purposes, make this a bit cleaner
+// than the auto-derived Debug impl would be
+impl Debug for Trace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.debug_fmt("Trace", f)
+    }
 }
 
 pub struct Invocation {
@@ -65,95 +70,73 @@ pub struct UsedIn {
 
 impl Invocation {
     // Will return a vector of the output tracers.
-    pub fn new(op: Op,
-            inputs: Vec<Tracer<Generic>>,
-            outputs: Vec<ValueInfo>) -> Vec<Tracer<Generic>> {
-        let is_abstract = inputs.iter()
-            .any(|x| x.shared.value.is_abstract());
-        let invocation = Arc::new(Invocation {
-            op,
-            inputs,
-            outputs: OnceLock::new(),
-        });
-        // Add UsedIn to the inputs
-        for (idx, input) in invocation.inputs.iter().enumerate() {
-            let mut w = input.shared.used_by.write().unwrap();
-            w.push(UsedIn {
-                invocation: Arc::downgrade(&invocation),
-                idx
-            })
-        }
-        let outputs: Vec<Tracer<Generic>> = outputs.into_iter().enumerate().map(|(index, info)| {
-            Tracer::new(Arc::new(Trace {
-                value: if is_abstract { 
-                    TraceValue::abstract_returned(invocation.clone(), index)
-                } else {
-                    TraceValue::updatable_returned(invocation.clone(), index)
-                },
-                info: info,
-                used_by: RwLock::new(Vec::new()),
-            }))
-        }).collect();
-        // Add the outputs as outputs of the invocation
-        invocation.outputs.set(
-            outputs.iter().map(|o| o.weak()).collect()
-        ).ok().unwrap();
-        outputs
-    }
-
     pub fn op(&self) -> &Op { &self.op }
 }
 
-pub trait BorrowFrom<T> {
-    fn borrow_from(value: &T) -> &Self;
-}
+impl Trace {
+    fn abstract_retval(invocation: Arc<Invocation>, ret_idx: usize, info: ValueInfo) -> Self {
+        Trace {
+            inner: TraceInner::Abstract(AbstractTrace::Returned { invocation, ret_idx }),
+            info,
+            used_by: RwLock::new(Vec::new())
+        }
+    }
+    fn updatable_retval(invocation: Arc<Invocation>, ret_idx: usize, info: ValueInfo) -> Self {
+        Trace {
+            inner: TraceInner::Updatable(UpdatableTrace {
+                invocation: invocation.into(),
+                ret_idx, value: OnceLock::new()
+            }),
+            info,
+            used_by: RwLock::new(Vec::new())
+        }
+    }
+    fn placeholder(info: ValueInfo) -> Self {
+        Trace {
+            inner: TraceInner::Abstract(AbstractTrace::Placeholder),
+            info,
+            used_by: RwLock::new(Vec::new())
+        }
+    }
+    fn concrete(value: Value, info: ValueInfo) -> Self {
+        Trace {
+            inner: TraceInner::Updatable(UpdatableTrace {
+                invocation: DgArc::new(),
+                ret_idx: 0, value: value.into()
+            }),
+            info,
+            used_by: RwLock::new(Vec::new())
+        }
+    }
 
-pub trait Traceable {
-    type Concrete: Into<Value> + BorrowFrom<Value>;
-    type Info: Into<ValueInfo> + BorrowFrom<ValueInfo>;
-}
+    fn is_abstract(&self) -> bool { matches!(self.inner, TraceInner::Abstract(_)) }
 
-impl BorrowFrom<Value> for DataHandle {
-    fn borrow_from(value: &Value) -> &Self {
-        match value {
-            Value::Array(data) => data,
-            _ => panic!("Expected Array, got {:?}", value),
+    fn info(&self) -> &ValueInfo {
+        &self.info
+    }
+
+    fn update(&self, value: Value) {
+        match &self.inner {
+            TraceInner::Updatable(updatable) => {
+                updatable.value.set(value).ok().expect("Value has already been set");
+                // Downgrade the invocation to allow
+                // for dropping the associated graph.
+                updatable.invocation.downgrade();
+            }
+            TraceInner::Abstract(_) => panic!("Cannot update an abstract Tracer"),
+            TraceInner::Constant(_) => panic!("Cannot update a constant Tracer"),
+        }
+    }
+
+    fn try_concrete(&self) -> Option<&Value> {
+        match &self.inner {
+            TraceInner::Updatable(updatable) => updatable.value.get(),
+            TraceInner::Constant(value) => Some(value),
+            _ => None,
         }
     }
 }
-impl BorrowFrom<Value> for MutDataHandle {
-    fn borrow_from(value: &Value) -> &Self {
-        match value {
-            Value::ArrayRef(data) => data,
-            _ => panic!("Expected ArrayRef, got {:?}", value),
-        }
-    }
-}
 
-impl BorrowFrom<ValueInfo> for ArrayInfo {
-    fn borrow_from(value: &ValueInfo) -> &Self {
-        match value {
-            ValueInfo::Array(info) => info,
-            _ => panic!("Expected ArrayInfo, got {:?}", value),
-        }
-    }
-}
-impl BorrowFrom<Value> for Value {
-    fn borrow_from(value: &Value) -> &Self { value }
-}
-impl BorrowFrom<ValueInfo> for ValueInfo {
-    fn borrow_from(value: &ValueInfo) -> &Self { value }
-}
-
-impl From<DataHandle> for Value {
-    fn from(value: DataHandle) -> Self { Value::Array(value) }
-}
-impl From<MutDataHandle> for Value {
-    fn from(value: MutDataHandle) -> Self { Value::ArrayRef(value) }
-}
-impl From<ArrayInfo> for ValueInfo {
-    fn from(value: ArrayInfo) -> Self { ValueInfo::Array(value) }
-}
 
 #[derive(Clone)]
 pub struct Tracer<T: Traceable> {
@@ -167,27 +150,68 @@ pub struct WeakTracer<T: Traceable> {
     _phantom: PhantomData<T>
 }
 
+// For debugging purposes, make this a bit cleaner
+impl<T: Traceable> Debug for Tracer<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.shared.debug_fmt(std::any::type_name::<Tracer<T>>(), f)
+    }
+}
+
+
 impl<T: Traceable> Tracer<T> {
-    // Create a placeholder tracer (used for abstract inputs, etc.)
-    fn new(shared: Arc<Trace>) -> Self {
-        Tracer { shared, _phantom: PhantomData }
+    fn new(trace: Trace) -> Self {
+        Tracer { shared: Arc::new(trace), _phantom: PhantomData }
+    }
+
+    pub fn invoke(op: Op,
+            inputs: Vec<Tracer<Generic>>,
+            outputs: Vec<ValueInfo>) -> Vec<Tracer<Generic>> {
+        let is_abstract = inputs.iter()
+            .any(|x| x.shared.is_abstract());
+        let invocation = Arc::new(Invocation {
+            op,
+            inputs,
+            outputs: OnceLock::new(),
+        });
+        // Add UsedIn to the inputs
+        for (idx, input) in invocation.inputs.iter().enumerate() {
+            let mut w = input.shared.used_by.write().unwrap();
+            w.push(UsedIn {
+                invocation: Arc::downgrade(&invocation),
+                idx
+            })
+        }
+        let outputs: Vec<Tracer<Generic>> = if is_abstract { 
+            outputs.into_iter().enumerate().map(|(index, info)| {
+                Tracer::new(Trace::abstract_retval(invocation.clone(), index, info))
+            }).collect()
+        } else {
+            outputs.into_iter().enumerate().map(|(index, info)| {
+                Tracer::new(Trace::abstract_retval(invocation.clone(), index, info))
+            }).collect()
+        };
+        // Add the outputs as outputs of the invocation
+        invocation.outputs.set(
+            outputs.iter().map(|o| o.weak()).collect()
+        ).ok().unwrap();
+        outputs
     }
 
     pub fn placeholder(info: T::Info) -> Self {
-        todo!()
+        Tracer::new(Trace::placeholder(ValueInfo::new(info)))
     }
+
     // Create a tracer from a concrete value.
-    pub fn concrete(value: T::Concrete) -> Self {
-        let value: Value = value.into();
-        todo!()
+    pub fn concrete(value: T::Concrete, info: T::Info) -> Self {
+        Tracer::new(Trace::concrete(Value::new(value), ValueInfo::new(info)))
     }
 
     pub fn is_abstract(&self) -> bool {
-        self.shared.value.is_abstract()
+        self.shared.is_abstract()
     }
 
     pub fn info(&self) -> &T::Info {
-        T::Info::borrow_from(&self.shared.info)
+        self.shared.info.downcast_ref().unwrap()
     }
 
     pub fn weak(&self) -> WeakTracer<T> {
@@ -201,8 +225,12 @@ impl<T: Traceable> Tracer<T> {
     // Cast to a particular type of tracer.
     pub fn cast<U: Traceable>(self) -> Tracer<U> {
         // Try to borrow from the shared info.
-        U::Info::borrow_from(&self.shared.info);
         Tracer { shared: self.shared, _phantom: PhantomData }
+    }
+
+    // Try to extract the concrete value from this tracer.
+    pub fn try_concrete(&self) -> Option<&T::Concrete> {
+        self.shared.try_concrete().map(|value| value.downcast_ref().expect("Tracer contained incorrect type"))
     }
 }
 
@@ -214,20 +242,4 @@ impl<T: Traceable> WeakTracer<T> {
     pub fn generic(&self) -> WeakTracer<Generic> {
         WeakTracer { shared: self.shared.clone(), _phantom: PhantomData }
     }
-}
-
-pub struct Generic;
-
-
-impl Traceable for Generic {
-    type Concrete = Value;
-    type Info = ValueInfo;
-}
-impl Traceable for Array {
-    type Concrete = DataHandle;
-    type Info = ArrayInfo;
-}
-impl Traceable for ArrayRef {
-    type Concrete = MutDataHandle;
-    type Info = ArrayInfo;
 }

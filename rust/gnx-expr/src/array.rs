@@ -1,8 +1,8 @@
-use std::sync::Arc;
 use std::fmt::{Debug, Display};
 
-use crate::{BorrowFrom, Traceable, Tracer, Value, ValueInfo};
 use ordered_float::OrderedFloat;
+
+use crate::trace::{Tracer, Traceable, ConcreteValue, ValueInfo};
 
 pub enum Dim {
     Fixed(usize),
@@ -135,15 +135,27 @@ impl std::fmt::Display for DType {
     }
 }
 
-pub trait DataImpl: Debug + Display {
+pub trait DataImpl: Send + Sync + Debug + Display {
     fn info(&self) -> &ArrayInfo;
 }
-pub type DataHandle = Arc<dyn DataImpl>;
+pub type DataHandle = Box<dyn DataImpl>;
 
-pub trait MutDataImpl: Debug + Display {
+impl ConcreteValue for DataHandle {
+    fn to_info(&self) -> ValueInfo {
+        ValueInfo::Array(self.info().clone())
+    }
+}
+
+pub trait MutDataImpl: Send + Sync + Debug + Display {
     fn info(&self) -> &ArrayInfo;
 }
-pub type MutDataHandle = Arc<dyn MutDataImpl>;
+pub type MutDataHandle = Box<dyn MutDataImpl>;
+
+impl ConcreteValue for MutDataHandle {
+    fn to_info(&self) -> ValueInfo {
+        ValueInfo::ArrayRef(ArrayRefInfo(self.info().clone()))
+    }
+}
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ArrayInfo {
@@ -151,7 +163,31 @@ pub struct ArrayInfo {
     dtype: DType,
 }
 
+
+impl Display for ArrayInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.shape, self.dtype)
+    }
+}
+
 pub struct Array(Tracer<Array>);
+
+impl From<Array> for Tracer<Array> {
+    fn from(value: Array) -> Self {
+        value.0
+    }
+}
+impl From<Tracer<Array>> for Array {
+    fn from(value: Tracer<Array>) -> Self {
+        Array(value)
+    }
+}
+
+impl Traceable for Array {
+    type Concrete = DataHandle;
+    type Info = ArrayInfo;
+}
+
 
 impl Array {
     pub fn dtype(&self) -> DType {
@@ -162,5 +198,39 @@ impl Array {
     }
 }
 
+// Used for the tracer
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ArrayRefInfo(ArrayInfo);
+
+impl Display for ArrayRefInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 pub struct ArrayRef(Tracer<ArrayRef>);
 
+impl From<ArrayRef> for Tracer<ArrayRef> {
+    fn from(value: ArrayRef) -> Self {
+        value.0
+    }
+}
+impl From<Tracer<ArrayRef>> for ArrayRef {
+    fn from(value: Tracer<ArrayRef>) -> Self {
+        ArrayRef(value)
+    }
+}
+
+impl Traceable for ArrayRef {
+    type Concrete = MutDataHandle;
+    type Info = ArrayRefInfo;
+}
+
+impl ArrayRef {
+    pub fn dtype(&self) -> DType {
+        self.0.info().0.dtype
+    }
+    pub fn shape(&self) -> &Shape {
+        &self.0.info().0.shape
+    }
+}

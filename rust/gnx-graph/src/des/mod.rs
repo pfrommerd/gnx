@@ -3,7 +3,7 @@ use std::fmt::Display;
 
 use crate::Error;
 use crate::{GraphId, GraphContext};
-use gnx_expr::Array;
+use gnx_expr::array::Array;
 
 mod builtins;
 

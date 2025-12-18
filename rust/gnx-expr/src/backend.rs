@@ -1,61 +1,61 @@
-use crate::array::Array;
-use crate::{Expr, Value};
+use crate::expr::Expr;
+use crate::value::Value;
 
 use std::sync::{Arc, Mutex};
+use std::fmt::{Debug, Display};
+use std::hash::{Hash, Hasher};
+use uuid::Uuid;
 
-pub trait DeviceImpl: Send + Sync {
+pub trait DeviceImpl: Debug + Display + Send + Sync {
+    fn uuid(&self) -> &Uuid;
     fn platform(&self) -> &str;
-    fn platform_id(&self) -> usize;
     fn hardware_kind(&self) -> &str;
+    fn hardware_id(&self) -> &str;
 
-    fn backend(&self) -> Backend;
-    fn put(&self, array: &Array) -> Result<Array, std::io::Error>;
+    fn backend(&self) -> &Backend;
 }
 
-pub trait BackendImpl: Send + Sync {
+pub type DeviceHandle = Arc<dyn DeviceImpl + Send + Sync>;
+
+
+pub struct ExecOpts {
+
+}
+
+// Re-export the Device type from the device module.
+pub use crate::device::Device;
+
+#[async_trait::async_trait]
+pub trait BackendImpl: Debug + Display + Send + Sync {
     fn name(&self) -> &str;
-    // Note: All Values must belong to devices of this backend
-    fn execute(&self, expr: Expr, args: Vec<Value>) -> Result<Vec<Value>, std::io::Error>;
     fn devices(&self) -> Result<Vec<Device>, std::io::Error>;
+
+    async fn execute(&self, expr: Expr, args: Vec<Value>, opts: ExecOpts)
+        -> Result<Vec<Value>, std::io::Error>;
 }
+
+pub type BackendHandle = Arc<dyn BackendImpl>;
 
 #[derive(Clone)]
-pub struct Device(Arc<dyn DeviceImpl + Send + Sync>);
+#[repr(transparent)]
+pub struct Backend(BackendHandle);
 
-impl PartialEq for Device {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+impl AsRef<Backend> for BackendHandle {
+    fn as_ref(&self) -> &Backend {
+        unsafe { std::mem::transmute(self) }
     }
 }
-impl Eq for Device {}
 
-#[rustfmt::skip]
-impl Device {
-    pub fn new(impl_: Arc<dyn DeviceImpl + Send + Sync>) -> Self {
-        Device(impl_)
+impl Debug for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.0, f)
     }
-
-    pub fn platform(&self) -> &str { self.0.platform() }
-    pub fn platform_id(&self) -> usize { self.0.platform_id() }
-    pub fn hardware_kind(&self) -> &str { self.0.hardware_kind() }
-
-    pub fn backend(&self) -> Backend { self.0.backend() }
-    pub fn put(&self, array: &Array) -> Result<Array, std::io::Error> { self.0.put(array) }
 }
 
-#[derive(Clone)]
-pub struct Backend(Arc<dyn BackendImpl + Send + Sync>);
-
-#[rustfmt::skip]
-impl Backend {
-    pub fn from(impl_: Arc<dyn BackendImpl + Send + Sync>) -> Self {
-        Backend(impl_)
+impl Display for Backend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
     }
-
-    pub fn name(&self) -> &str { self.0.name()  }
-    pub fn execute(&self, expr: Expr, args: Vec<Value>)
-        -> Result<Vec<Value>, std::io::Error> { self.0.execute(expr, args) }
-    pub fn devices(&self) -> Result<Vec<Device>, std::io::Error> { self.0.devices() }
 }
 
 impl PartialEq for Backend {
@@ -64,6 +64,30 @@ impl PartialEq for Backend {
     }
 }
 impl Eq for Backend {}
+
+impl Hash for Backend {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
+#[rustfmt::skip]
+impl Backend {
+    pub fn new(v: Arc<dyn BackendImpl + Send + Sync>) -> Self {
+        Backend(v)
+    }
+
+    pub fn name(&self) -> &str { self.0.name()  }
+    pub fn devices(&self) -> Result<Vec<Device>, std::io::Error> {
+        self.0.devices()
+    }
+
+    pub async fn execute(&self, expr: Expr, args: Vec<Value>, opts: ExecOpts)
+            -> Result<Vec<Value>, std::io::Error> {
+        self.0.execute(expr, args, opts).await
+    }
+}
+
 
 static BACKENDS: Mutex<Vec<Backend>> = Mutex::new(Vec::new());
 
