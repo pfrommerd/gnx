@@ -1,0 +1,65 @@
+/* App-wide styling */
+body {
+    background-color: #0f1116;
+    color: #ffffff;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 20px;
+}
+
+.grid {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    flex-direction: row;
+    align-items: center;
+    align-content: flex-start;
+}
+.grid > .grid-item {
+    min-width: var(--item-width);
+    min-height: var(--item-height);
+}
+
+.grid-item {
+    background-color: #1e222d;
+    border: 1px solid #2d3441;
+    border-radius: 3px;
+    padding: 0;
+    overflow: hidden;
+    max-width: 100%;
+}
+
+.grid-item.dragging {
+    position: absolute;
+    cursor: move;
+    z-index: 1000;
+}
+
+.grid-item-placeholder {
+    background-color: #859fe97d;
+    border: 1px solid #5675ae;
+    border-radius: 3px;
+}
+
+.grid-item-content {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: 12px;
+    box-sizing: border-box;
+}
+
+.grid-item-header {
+    font-weight: 600;
+    font-size: 14px;
+    color: #ffffff;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #2d3441;
+    padding-bottom: 8px;
+}
+
+.grid-item-body {
+    flex: 1;
+    color: #b0b8c4;
+    font-size: 13px;
+    overflow: auto;
+}

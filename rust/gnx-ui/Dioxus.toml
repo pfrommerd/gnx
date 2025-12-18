@@ -3,7 +3,7 @@
 [web.app]
 
 # HTML title tag content
-title = "gnx-track"
+title = "gnx-ui"
 
 # include `assets` in web platform
 [web.resource]

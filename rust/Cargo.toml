@@ -6,7 +6,7 @@ members = [
     "gnx-graph",
     "gnx-io",
     "gnx-jax",
-    "gnx-track",
-    "gnxlib", "gnx-track",
+    "gnx-ui",
+    "gnxlib",
 ]
 resolver = "3"

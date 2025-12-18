@@ -116,7 +116,7 @@ impl<A: Array> Deref for ArrayVec<A> {
     type Target = [A::Item];
     fn deref(&self) -> &Self::Target {
         unsafe {
-            A::uninit_slice(self.buffer, self.len)
+            A::uninit_slice(self.buffer, self.len);
             std::slice::from_raw_parts(self.buffer.as_ptr() as *const T, self.len)
         }
     }

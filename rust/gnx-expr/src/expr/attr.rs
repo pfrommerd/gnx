@@ -24,15 +24,6 @@ pub enum Attr {
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct AttrMap {
 }
-
 #[derive(Clone, Hash, PartialEq, Eq)]
-pub enum AttrListData {
-    One([Attr; 1]),
-    Two([Attr; 2]),
-    Three([Attr; 3]),
-    Variable(Vec<Attr>),
-}
-
 pub struct AttrList {
-   data: AttrListData
 }

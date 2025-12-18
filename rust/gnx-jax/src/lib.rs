@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 
 use gnx::expr::{Expr, Value};
 use gnx::backend::{
-    Backend, BackendImpl, DeviceImpl, Device, BackendHandle
+    Backend, BackendImpl, DeviceImpl, Device, BackendHandle, ExecOpts
 };
 
 #[derive(Debug)]
@@ -143,7 +143,7 @@ impl BackendImpl for JaxBackend {
         Ok(devices)
     }
 
-    async fn execute(&self, _expr: Expr, _args: Vec<Value>)
+    async fn execute(&self, _expr: Expr, _args: Vec<Value>, _opts: ExecOpts)
             -> Result<Vec<Value>, std::io::Error> {
         todo!()
     }
