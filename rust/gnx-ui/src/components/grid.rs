@@ -43,7 +43,7 @@ pub fn Block(props: BlockProps) -> Element {
 
     rsx! {
         div {
-            class: "grid-item",
+            class: "grid-block",
             class: if drag_state.read().is_some() { "dragging" },
             style: if let Some(drag) = &*drag_state.read() {
                 "left: {drag.client_x - drag.offset_x}px; top: {drag.client_y - drag.offset_y}px; width: {width}px; height: {height}px"
@@ -78,10 +78,29 @@ pub fn Block(props: BlockProps) -> Element {
                     evt.stop_propagation();
                 }
             },
-            {props.children}
+            div {
+                class: "grid-block-content",
+                {props.children}
+            }
+            div {
+                class: "grid-block-resize-handle",
+                onmousedown: move |evt| {
+                    evt.stop_propagation();
+                    evt.prevent_default();
+                },
+                svg {
+                    "viewBox": "0 0 10 10",
+                    path {
+                        d: "M 2 8 H 8 V 2",
+                        fill: "none",
+                        stroke_width: "1",
+                        class: "grid-block-resize-handle-path"
+                    }
+                }
+            }
         }
         if drag_state.read().is_some() {
-            div { class: "grid-item-placeholder", style: "width: {width}px; height: {height}px;" }
+            div { class: "grid-block-placeholder", style: "width: {width}px; height: {height}px;" }
         }
     }
 }

@@ -19,34 +19,49 @@ body {
     min-height: var(--item-height);
 }
 
-.grid-item {
+.grid-block {
+    display: flex;
+    flex-direction: column;
     background-color: #1e222d;
     border: 1px solid #2d3441;
     border-radius: 3px;
-    padding: 0;
+    margin: 0.2em;
     overflow: hidden;
-    max-width: 100%;
 }
 
-.grid-item.dragging {
+.grid-block-content {
+    height: 100%;
+    display: flex;
+    padding: 0.5em 0.5em 0em 0.5em;
+    box-sizing: border-box;
+}
+
+.grid-block-resize-handle {
+    display: flex;
+    align-self: flex-end;
+    width: 0.5em;
+    height: 0.5em;
+    cursor: se-resize;
+    z-index: 1;
+}
+.grid-block-resize-handle-path {
+    stroke: #efefef;
+    stroke-width: 1;
+}
+
+.grid-block.dragging {
     position: absolute;
     cursor: move;
     z-index: 1000;
 }
 
-.grid-item-placeholder {
+.grid-block-placeholder {
     background-color: #859fe97d;
     border: 1px solid #5675ae;
     border-radius: 3px;
+    margin: 0.2em;
 }
 
-.grid-item-content {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    padding: 12px;
-    box-sizing: border-box;
-}
 
 .grid-item-header {
     font-weight: 600;

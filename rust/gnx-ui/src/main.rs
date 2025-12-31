@@ -49,6 +49,9 @@ fn Home() -> Element {
             Block {
                 "Hello, world!"
             }
+            Block {
+                "Goodbye, world!"
+            }
         }
     }
 }
