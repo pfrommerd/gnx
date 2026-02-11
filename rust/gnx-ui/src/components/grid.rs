@@ -14,7 +14,8 @@ pub fn Grid(props: GridProps) -> Element {
     rsx! {
         div {
             class: "grid",
-            style: "--item-height: {height}em; --item-width: {width}em;",
+            style: "--block-height: {height*10}em;",
+            style: "--block-width: {width*10}em;",
             {props.children}
         }
     }

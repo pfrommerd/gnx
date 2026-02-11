@@ -14,9 +14,9 @@ body {
     align-items: center;
     align-content: flex-start;
 }
-.grid > .grid-item {
-    min-width: var(--item-width);
-    min-height: var(--item-height);
+.grid > .grid-block {
+    width: var(--block-width);
+    height: var(--block-height);
 }
 
 .grid-block {
@@ -45,7 +45,7 @@ body {
     z-index: 1;
 }
 .grid-block-resize-handle-path {
-    stroke: #efefef;
+    stroke: #efefef9f;
     stroke-width: 1;
 }
 
