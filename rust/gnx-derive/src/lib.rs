@@ -20,7 +20,7 @@ pub fn transform(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStre
 #[proc_macro_derive(Leaf)]
 pub fn derive_leaf(input: ProcTokenStream) -> ProcTokenStream {
     // Parse the input into a syntax tree
-    let input = parse_macro_input!(input as DeriveInput);
+    let _ = parse_macro_input!(input as DeriveInput);
     // let ty = Type::Path(TypePath {
     //     qself: None,
     //     path: Path::from(input.ident),

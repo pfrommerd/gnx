@@ -2,18 +2,31 @@ mod attr;
 
 pub use attr::*;
 
-use std::collections::BTreeMap;
 use std::borrow::Cow;
-
+use std::ops::Deref;
+use std::sync::Arc;
 use crate::trace::{Tracer, Generic};
-use crate::value::{Value, ValueInfo};
-use crate::array::{Item, Data};
 
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub enum OpString {
+    Static(&'static str),
+    Shared(Arc<String>)
+}
+
+impl Deref for OpString {
+    type Target = str;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            OpString::Static(s) => s,
+            OpString::Shared(s) => s.as_str(),
+        }
+    }
+}
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Op {
-    pub dialect: &'static str,
-    pub name: &'static str,
+    pub dialect: OpString,
+    pub name: OpString,
     pub attrs: AttrMap
 }
 

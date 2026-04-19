@@ -37,7 +37,7 @@ enum TraceInner {
 pub struct Trace {
     inner: TraceInner,
     info: ValueInfo,
-    // The users of this trace
+    // Any downstream users of this trace
     used_by: RwLock<Vec<UsedIn>>
 }
 

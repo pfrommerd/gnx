@@ -2,7 +2,6 @@ use crate::array::{Item, Data};
 use crate::value::ValueInfo;
 use crate::expr::Expr;
 
-use std::collections::BTreeMap;
 use std::borrow::Cow;
 
 // The static attributes of an operation.
