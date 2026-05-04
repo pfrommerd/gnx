@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display};
 
 use ordered_float::OrderedFloat;
 
-use crate::trace::{Tracer, Traceable, ConcreteValue, ValueInfo};
+use crate::expr::trace::{ConcreteValue, Traceable, Tracer, ValueInfo};
 
 pub enum Dim {
     Fixed(usize),
@@ -18,6 +18,12 @@ pub enum Dim {
 
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Shape(Vec<usize>);
+
+impl Shape {
+    pub fn from_dims(dims: impl IntoIterator<Item = usize>) -> Self {
+        Shape(dims.into_iter().collect())
+    }
+}
 
 impl std::fmt::Display for Shape {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -163,6 +169,11 @@ pub struct ArrayInfo {
     dtype: DType,
 }
 
+impl ArrayInfo {
+    pub fn new(shape: Shape, dtype: DType) -> Self {
+        ArrayInfo { shape, dtype }
+    }
+}
 
 impl Display for ArrayInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

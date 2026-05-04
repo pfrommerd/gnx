@@ -1,5 +1,5 @@
-use crate::trace::{Tracer, Traceable, ValueInfo};
-use crate::value::{ConcreteValue, Value};
+use crate::expr::trace::{Traceable, Tracer, ValueInfo};
+use crate::expr::value::{ConcreteValue, Value};
 use crate::expr::Expr;
 use crate::backend::{DeviceHandle, ExecOpts};
 

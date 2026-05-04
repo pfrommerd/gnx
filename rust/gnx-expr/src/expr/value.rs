@@ -1,12 +1,11 @@
-use crate::array::{DataHandle, MutDataHandle, ArrayRefInfo, ArrayInfo};
+use crate::array::{ArrayInfo, ArrayRefInfo, DataHandle, MutDataHandle};
 use crate::backend::DeviceHandle;
 use crate::device::DeviceInfo;
 
-use crate::trace::Tracer;
-use std::hash::{Hash, Hasher};
+use super::trace::Tracer;
 use std::any::Any;
 use std::fmt::{Debug, Display};
-
+use std::hash::{Hash, Hasher};
 
 pub trait ConcreteValue: Any + Send + Sync + Debug + Display {
     fn to_info(&self) -> ValueInfo;
@@ -23,7 +22,7 @@ pub enum Value {
     ArrayRef(MutDataHandle),
     // A handle to a device.
     Device(DeviceHandle),
-    Other(Box<dyn ConcreteValue>)
+    Other(Box<dyn ConcreteValue>),
 }
 
 impl ConcreteValue for Value {
@@ -52,19 +51,19 @@ impl Value {
     pub fn new<T: ConcreteValue>(value: T) -> Self {
         let value = match castaway::cast!(value, Self) {
             Ok(value) => return value,
-            Err(value) => value
+            Err(value) => value,
         };
         let value = match castaway::cast!(value, DataHandle) {
             Ok(value) => return Value::Array(value),
-            Err(value) => value
+            Err(value) => value,
         };
         let value = match castaway::cast!(value, MutDataHandle) {
             Ok(value) => return Value::ArrayRef(value),
-            Err(value) => value
+            Err(value) => value,
         };
         let value = match castaway::cast!(value, DeviceHandle) {
             Ok(value) => return Value::Device(value),
-            Err(value) => value
+            Err(value) => value,
         };
         Value::Other(Box::new(value))
     }
@@ -93,7 +92,8 @@ impl Value {
                 let v: &dyn Any = value;
                 v.downcast_ref()
             }
-        }.ok_or(())
+        }
+        .ok_or(())
     }
     pub fn downcast_mut<T: 'static>(&mut self) -> Result<&mut T, ()> {
         match self {
@@ -104,7 +104,8 @@ impl Value {
                 let v: &mut dyn Any = value;
                 v.downcast_mut()
             }
-        }.ok_or(())
+        }
+        .ok_or(())
     }
 }
 
@@ -113,26 +114,26 @@ pub enum ValueInfo {
     Array(ArrayInfo),
     ArrayRef(ArrayRefInfo),
     Device(DeviceInfo),
-    Other(Box<dyn AnyInfo>)
+    Other(Box<dyn AnyInfo>),
 }
 
 impl ValueInfo {
     pub fn new<T: AnyInfo>(value: T) -> Self {
         let value = match castaway::cast!(value, Self) {
             Ok(value) => return value,
-            Err(value) => value
+            Err(value) => value,
         };
         let value = match castaway::cast!(value, ArrayInfo) {
             Ok(value) => return ValueInfo::Array(value),
-            Err(value) => value
+            Err(value) => value,
         };
         let value = match castaway::cast!(value, ArrayRefInfo) {
             Ok(value) => return ValueInfo::ArrayRef(value),
-            Err(value) => value
+            Err(value) => value,
         };
         let value = match castaway::cast!(value, DeviceInfo) {
             Ok(value) => return ValueInfo::Device(value),
-            Err(value) => value
+            Err(value) => value,
         };
         ValueInfo::Other(Box::new(value))
     }
@@ -162,7 +163,8 @@ impl ValueInfo {
                 let v: &dyn Any = info;
                 v.downcast_ref()
             }
-        }.ok_or(())
+        }
+        .ok_or(())
     }
     pub fn downcast_mut<T: AnyInfo>(&mut self) -> Result<&mut T, ()> {
         match self {
@@ -173,10 +175,10 @@ impl ValueInfo {
                 let v: &mut dyn Any = info;
                 v.downcast_mut()
             }
-        }.ok_or(())
+        }
+        .ok_or(())
     }
 }
-
 
 impl Display for ValueInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -189,11 +191,10 @@ impl Display for ValueInfo {
     }
 }
 
-pub trait Traceable : Into<Tracer<Self>> + From<Tracer<Self>> {
+pub trait Traceable: Into<Tracer<Self>> + From<Tracer<Self>> {
     type Concrete: ConcreteValue;
     type Info: AnyInfo;
 }
-
 
 pub struct Generic(Tracer<Generic>);
 
@@ -222,9 +223,11 @@ pub trait AnyInfo: Any + Send + Sync + Debug + Display {
     fn dyn_clone(&self) -> Box<dyn AnyInfo>;
 }
 
-impl<T> AnyInfo for T 
-    where T: Any + Send + Sync,
-          T: Debug + Display + Clone + Hash + Eq {
+impl<T> AnyInfo for T
+where
+    T: Any + Send + Sync,
+    T: Debug + Display + Clone + Hash + Eq,
+{
     fn dyn_hash(&self, mut state: &mut dyn Hasher) {
         Hash::hash(self, &mut state);
     }

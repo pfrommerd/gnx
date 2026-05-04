@@ -1,11 +1,12 @@
-use crate::array::{Item, Data};
-use crate::value::ValueInfo;
+use crate::array::{Data, Item};
 use crate::expr::Expr;
+use super::value::ValueInfo;
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 // The static attributes of an operation.
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub enum Attr {
     Scalar(Item),
     // A literal array value.
@@ -18,11 +19,5 @@ pub enum Attr {
 }
 
 
-// inline the cases for 1-3 attrs
-
-#[derive(Clone, Hash, PartialEq, Eq)]
-pub struct AttrMap {
-}
-#[derive(Clone, Hash, PartialEq, Eq)]
-pub struct AttrList {
-}
+pub type AttrMap = BTreeMap<String, Attr>;
+pub type AttrList = Vec<Attr>;
