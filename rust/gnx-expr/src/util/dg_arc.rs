@@ -38,12 +38,6 @@ impl<T: ?Sized> From<Arc<T>> for DgArc<T> {
     }
 }
 
-impl<T> DgArc<T> {
-    pub fn new() -> Self {
-        DgArc { inner: RwLock::new(MaybeArcInner::Weak(Weak::new())) }
-    }
-}
-
 impl<T: ?Sized> DgArc<T> {
     pub fn downgrade(&self) { 
         let mut w = self.inner.write().unwrap();
@@ -52,18 +46,6 @@ impl<T: ?Sized> DgArc<T> {
                 *w = MaybeArcInner::Weak(Arc::downgrade(arc));
             }
             MaybeArcInner::Weak(_) => {}
-        }
-    }
-    pub fn upgrade(&self) {
-        let mut w = self.inner.write().unwrap();
-        match &*w {
-            MaybeArcInner::Arc(_) => {},
-            MaybeArcInner::Weak(weak) => {
-                let v = weak.upgrade();
-                if let Some(v) = v {
-                    *w = MaybeArcInner::Arc(v);
-                }
-            }
         }
     }
 
