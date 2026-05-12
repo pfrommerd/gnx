@@ -181,11 +181,17 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
                 if self.parser.source.is_array_end()? {
                     return Ok(None);
                 }
-                Ok(Some(seed.deserialize(&mut *self.parser)?))
+                let value = seed.deserialize(&mut *self.parser)?;
+                if !self.parser.source.is_array_end()? {
+                    self.parser.source.consume_delim_whitespace()?;
+                }
+                Ok(Some(value))
             }
         }
-        let access = ListSeqAccess { parser: self };
-        visitor.visit_seq(access)
+        self.source.consume_array_start()?;
+        let value = visitor.visit_seq(ListSeqAccess { parser: self })?;
+        self.source.consume_array_end()?;
+        Ok(value)
     }
 
     fn deserialize_tuple<V: DataVisitor<'src>>(
