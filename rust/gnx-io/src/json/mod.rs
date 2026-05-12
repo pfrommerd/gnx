@@ -1,10 +1,12 @@
+mod parser;
 mod source;
 mod value;
-mod parser;
+mod writer;
 
+pub use parser::*;
 pub use source::*;
 pub use value::*;
-pub use parser::*;
+pub use writer::*;
 
 #[derive(Debug)]
 pub enum JsonError {
@@ -51,7 +53,7 @@ impl From<std::num::ParseIntError> for JsonError {
 impl From<std::num::ParseFloatError> for JsonError {
     fn from(_: std::num::ParseFloatError) -> Self {
         Self::InvalidNumber
-    }   
+    }
 }
 
 type Result<T> = std::result::Result<T, JsonError>;
