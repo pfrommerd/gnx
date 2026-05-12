@@ -24,6 +24,8 @@ fn pop_restores_outer_frame() {
     let mut stacked = Tracer::<Generic>::placeholder(f32x4_info());
     let base_ptr = std::sync::Arc::as_ptr(&stacked.trace_ref());
     stacked.push(Tracer::<Generic>::placeholder(f32x4_info()).trace_ref());
+    assert_eq!(stacked.stack_depth(), 2);
+    stacked.pop();
     assert_eq!(stacked.stack_depth(), 1);
     assert_eq!(
         std::sync::Arc::as_ptr(&stacked.trace_ref()),

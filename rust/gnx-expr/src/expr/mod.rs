@@ -11,7 +11,6 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use self::trace::{Generic, Invocation, Tracer, TraceRef};
-use std::error::Error;
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub enum OpString {
@@ -322,36 +321,64 @@ impl Capture {
         let mut var_scope = VarScope::new();
         let mut trace_to_var: HashMap<TracerKey, Var> = HashMap::new();
         let mut explicit_inputs = Vec::new();
+        // The lifted closure variables and the corresponding trace refs.
         let mut closure_inputs = Vec::new();
         let mut closure_refs = Vec::new();
         let (invocations, output_vars) = collect_invocations(&outputs);
-        let inv_set: HashSet<InvKey> = invocations.keys().copied().collect();
+        // Sort the invocations topologically and allocate space for the equations.
         let ordered_invs = topo_sort_invocations(invocations);
         let mut eqns = Vec::with_capacity(ordered_invs.len());
+        // Create any variables for the explicit inputs.
         for k in input_keys {
             let v = var_scope.create_var();
             trace_to_var.insert(k, v.clone());
+            explicit_inputs.push(v);
         }
+        // Create an equation for each invocation.
         for inv in &ordered_invs {
-            let key = InvKey::from(inv);
-            let inputs : Vec<Input> = inv.inputs().iter()
-                .map(|inp| Input {
-                    var: trace_to_var[&TracerKey::from(&inp.trace)].clone(),
-                    effect: inp.effect,
-                }).collect();
+            let closure : Vec<Input> = inv.closure().iter().map(|inp| {
+                match trace_to_var.get(&TracerKey::from(&inp.trace)) {
+                    Some(var) => Input { var: var.clone(), effect: inp.effect},
+                    None => {
+                        let v = var_scope.create_var();
+                        trace_to_var.insert(TracerKey::from(&inp.trace), v.clone());
+                        closure_inputs.push(v.clone());
+                        closure_refs.push(inp.trace.clone());
+                        Input { var: v, effect: inp.effect }
+                    }
+                }
+            }).collect();
+            let inputs : Vec<Input> = inv.inputs().iter().map(|inp| {
+                match trace_to_var.get(&TracerKey::from(&inp.trace)) {
+                    Some(var) => Input { var: var.clone(), effect: inp.effect},
+                    None => {
+                        // Capture the trace as a closure variable.
+                        let v = var_scope.create_var();
+                        trace_to_var.insert(TracerKey::from(&inp.trace), v.clone());
+                        closure_inputs.push(v.clone());
+                        closure_refs.push(inp.trace.clone());
+                        Input { var: v, effect: inp.effect }
+                    }
+                }
+            }).collect();
+            // Add variables for the outputs.
+            let outputs = &output_vars[&InvKey::from(inv)];
+            let mut out_vars = Vec::with_capacity(inv.outputs());
             // The number of outputs is the maximum output index plus one.
-            let n_out = output_vars.get(&key).map(|o| o.keys().max().map(|k| k + 1)).flatten().unwrap_or(0);
-            let mut out_vars = vec![Var::hole(); n_out];
-            if let Some(output_map) = output_vars.get(&key) {
-                for (out_idx, out_trace) in output_map {
-                    let v = var_scope.create_var();
-                    trace_to_var.insert(TracerKey::from(out_trace), v.clone());
-                    out_vars[*out_idx] = v;
+            let n_out = inv.outputs();
+            for out_idx in 0..n_out {
+                match outputs.get(&out_idx) {
+                    Some(out_tracer) => {
+                        let v = var_scope.create_var();
+                        trace_to_var.insert(TracerKey::from(out_tracer), v.clone());
+                        out_vars.push(v);
+                    },
+                    None => out_vars.push(Var::hole()),
                 }
             }
             eqns.push(Eqn::new(
                 inv.op().clone(),
-                vec![],
+                closure,
                 inputs,
                 out_vars,
             ));
@@ -417,11 +444,6 @@ impl From<&Arc<Invocation>> for InvKey {
     }
 }
 
-fn goes_to_closure(t: &TraceRef, input_keys: &HashSet<TracerKey>) -> bool {
-    let k = TracerKey::from(t);
-    !input_keys.contains(&k) || t.try_constant().is_some()
-}
-
 // Collect the invocations and the output vars for each invocation.
 fn collect_invocations(outputs: &[&TraceRef]) -> (HashMap<InvKey, Arc<Invocation>>, HashMap<InvKey, BTreeMap<usize, TraceRef>>) {
     let mut invs: HashMap<InvKey, Arc<Invocation>> = HashMap::new();
@@ -452,13 +474,6 @@ fn collect_invocations(outputs: &[&TraceRef]) -> (HashMap<InvKey, Arc<Invocation
     }
 
     (invs, output_vars)
-}
-
-fn is_internal(t: &TraceRef, inv_keys: &HashSet<InvKey>) -> bool {
-    match t.producer() {
-        Some((inv, _)) => inv_keys.contains(&InvKey::from(&inv)),
-        None => false,
-    }
 }
 
 fn topo_sort_invocations(invs: HashMap<InvKey, Arc<Invocation>>) -> Vec<Arc<Invocation>> {

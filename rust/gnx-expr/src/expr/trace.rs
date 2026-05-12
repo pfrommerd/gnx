@@ -90,7 +90,9 @@ pub struct InputTracer {
 
 pub struct Invocation {
     op: Op,
+    closure: Vec<InputTracer>,
     inputs: Vec<InputTracer>,
+    outputs: usize,
 }
 
 impl Debug for Invocation {
@@ -102,55 +104,62 @@ impl Debug for Invocation {
     }
 }
 
-#[derive(Clone)]
-pub struct UsedIn {
-    // Weak used to prevent cyclic references.
-    invocation: Weak<Invocation>,
-    idx: usize,
-}
-
 impl Invocation {
     pub fn op(&self) -> &Op {
         &self.op
     }
+    pub fn closure(&self) -> &[InputTracer] { &self.closure }
     pub fn inputs(&self) -> &[InputTracer] { &self.inputs }
+    pub fn outputs(&self) -> usize { self.outputs }
+
+    #[rustfmt::skip]
+    pub fn invoke(
+        op: Op,
+        closure: Vec<(Tracer<Generic>, Effect)>,
+        inputs: Vec<(Tracer<Generic>, Effect)>,
+        outputs: Vec<ValueInfo>,
+    ) -> Vec<Tracer<Generic>> {
+        let is_abstract = inputs.iter().any(|(x, _)| x.is_abstract()) || closure.iter().any(|(x, _)| x.is_abstract());
+        let closure_refs: Vec<InputTracer> = closure.into_iter().map(|(x, e)| InputTracer {
+            trace: x.trace_ref(), effect: e
+        }).collect();
+        let input_refs: Vec<InputTracer> = inputs.into_iter().map(|(x, e)| InputTracer {
+            trace: x.trace_ref(), effect: e
+        }).collect();
+        let invocation = Arc::new(Invocation { op, closure: closure_refs, inputs: input_refs, outputs: outputs.len() });
+        let outputs: Vec<TraceRef> = if is_abstract {
+            outputs.into_iter().enumerate().map(|(index, info)| {
+                Arc::new(Trace {
+                    inner: TraceInner::Abstract(AbstractTrace::Returned {
+                        invocation: invocation.clone(),
+                        ret_idx: index,
+                    }),
+                    info,
+                })
+            }).collect()
+        } else {
+            outputs.into_iter().enumerate().map(|(index, info)| {
+                Arc::new(Trace {
+                    inner: TraceInner::Updatable(UpdatableTrace {
+                        invocation: invocation.clone().into(),
+                        ret_idx: index,
+                        value: OnceLock::new(),
+                    }),
+                    info,
+                })
+            }).collect()
+        };
+        // Each output tracer starts with a single-frame stack.
+        outputs.into_iter().map(|o| Tracer::new_single(o)).collect()
+    }
 }
 
 impl Trace {
-    fn abstract_retval(invocation: Arc<Invocation>, ret_idx: usize, info: ValueInfo) -> Self {
-        Trace {
-            inner: TraceInner::Abstract(AbstractTrace::Returned {
-                invocation,
-                ret_idx,
-            }),
-            info,
-        }
+    pub fn placeholder(info: ValueInfo) -> Self {
+        Trace { inner: TraceInner::Abstract(AbstractTrace::Placeholder), info }
     }
-    fn updatable_retval(invocation: Arc<Invocation>, ret_idx: usize, info: ValueInfo) -> Self {
-        Trace {
-            inner: TraceInner::Updatable(UpdatableTrace {
-                invocation: invocation.into(),
-                ret_idx,
-                value: OnceLock::new(),
-            }),
-            info,
-        }
-    }
-    fn placeholder(info: ValueInfo) -> Self {
-        Trace {
-            inner: TraceInner::Abstract(AbstractTrace::Placeholder),
-            info,
-        }
-    }
-    fn concrete(value: Value, info: ValueInfo) -> Self {
-        Trace {
-            inner: TraceInner::Updatable(UpdatableTrace {
-                invocation: DgArc::new(),
-                ret_idx: 0,
-                value: value.into(),
-            }),
-            info,
-        }
+    pub fn concrete(value: Value, info: ValueInfo) -> Self {
+        Trace { inner: TraceInner::Constant(value), info }
     }
 
     fn is_abstract(&self) -> bool {
@@ -245,38 +254,6 @@ impl<T: Traceable> Tracer<T> {
             Value::new(value),
             ValueInfo::new(info),
         )))
-    }
-
-    #[rustfmt::skip]
-    pub fn invoke(
-        op: Op,
-        inputs: Vec<(Tracer<Generic>, Effect)>,
-        outputs: Vec<ValueInfo>,
-    ) -> Vec<Tracer<Generic>> {
-        let is_abstract = inputs.iter().any(|(x, _)| x.is_abstract());
-        let input_refs: Vec<InputTracer> = inputs.into_iter().map(|(x, e)| InputTracer {
-            trace: x.trace_ref(), effect: e
-        }).collect();
-        let invocation = Arc::new(Invocation { op, inputs: input_refs });
-        let outputs: Vec<TraceRef> = if is_abstract {
-            outputs.into_iter().enumerate().map(|(index, info)| {
-                Arc::new(Trace::abstract_retval(
-                    invocation.clone(),
-                    index,
-                    info,
-                ))
-            }).collect()
-        } else {
-            outputs.into_iter().enumerate().map(|(index, info)| {
-                Arc::new(Trace::updatable_retval(
-                    invocation.clone(),
-                    index,
-                    info,
-                ))
-            }).collect()
-        };
-        // Each output tracer starts with a single-frame stack.
-        outputs.into_iter().map(|o| Tracer::new_single(o)).collect()
     }
 
 
