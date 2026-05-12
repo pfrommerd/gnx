@@ -1,13 +1,30 @@
 use gnx_expr::array::{ArrayInfo, DType, Shape};
-use gnx_expr::expr::{AttrMap, Capture, Effect, Op, OpString};
+use gnx_expr::expr::{AttrMap, Capture, Effect, Op};
 use gnx_expr::trace::{Generic, Invocation, Tracer, ValueInfo};
+use gnx_expr::expr::{Dialect, Operation};
 
-fn sample_op(name: &'static str) -> Op {
-    Op {
-        dialect: OpString::Static("test"),
-        name: OpString::Static(name),
-        attrs: AttrMap::default(),
+pub struct SampleOperation { name: &'static str }
+pub struct SampleDialect;
+
+impl Dialect for SampleDialect {
+    fn name(&self) -> &'static str {
+        "sample"
     }
+    fn create(&self, name: &'static str) -> Option<&'static dyn Operation> {
+        Some(match name {
+            "sin" => &SampleOperation { name: "sin" },
+            "mul" => &SampleOperation { name: "mul" },
+            "add" => &SampleOperation { name: "add" },
+            _ => return None
+        })
+    }
+}
+
+impl Operation for SampleOperation {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn dialect(&self) -> &'static dyn Dialect { &SampleDialect }
 }
 
 fn f32x4_info() -> ValueInfo {
@@ -22,19 +39,19 @@ fn capture_linear_chain() {
     let a = Tracer::<Generic>::placeholder(f32x4_info());
     let b = Tracer::<Generic>::placeholder(f32x4_info());
     let t1 = Invocation::invoke(
-        sample_op("sin"),
+        Op::new(&SampleOperation { name: "sin" }, AttrMap::default()),
         vec![],
         vec![(b.clone(), Effect::Read)],
         vec![f32x4_info()],
     );
     let t2 = Invocation::invoke(
-        sample_op("mul"),
+        Op::new(&SampleOperation { name: "mul" }, AttrMap::default()),
         vec![],
         vec![(t1[0].clone(), Effect::Read), (b.clone(), Effect::Read)],
         vec![f32x4_info()],
     );
     let t3 = Invocation::invoke(
-        sample_op("add"),
+        Op::new(&SampleOperation { name: "add" }, AttrMap::default()),
         vec![],
         vec![(a.clone(), Effect::Read), (t2[0].clone(), Effect::Read)],
         vec![f32x4_info()],
@@ -60,19 +77,19 @@ fn capture_linear_chain() {
 fn capture_diamond_distinct_intermediate_vars() {
     let x = Tracer::<Generic>::placeholder(f32x4_info());
     let u = Invocation::invoke(
-        sample_op("abs"),
+        Op::new(&SampleOperation { name: "abs" }, AttrMap::default()),
         vec![],
         vec![(x.clone(), Effect::Read)],
         vec![f32x4_info()],
     );
     let v = Invocation::invoke(
-        sample_op("neg"),
+        Op::new(&SampleOperation { name: "neg" }, AttrMap::default()),
         vec![],
         vec![(x.clone(), Effect::Read)],
         vec![f32x4_info()],
     );
     let w = Invocation::invoke(
-        sample_op("add"),
+        Op::new(&SampleOperation { name: "add" }, AttrMap::default()),
         vec![],
         vec![(u[0].clone(), Effect::Read), (v[0].clone(), Effect::Read)],
         vec![f32x4_info()],
@@ -92,7 +109,7 @@ fn capture_diamond_distinct_intermediate_vars() {
 fn capture_reuses_var_when_same_tracer_used_twice() {
     let x = Tracer::<Generic>::placeholder(f32x4_info());
     let w = Invocation::invoke(
-        sample_op("add"),
+        Op::new(&SampleOperation { name: "add" }, AttrMap::default()),
         vec![],
         vec![(x.clone(), Effect::Read), (x.clone(), Effect::Read)],
         vec![f32x4_info()],
@@ -117,7 +134,7 @@ fn capture_unlisted_leaf_tracer_is_closure() {
     let a = Tracer::<Generic>::placeholder(f32x4_info());
     let b = Tracer::<Generic>::placeholder(f32x4_info());
     let w = Invocation::invoke(
-        sample_op("add"),
+        Op::new(&SampleOperation { name: "add" }, AttrMap::default()),
         vec![],
         vec![(a.clone(), Effect::Read), (b.clone(), Effect::Read)],
         vec![f32x4_info()],

@@ -8,44 +8,70 @@ pub use capture::*;
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::ops::Deref;
-use std::sync::Arc;
+use std::hash::{Hash, Hasher};
+use std::fmt::Debug;
+use std::cmp::{Eq, PartialEq};
+use std::cmp::{Ord, PartialOrd};
 
-#[derive(Clone, Hash, PartialEq, Eq)]
-pub enum OpString {
-    Static(&'static str),
-    Shared(Arc<String>),
+pub trait Operation: Sync {
+    fn name(&self) -> &'static str;
+    fn dialect(&self) -> &'static dyn Dialect;
 }
 
-impl fmt::Debug for OpString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            OpString::Static(s) => write!(f, "\"{}\"", s),
-            OpString::Shared(s) => write!(f, "\"{}\"", s.as_str()),
-        }
-    }
+pub trait Dialect: Sync {
+    fn name(&self) -> &'static str;
+    fn create(&self, name: &'static str) -> Option<&'static dyn Operation>;
 }
 
-impl Deref for OpString {
-    type Target = str;
-    fn deref(&self) -> &Self::Target {
-        match self {
-            OpString::Static(s) => s,
-            OpString::Shared(s) => s.as_str(),
-        }
-    }
-}
-
-#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+// An Op is an Operation combined with an attribute set.
+#[derive(Clone)]
 pub struct Op {
-    pub dialect: OpString,
-    pub name: OpString,
-    pub attrs: AttrMap,
+    impl_: &'static dyn Operation,
+    attrs: AttrMap,
 }
+
+impl Debug for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl Hash for Op {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.impl_.dialect().name().hash(state);
+        self.impl_.name().hash(state);
+        self.attrs.hash(state);
+    }
+}
+
+impl PartialEq for Op {
+    fn eq(&self, other: &Self) -> bool {
+        (self.impl_.dialect().name(), self.impl_.name(), &self.attrs) == (other.impl_.dialect().name(), other.impl_.name(), &other.attrs)
+    }
+}
+
+impl Eq for Op {}
 
 impl fmt::Display for Op {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}", self.dialect.deref(), self.name.deref())
+        write!(f, "{}.{}", self.impl_.dialect().name(), self.impl_.name())?;
+        if !self.attrs.is_empty() {
+            write!(f, "<")?;
+            for (i, (k, v)) in self.attrs.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{k}: {v}")?;
+            }
+            write!(f, ">")?;
+        }
+        Ok(())
+    }
+}
+
+impl Op {
+    pub fn new(impl_: &'static dyn Operation, attrs: AttrMap) -> Self {
+        Op { impl_, attrs }
     }
 }
 

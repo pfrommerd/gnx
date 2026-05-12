@@ -71,6 +71,27 @@ pub enum Item {
     C128(OrderedFloat<f64>, OrderedFloat<f64>),
 }
 
+impl std::fmt::Display for Item {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Item::Bool(b) => write!(f, "{}", b),
+            Item::U8(u) => write!(f, "{}", u),
+            Item::U16(u) => write!(f, "{}", u),
+            Item::U32(u) => write!(f, "{}", u),
+            Item::U64(u) => write!(f, "{}", u),
+            Item::I8(i) => write!(f, "{}", i),
+            Item::I16(i) => write!(f, "{}", i),
+            Item::I32(i) => write!(f, "{}", i),
+            Item::I64(i) => write!(f, "{}", i),
+            Item::F16(v) => write!(f, "{}", v),
+            Item::F32(v) => write!(f, "{}", v),
+            Item::F64(v) => write!(f, "{}", v),
+            Item::C64(r, i) => write!(f, "{} + {}i", r, i),
+            Item::C128(r, i) => write!(f, "{} + {}i", r, i),
+        }
+    }
+}
+
 use std::borrow::Cow;
 
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -89,6 +110,12 @@ pub enum Data<'r> {
     F64(Cow<'r, [OrderedFloat<f64>]>),
     C64(Cow<'r, [OrderedFloat<f32>]>, Cow<'r, [OrderedFloat<f32>]>),
     C128(Cow<'r, [OrderedFloat<f64>]>, Cow<'r, [OrderedFloat<f64>]>),
+}
+
+impl<'r> std::fmt::Display for Data<'r> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
 }
 
 impl From<&'static str> for DType {
