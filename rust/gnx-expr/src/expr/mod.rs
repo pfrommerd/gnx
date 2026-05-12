@@ -205,8 +205,8 @@ impl fmt::Display for Eqn {
 /// Functional ANF expression: `lambda closure* ; explicit* . let eqns* in outputs*`.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct Expr {
-    closure_inputs: Vec<Var>,
-    explicit_inputs: Vec<Var>,
+    closure: Vec<Input>,
+    inputs: Vec<Input>,
     eqns: Vec<Eqn>,
     outputs: Vec<Var>,
     var_scope: VarScope,
@@ -215,28 +215,23 @@ pub struct Expr {
 
 impl Expr {
     pub fn new(
-        closure_inputs: Vec<Var>,
-        explicit_inputs: Vec<Var>,
+        closure: Vec<Input>,
+        inputs: Vec<Input>,
         eqns: Vec<Eqn>,
         outputs: Vec<Var>,
         var_scope: VarScope,
     ) -> Self {
         Expr {
-            closure_inputs,
-            explicit_inputs,
+            closure,
+            inputs,
             eqns,
             outputs,
             var_scope,
         }
     }
 
-    pub fn closure_inputs(&self) -> &[Var] {
-        &self.closure_inputs
-    }
-
-    pub fn explicit_inputs(&self) -> &[Var] {
-        &self.explicit_inputs
-    }
+    pub fn closure(&self) -> &[Input] { &self.closure }
+    pub fn inputs(&self) -> &[Input] { &self.inputs }
 
     pub fn eqns(&self) -> &[Eqn] {
         &self.eqns
@@ -250,14 +245,14 @@ impl Expr {
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{{ lambda ")?;
-        for (i, c) in self.closure_inputs.iter().enumerate() {
+        for (i, c) in self.closure.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
             write!(f, "{c}")?;
         }
         write!(f, " ; ")?;
-        for (i, x) in self.explicit_inputs.iter().enumerate() {
+        for (i, x) in self.inputs.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
             }
@@ -320,9 +315,9 @@ impl Capture {
 
         let mut var_scope = VarScope::new();
         let mut trace_to_var: HashMap<TracerKey, Var> = HashMap::new();
-        let mut explicit_inputs = Vec::new();
+        let mut input_vars = Vec::new();
         // The lifted closure variables and the corresponding trace refs.
-        let mut closure_inputs = Vec::new();
+        let mut closure_vars = Vec::new();
         let mut closure_refs = Vec::new();
         let (invocations, output_vars) = collect_invocations(&outputs);
         // Sort the invocations topologically and allocate space for the equations.
@@ -332,7 +327,7 @@ impl Capture {
         for k in input_keys {
             let v = var_scope.create_var();
             trace_to_var.insert(k, v.clone());
-            explicit_inputs.push(v);
+            input_vars.push(v);
         }
         // Create an equation for each invocation.
         for inv in &ordered_invs {
@@ -342,7 +337,7 @@ impl Capture {
                     None => {
                         let v = var_scope.create_var();
                         trace_to_var.insert(TracerKey::from(&inp.trace), v.clone());
-                        closure_inputs.push(v.clone());
+                        closure_vars.push(v.clone());
                         closure_refs.push(inp.trace.clone());
                         Input { var: v, effect: inp.effect }
                     }
@@ -355,7 +350,7 @@ impl Capture {
                         // Capture the trace as a closure variable.
                         let v = var_scope.create_var();
                         trace_to_var.insert(TracerKey::from(&inp.trace), v.clone());
-                        closure_inputs.push(v.clone());
+                        closure_vars.push(v.clone());
                         closure_refs.push(inp.trace.clone());
                         Input { var: v, effect: inp.effect }
                     }
@@ -393,10 +388,13 @@ impl Capture {
         let output_vars: Vec<Var> = outputs.iter()
             .map(|t| trace_to_var[&TracerKey::from(*t)].clone())
             .collect();
+        // TODO: Propagate the effects through the equations and into the closure/input variables.
+        let closure: Vec<Input> = closure_vars.into_iter().map(|v| Input { var: v, effect: Effect::Read }).collect();
+        let inputs: Vec<Input> = input_vars.into_iter().map(|v| Input { var: v, effect: Effect::Read }).collect();
         Ok(Capture {
             expr: Expr::new(
-                closure_inputs,
-                explicit_inputs,
+                closure,
+                inputs,
                 eqns,
                 output_vars,
                 var_scope,

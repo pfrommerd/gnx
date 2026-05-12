@@ -45,12 +45,8 @@ fn capture_linear_chain() {
         &[t3[0].trace_ref()],
     ).unwrap();
     let ex = cap.expr();
-    assert_eq!(ex.closure_inputs().len(), 0);
-    assert_eq!(
-        ex.explicit_inputs().len(),
-        2,
-        "a and b (b used twice → one Var)"
-    );
+    assert_eq!(ex.closure().len(), 0);
+    assert_eq!(ex.inputs().len(), 2, "a and b (b used twice → one Var)");
     assert_eq!(ex.eqns().len(), 3);
     assert_eq!(ex.outputs().len(), 1);
 
@@ -112,8 +108,8 @@ fn capture_placeholder_only() {
     let cap = Capture::from_trace_refs(&[x.trace_ref()], &[x.trace_ref()]).unwrap();
     let ex = cap.expr();
     assert!(ex.eqns().is_empty());
-    assert_eq!(ex.explicit_inputs().len(), 1);
-    assert_eq!(ex.outputs(), ex.explicit_inputs());
+    assert_eq!(ex.inputs().len(), 1);
+    assert_eq!(ex.outputs(), ex.inputs().iter().map(|i| i.var().clone()).collect::<Vec<_>>());
 }
 
 #[test]
@@ -127,8 +123,8 @@ fn capture_unlisted_leaf_tracer_is_closure() {
         vec![f32x4_info()],
     );
     let cap = Capture::from_trace_refs(&[a.trace_ref()], &[w[0].trace_ref()]).unwrap();
-    assert_eq!(cap.expr().explicit_inputs().len(), 1);
-    assert_eq!(cap.expr().closure_inputs().len(), 1);
+    assert_eq!(cap.expr().inputs().len(), 1);
+    assert_eq!(cap.expr().closure().len(), 1);
     assert_eq!(cap.closure().len(), 1);
     assert!(std::ptr::eq(
         std::sync::Arc::as_ptr(&cap.closure()[0]),
