@@ -2,7 +2,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 
-use crate::expr::Op;
+use crate::expr::{Op, Effect};
 use crate::util::DgArc;
 
 pub use super::value::{
@@ -37,9 +37,10 @@ enum TraceInner {
 pub struct Trace {
     inner: TraceInner,
     info: ValueInfo,
-    // Any downstream users of this trace
-    used_by: RwLock<Vec<UsedIn>>,
 }
+
+pub type TraceRef = Arc<Trace>;
+pub type WeakTraceRef = Weak<Trace>;
 
 // For debugging purposes, make this a bit cleaner
 // than the auto-derived Debug impl would be
@@ -80,10 +81,16 @@ impl Debug for Trace {
     }
 }
 
+#[derive(Debug)]
+pub struct InputTracer {
+    pub trace: TraceRef,
+    pub effect: Effect,
+}
+
+
 pub struct Invocation {
     op: Op,
-    inputs: Vec<Tracer<Generic>>,
-    outputs: OnceLock<Vec<WeakTracer<Generic>>>,
+    inputs: Vec<InputTracer>,
 }
 
 impl Debug for Invocation {
@@ -97,7 +104,7 @@ impl Debug for Invocation {
 
 #[derive(Clone)]
 pub struct UsedIn {
-    // Weak to prevent circular references.
+    // Weak used to prevent cyclic references.
     invocation: Weak<Invocation>,
     idx: usize,
 }
@@ -106,17 +113,7 @@ impl Invocation {
     pub fn op(&self) -> &Op {
         &self.op
     }
-
-    pub fn inputs(&self) -> &[Tracer<Generic>] {
-        &self.inputs
-    }
-
-    pub fn output_weak(&self, index: usize) -> Option<WeakTracer<Generic>> {
-        self.outputs
-            .get()
-            .and_then(|outs| outs.get(index))
-            .cloned()
-    }
+    pub fn inputs(&self) -> &[InputTracer] { &self.inputs }
 }
 
 impl Trace {
@@ -127,7 +124,6 @@ impl Trace {
                 ret_idx,
             }),
             info,
-            used_by: RwLock::new(Vec::new()),
         }
     }
     fn updatable_retval(invocation: Arc<Invocation>, ret_idx: usize, info: ValueInfo) -> Self {
@@ -138,14 +134,12 @@ impl Trace {
                 value: OnceLock::new(),
             }),
             info,
-            used_by: RwLock::new(Vec::new()),
         }
     }
     fn placeholder(info: ValueInfo) -> Self {
         Trace {
             inner: TraceInner::Abstract(AbstractTrace::Placeholder),
             info,
-            used_by: RwLock::new(Vec::new()),
         }
     }
     fn concrete(value: Value, info: ValueInfo) -> Self {
@@ -156,7 +150,6 @@ impl Trace {
                 value: value.into(),
             }),
             info,
-            used_by: RwLock::new(Vec::new()),
         }
     }
 
@@ -204,196 +197,171 @@ impl Trace {
         }
     }
 
-    fn try_concrete(&self) -> Option<&Value> {
+    pub fn try_concrete(&self) -> Option<&Value> {
         match &self.inner {
             TraceInner::Updatable(updatable) => updatable.value.get(),
             TraceInner::Constant(value) => Some(value),
             _ => None,
         }
     }
+
+    pub fn try_constant(&self) -> Option<&Value> {
+        match &self.inner {
+            TraceInner::Constant(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
+/// Tracing handle with a **non-empty stack** of [`TraceRef`] overlays.
+/// The **top** of the stack is the active trace for [`Self::invoke`].
+///
+/// Use [`Self::push`] / [`Self::pop`] when entering or leaving a nested tracing scope.
+/// Cloning ([`Clone::clone`]) copies **only the top** frame; deeper frames are not shared
+/// with the clone.
 pub struct Tracer<T: Traceable> {
-    shared: Arc<Trace>,
+    /// Oldest frame first; the current trace is always [`Self::top`].
+    stack: RwLock<Vec<TraceRef>>,
+    base: TraceRef, // The base tracer (returned if stack is empty)
     _phantom: PhantomData<T>,
-}
-
-impl<T: Traceable> Clone for Tracer<T> {
-    fn clone(&self) -> Self {
-        Tracer {
-            shared: self.shared.clone(),
-            _phantom: PhantomData,
-        }
-    }
-}
-
-pub struct WeakTracer<T: Traceable> {
-    shared: Weak<Trace>,
-    _phantom: PhantomData<T>,
-}
-
-impl<T: Traceable> Clone for WeakTracer<T> {
-    fn clone(&self) -> Self {
-        WeakTracer {
-            shared: self.shared.clone(),
-            _phantom: PhantomData,
-        }
-    }
-}
-
-// For debugging purposes, make this a bit cleaner
-impl<T: Traceable> Debug for Tracer<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.shared.fmt(f)
-    }
 }
 
 impl<T: Traceable> Tracer<T> {
-    fn new(trace: Trace) -> Self {
+    fn new_single(trace: TraceRef) -> Self {
         Tracer {
-            shared: Arc::new(trace),
+            stack: RwLock::new(vec![]),
+            base: trace,
             _phantom: PhantomData,
         }
     }
 
-    pub fn invoke(
-        op: Op,
-        inputs: Vec<Tracer<Generic>>,
-        outputs: Vec<ValueInfo>,
-    ) -> Vec<Tracer<Generic>> {
-        let is_abstract = inputs.iter().any(|x| x.is_abstract());
-        let invocation = Arc::new(Invocation {
-            op,
-            inputs,
-            outputs: OnceLock::new(),
-        });
-        // Add UsedIn to the inputs
-        for (idx, input) in invocation.inputs.iter().enumerate() {
-            let mut w = input.shared.used_by.write().unwrap();
-            w.push(UsedIn {
-                invocation: Arc::downgrade(&invocation),
-                idx,
-            })
-        }
-        let outputs: Vec<Tracer<Generic>> = if is_abstract {
-            outputs
-                .into_iter()
-                .enumerate()
-                .map(|(index, info)| {
-                    Tracer::new(Trace::abstract_retval(
-                        invocation.clone(),
-                        index,
-                        info,
-                    ))
-                })
-                .collect()
-        } else {
-            outputs
-                .into_iter()
-                .enumerate()
-                .map(|(index, info)| {
-                    Tracer::new(Trace::updatable_retval(
-                        invocation.clone(),
-                        index,
-                        info,
-                    ))
-                })
-                .collect()
-        };
-        // Add the outputs as outputs of the invocation
-        invocation
-            .outputs
-            .set(outputs.iter().map(|o| o.weak()).collect())
-            .ok()
-            .unwrap();
-        outputs
-    }
-
     pub fn placeholder(info: T::Info) -> Self {
-        Tracer::new(Trace::placeholder(ValueInfo::new(info)))
+        Tracer::new_single(Arc::new(Trace::placeholder(ValueInfo::new(info))))
     }
 
     // Create a tracer from a concrete value.
     pub fn concrete(value: T::Concrete, info: T::Info) -> Self {
-        Tracer::new(Trace::concrete(
+        Tracer::new_single(Arc::new(Trace::concrete(
             Value::new(value),
             ValueInfo::new(info),
-        ))
+        )))
+    }
+
+    #[rustfmt::skip]
+    pub fn invoke(
+        op: Op,
+        inputs: Vec<(Tracer<Generic>, Effect)>,
+        outputs: Vec<ValueInfo>,
+    ) -> Vec<Tracer<Generic>> {
+        let is_abstract = inputs.iter().any(|(x, _)| x.is_abstract());
+        let input_refs: Vec<InputTracer> = inputs.into_iter().map(|(x, e)| InputTracer {
+            trace: x.trace_ref(), effect: e
+        }).collect();
+        let invocation = Arc::new(Invocation { op, inputs: input_refs });
+        let outputs: Vec<TraceRef> = if is_abstract {
+            outputs.into_iter().enumerate().map(|(index, info)| {
+                Arc::new(Trace::abstract_retval(
+                    invocation.clone(),
+                    index,
+                    info,
+                ))
+            }).collect()
+        } else {
+            outputs.into_iter().enumerate().map(|(index, info)| {
+                Arc::new(Trace::updatable_retval(
+                    invocation.clone(),
+                    index,
+                    info,
+                ))
+            }).collect()
+        };
+        // Each output tracer starts with a single-frame stack.
+        outputs.into_iter().map(|o| Tracer::new_single(o)).collect()
+    }
+
+
+    /// Active [`TraceRef`] (top of the overlay stack).
+    pub fn trace_ref(&self) -> TraceRef {
+        let guard = self.stack.read().unwrap();
+        if let Some(frame) = guard.last() {
+            frame.clone()
+        } else {
+            self.base.clone()
+        }
+    }
+
+    /// Number of overlayed traces (always >= 1).
+    pub fn stack_depth(&self) -> usize {
+        self.stack.read().unwrap().len() + 1
+    }
+
+    /// Push a new trace frame on top (e.g. when entering a nested traced function).
+    pub fn push(&mut self, frame: TraceRef) {
+        assert!(frame.is_abstract(), "Expected abstract trace, got concrete");
+        assert!(frame.info() == self.base.info(), "Expected trace with info {:?}, got {:?}", self.base.info(), frame.info());
+        let mut guard = self.stack.write().unwrap();
+        guard.push(frame);
+    }
+
+    /// Pop the top frame. Returns `None` if only one frame remains.
+    pub fn pop(&self) {
+        let mut guard = self.stack.write().unwrap();
+        guard.pop();
     }
 
     pub fn is_abstract(&self) -> bool {
-        self.shared.is_abstract()
-    }
-
-    /// Stable address for this tracer (for graph capture and deduplication).
-    pub fn addr(&self) -> usize {
-        Arc::as_ptr(&self.shared) as usize
+        let guard = self.stack.read().unwrap();
+        !guard.is_empty() || self.base.is_abstract()
     }
 
     pub fn info(&self) -> &T::Info {
-        self.shared.info.downcast_ref().unwrap()
-    }
-
-    pub fn weak(&self) -> WeakTracer<T> {
-        WeakTracer {
-            shared: Arc::downgrade(&self.shared),
-            _phantom: PhantomData,
-        }
+        self.base.info().downcast_ref().unwrap()
     }
 
     // Cast to a generic tracer.
     pub fn generic(self) -> Tracer<Generic> {
         Tracer {
-            shared: self.shared,
+            stack: self.stack,
+            base: self.base,
             _phantom: PhantomData,
         }
     }
     // Cast to a particular type of tracer.
     pub fn cast<U: Traceable>(self) -> Tracer<U> {
-        // Try to borrow from the shared info.
         Tracer {
-            shared: self.shared,
+            stack: self.stack,
+            base: self.base,
             _phantom: PhantomData,
         }
     }
 
-    // Try to extract the concrete value from this tracer.
+    // Only the *base* value can be updatable. All higher frames must be abstract.
     pub fn try_concrete(&self) -> Option<&T::Concrete> {
-        self.shared.try_concrete().map(|value| {
-            value
-                .downcast_ref()
+        if !self.stack.read().unwrap().is_empty() {
+            return None;
+        }
+        self.base.try_concrete().map(|value| {
+            value.downcast_ref()
                 .expect("Tracer contained incorrect type")
         })
     }
 }
 
-impl Tracer<Generic> {
-    /// [`Invocation`] that produced this tracer, if it is the output of a traced primitive.
-    pub fn producer(&self) -> Option<(Arc<Invocation>, usize)> {
-        self.shared.producer()
-    }
-
-    pub fn is_placeholder(&self) -> bool {
-        self.shared.is_placeholder()
-    }
-
-    /// Concrete [`Value`] when this tracer holds data (not purely symbolic).
-    pub fn as_value(&self) -> Option<&Value> {
-        self.shared.try_concrete()
+impl<T: Traceable> Clone for Tracer<T> {
+    fn clone(&self) -> Self {
+        Tracer {
+            stack: RwLock::new(vec![]),
+            base: self.trace_ref(),
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl<T: Traceable> WeakTracer<T> {
-    pub fn upgrade(&self) -> Option<Tracer<T>> {
-        self.shared
-            .upgrade()
-            .map(|shared| Tracer { shared, _phantom: PhantomData })
-    }
-
-    pub fn generic(&self) -> WeakTracer<Generic> {
-        WeakTracer {
-            shared: self.shared.clone(),
-            _phantom: PhantomData,
-        }
+impl<T: Traceable> Debug for Tracer<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tracer")
+            .field("stack_depth", &self.stack_depth())
+            .field("current", &self.trace_ref())
+            .finish()
     }
 }

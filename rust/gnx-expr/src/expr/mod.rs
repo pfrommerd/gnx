@@ -1,16 +1,17 @@
+pub mod value;
+pub mod trace;
+mod attr;
+
+pub use attr::*;
 
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use self::trace::{Generic, Invocation, Tracer};
-
-pub mod value;
-pub mod trace;
-mod attr;
-pub use attr::*;
+use self::trace::{Generic, Invocation, Tracer, TraceRef};
+use std::error::Error;
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub enum OpString {
@@ -50,6 +51,24 @@ impl fmt::Display for Op {
     }
 }
 
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+pub struct VarScope {
+    next_id: usize,
+}
+
+impl VarScope {
+    pub fn new() -> VarScope {
+        VarScope { next_id: 0 }
+    }
+
+    pub fn create_var(&mut self) -> Var {
+        let v = Var::bind(self.next_id);
+        self.next_id += 1;
+        v
+    }
+}
+
+
 /// A jaxpr-style variable: either bound to an index or a hole (unification / rewrite).
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Var {
@@ -79,17 +98,51 @@ impl fmt::Display for Var {
     }
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum Effect {
+    Unused, Read, Write, ReadWrite
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct Input {
+    var: Var,
+    effect: Effect,
+}
+
+impl Input {
+    pub fn new(var: Var, effect: Effect) -> Self {
+        Self { var, effect }
+    }
+    pub fn var(&self) -> &Var {
+        &self.var
+    }
+    pub fn effect(&self) -> Effect {
+        self.effect
+    }
+}
+
+impl fmt::Display for Input {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.var)?;
+        match self.effect {
+            Effect::Unused | Effect::Read => (),
+            Effect::Write | Effect::ReadWrite => write!(f, "[:]")?,
+        }
+        Ok(())
+    }
+}
+
 /// One equation: `let outs... = op [attrs] closure... ins...` in ANF (see [jaxpr](https://docs.jax.dev/en/latest/jaxpr.html)).
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct Eqn {
     op: Op,
-    closure: Vec<Var>,
-    inputs: Vec<Var>,
+    closure: Vec<Input>,
+    inputs: Vec<Input>,
     outputs: Vec<Var>,
 }
 
 impl Eqn {
-    pub fn new(op: Op, closure: Vec<Var>, inputs: Vec<Var>, outputs: Vec<Var>) -> Self {
+    pub fn new(op: Op, closure: Vec<Input>, inputs: Vec<Input>, outputs: Vec<Var>) -> Self {
         Eqn {
             op,
             closure,
@@ -102,11 +155,11 @@ impl Eqn {
         &self.op
     }
 
-    pub fn closure(&self) -> &[Var] {
+    pub fn closure(&self) -> &[Input] {
         &self.closure
     }
 
-    pub fn inputs(&self) -> &[Var] {
+    pub fn inputs(&self) -> &[Input] {
         &self.inputs
     }
 
@@ -117,21 +170,16 @@ impl Eqn {
 
 impl fmt::Display for Eqn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.outputs.len() {
-            0 => write!(f, "_")?,
-            1 => write!(f, "{}", self.outputs[0])?,
-            _ => {
-                write!(f, "(")?;
-                for (i, o) in self.outputs.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{o}")?;
-                }
-                write!(f, ")")?;
+        for (i, o) in self.outputs.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
             }
+            write!(f, "{o}")?;
         }
-        write!(f, " = {}", self.op)?;
+        if !self.outputs.is_empty() {
+            write!(f, " = ")?;
+        }
+        write!(f, "{}", self.op)?;
         if !self.closure.is_empty() {
             write!(f, " [")?;
             for (i, c) in self.closure.iter().enumerate() {
@@ -153,6 +201,8 @@ impl fmt::Display for Eqn {
     }
 }
 
+
+
 /// Functional ANF expression: `lambda closure* ; explicit* . let eqns* in outputs*`.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct Expr {
@@ -160,7 +210,9 @@ pub struct Expr {
     explicit_inputs: Vec<Var>,
     eqns: Vec<Eqn>,
     outputs: Vec<Var>,
+    var_scope: VarScope,
 }
+
 
 impl Expr {
     pub fn new(
@@ -168,12 +220,14 @@ impl Expr {
         explicit_inputs: Vec<Var>,
         eqns: Vec<Eqn>,
         outputs: Vec<Var>,
+        var_scope: VarScope,
     ) -> Self {
         Expr {
             closure_inputs,
             explicit_inputs,
             eqns,
             outputs,
+            var_scope,
         }
     }
 
@@ -242,165 +296,114 @@ impl ClosedExpr {
     }
 }
 
-/// Snapshot of a trace subgraph in jaxpr-like [`Expr`] form, plus hoisted closure tracers
+/// Snapshot of a trace subgraph in jaxpr-like [`Expr`] form, plus hoisted closure [`TraceRef`]s
 /// (analogous to `consts` in [`ClosedJaxpr`](https://docs.jax.dev/en/latest/jaxpr.html)).
 pub struct Capture {
     expr: Expr,
-    closure: Vec<Tracer<Generic>>,
+    closure: Vec<TraceRef>,
 }
 
 impl Capture {
     /// Materialize the trace subgraph needed for `outputs` into an [`Expr`].
     ///
     /// `inputs` is the ordered formal parameter list (jaxpr `invars` / `constvars` split).
-    /// A boundary tracer is classified as **closure** (and listed in [`Capture::closure`]) when
+    /// A boundary trace is classified as **closure** (and listed in [`Capture::closure`]) when
     /// it is not among `inputs`, or when it holds a concrete [`crate::expr::value::Value`]. Otherwise
     /// it is an **explicit** input slot.
-    pub fn from_tracers<'a, I, O>(inputs: I, outputs: O) -> Self
+    pub fn from_trace_refs<'a, I, O>(inputs: I, outputs: O) -> Result<Self, ()>
     where
-        I: IntoIterator<Item = &'a Tracer<Generic>>,
-        O: IntoIterator<Item = &'a Tracer<Generic>>,
+        I: IntoIterator<Item = &'a TraceRef>,
+        O: IntoIterator<Item = &'a TraceRef>,
     {
-        let inputs: Vec<&Tracer<Generic>> = inputs.into_iter().collect();
-        let outputs: Vec<&Tracer<Generic>> = outputs.into_iter().collect();
+        let inputs: Vec<&TraceRef> = inputs.into_iter().collect();
+        let outputs: Vec<&TraceRef> = outputs.into_iter().collect();
+        let input_keys: HashSet<TracerKey> = inputs.iter().map(|t| TracerKey::from(*t)).collect();
 
-        let input_keys: HashSet<TracerKey> = inputs.iter().copied().map(TracerKey::from).collect();
-
+        let mut var_scope = VarScope::new();
         let mut trace_to_var: HashMap<TracerKey, Var> = HashMap::new();
-        let mut next_id: usize = 0;
         let mut explicit_inputs = Vec::new();
         let mut closure_inputs = Vec::new();
-        let mut closure_tracers = Vec::new();
-
-        for t in &inputs {
-            let k = TracerKey::from(*t);
-            let v = Var::bind(next_id);
-            next_id += 1;
-            trace_to_var.insert(k, v.clone());
-            if goes_to_closure(*t, &input_keys) {
-                closure_inputs.push(v);
-                closure_tracers.push((*t).clone());
-            } else {
-                explicit_inputs.push(v);
-            }
-        }
-
-        if outputs.is_empty() {
-            return Capture {
-                expr: Expr::new(closure_inputs, explicit_inputs, vec![], vec![]),
-                closure: closure_tracers,
-            };
-        }
-
-        let invocations = collect_invocations(&outputs);
+        let mut closure_refs = Vec::new();
+        let (invocations, output_vars) = collect_invocations(&outputs);
         let inv_set: HashSet<InvKey> = invocations.keys().copied().collect();
-
-        let mut boundary: HashMap<TracerKey, Tracer<Generic>> = HashMap::new();
-        for inv in invocations.values() {
-            for inp in inv.inputs() {
-                if !is_internal(inp, &inv_set) {
-                    let k = TracerKey::from(inp);
-                    if !trace_to_var.contains_key(&k) {
-                        boundary.entry(k).or_insert_with(|| inp.clone());
-                    }
-                }
-            }
-        }
-        for out in &outputs {
-            if !is_internal(out, &inv_set) {
-                let k = TracerKey::from(*out);
-                if !trace_to_var.contains_key(&k) {
-                    boundary.entry(k).or_insert_with(|| (*out).clone());
-                }
-            }
-        }
-
-        let mut boundary_keys: Vec<TracerKey> = boundary.keys().copied().collect();
-        boundary_keys.sort_unstable();
-
-        for k in boundary_keys {
-            let t = boundary[&k].clone();
-            let v = Var::bind(next_id);
-            next_id += 1;
-            trace_to_var.insert(k, v.clone());
-            if goes_to_closure(&t, &input_keys) {
-                closure_inputs.push(v);
-                closure_tracers.push(t);
-            } else {
-                explicit_inputs.push(v);
-            }
-        }
-
         let ordered_invs = topo_sort_invocations(invocations);
         let mut eqns = Vec::with_capacity(ordered_invs.len());
-
+        for k in input_keys {
+            let v = var_scope.create_var();
+            trace_to_var.insert(k, v.clone());
+        }
         for inv in &ordered_invs {
-            let input_vars: Vec<Var> = inv
-                .inputs()
-                .iter()
-                .map(|inp| trace_to_var[&TracerKey::from(inp)].clone())
-                .collect();
-
-            let n_out = (0usize..)
-                .take_while(|&i| inv.output_weak(i).is_some())
-                .count();
-
-            let mut out_vars = Vec::with_capacity(n_out);
-            for i in 0..n_out {
-                let v = Var::bind(next_id);
-                next_id += 1;
-                if let Some(w) = inv.output_weak(i) {
-                    if let Some(t) = w.upgrade() {
-                        trace_to_var.insert(TracerKey::from(&t), v.clone());
-                    }
+            let key = InvKey::from(inv);
+            let inputs : Vec<Input> = inv.inputs().iter()
+                .map(|inp| Input {
+                    var: trace_to_var[&TracerKey::from(&inp.trace)].clone(),
+                    effect: inp.effect,
+                }).collect();
+            // The number of outputs is the maximum output index plus one.
+            let n_out = output_vars.get(&key).map(|o| o.keys().max().map(|k| k + 1)).flatten().unwrap_or(0);
+            let mut out_vars = vec![Var::hole(); n_out];
+            if let Some(output_map) = output_vars.get(&key) {
+                for (out_idx, out_trace) in output_map {
+                    let v = var_scope.create_var();
+                    trace_to_var.insert(TracerKey::from(out_trace), v.clone());
+                    out_vars[*out_idx] = v;
                 }
-                out_vars.push(v);
             }
-
             eqns.push(Eqn::new(
                 inv.op().clone(),
                 vec![],
-                input_vars,
+                inputs,
                 out_vars,
             ));
         }
 
-        let output_vars: Vec<Var> = outputs
-            .iter()
+        for trace in &outputs {
+            let k = TracerKey::from(*trace);
+            if !trace_to_var.contains_key(&k) {
+                return Err(());
+            }
+        }
+        let output_vars: Vec<Var> = outputs.iter()
             .map(|t| trace_to_var[&TracerKey::from(*t)].clone())
             .collect();
-
-        Capture {
+        Ok(Capture {
             expr: Expr::new(
                 closure_inputs,
                 explicit_inputs,
                 eqns,
                 output_vars,
+                var_scope,
             ),
-            closure: closure_tracers,
-        }
+            closure: closure_refs,
+        })
     }
 
     pub fn expr(&self) -> &Expr {
         &self.expr
     }
 
-    pub fn closure(&self) -> &[Tracer<Generic>] {
+    pub fn closure(&self) -> &[TraceRef] {
         &self.closure
     }
 
-    pub fn into_parts(self) -> (Expr, Vec<Tracer<Generic>>) {
+    pub fn into_parts(self) -> (Expr, Vec<TraceRef>) {
         (self.expr, self.closure)
     }
 }
 
-/// Identity key for a [`Tracer`] node (stable for the lifetime of that `Arc<Trace>`).
+/// Identity key for a [`TraceRef`] / trace node (stable for the lifetime of that `Arc<Trace>`).
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TracerKey(usize);
 
+impl From<&TraceRef> for TracerKey {
+    fn from(t: &TraceRef) -> Self {
+        TracerKey(Arc::as_ptr(t) as usize)
+    }
+}
+
 impl From<&Tracer<Generic>> for TracerKey {
     fn from(t: &Tracer<Generic>) -> Self {
-        TracerKey(t.addr())
+        TracerKey::from(&t.trace_ref())
     }
 }
 
@@ -414,18 +417,22 @@ impl From<&Arc<Invocation>> for InvKey {
     }
 }
 
-fn goes_to_closure(t: &Tracer<Generic>, input_keys: &HashSet<TracerKey>) -> bool {
+fn goes_to_closure(t: &TraceRef, input_keys: &HashSet<TracerKey>) -> bool {
     let k = TracerKey::from(t);
-    !input_keys.contains(&k) || t.as_value().is_some()
+    !input_keys.contains(&k) || t.try_constant().is_some()
 }
 
-fn collect_invocations(outputs: &[&Tracer<Generic>]) -> HashMap<InvKey, Arc<Invocation>> {
+// Collect the invocations and the output vars for each invocation.
+fn collect_invocations(outputs: &[&TraceRef]) -> (HashMap<InvKey, Arc<Invocation>>, HashMap<InvKey, BTreeMap<usize, TraceRef>>) {
     let mut invs: HashMap<InvKey, Arc<Invocation>> = HashMap::new();
+    let mut output_vars: HashMap<InvKey, BTreeMap<usize, TraceRef>> = HashMap::new();
     let mut pending: Vec<Arc<Invocation>> = Vec::new();
 
     for out in outputs {
-        if let Some((inv, _)) = out.producer() {
+        if let Some((inv, ret_idx)) = out.producer() {
+            let key = InvKey::from(&inv);
             pending.push(inv);
+            output_vars.entry(key).or_default().insert(ret_idx, (*out).clone());
         }
     }
 
@@ -436,16 +443,18 @@ fn collect_invocations(outputs: &[&Tracer<Generic>]) -> HashMap<InvKey, Arc<Invo
         }
         invs.insert(k, inv.clone());
         for inp in inv.inputs() {
-            if let Some((pred, _)) = inp.producer() {
+            if let Some((pred, out_idx)) = inp.trace.producer() {
+                let key = InvKey::from(&pred);
                 pending.push(pred);
+                output_vars.entry(key).or_default().insert(out_idx, inp.trace.clone());
             }
         }
     }
 
-    invs
+    (invs, output_vars)
 }
 
-fn is_internal(t: &Tracer<Generic>, inv_keys: &HashSet<InvKey>) -> bool {
+fn is_internal(t: &TraceRef, inv_keys: &HashSet<InvKey>) -> bool {
     match t.producer() {
         Some((inv, _)) => inv_keys.contains(&InvKey::from(&inv)),
         None => false,
@@ -453,8 +462,7 @@ fn is_internal(t: &Tracer<Generic>, inv_keys: &HashSet<InvKey>) -> bool {
 }
 
 fn topo_sort_invocations(invs: HashMap<InvKey, Arc<Invocation>>) -> Vec<Arc<Invocation>> {
-    let n = invs.len();
-    if n == 0 {
+    if invs.is_empty() {
         return vec![];
     }
 
@@ -464,7 +472,7 @@ fn topo_sort_invocations(invs: HashMap<InvKey, Arc<Invocation>>) -> Vec<Arc<Invo
     for inv in invs.values() {
         let kid = InvKey::from(inv);
         for inp in inv.inputs() {
-            if let Some((pred, _)) = inp.producer() {
+            if let Some((pred, _)) = inp.trace.producer() {
                 let pid = InvKey::from(&pred);
                 if pid != kid && invs.contains_key(&pid) {
                     succ.entry(pid).or_default().push(kid);
@@ -479,7 +487,7 @@ fn topo_sort_invocations(invs: HashMap<InvKey, Arc<Invocation>>) -> Vec<Arc<Invo
         .filter(|(_, d)| **d == 0)
         .map(|(&k, _)| k)
         .collect();
-    let mut outv = Vec::with_capacity(n);
+    let mut outv = Vec::with_capacity(invs.len());
 
     while let Some(k) = ready.pop_first() {
         outv.push(invs[&k].clone());
@@ -494,9 +502,8 @@ fn topo_sort_invocations(invs: HashMap<InvKey, Arc<Invocation>>) -> Vec<Arc<Invo
         }
     }
 
-    if outv.len() != n {
-        panic!("gnx-expr: cycle in trace graph (topological sort failed)");
+    if outv.len() != invs.len() {
+        panic!("gnx-expr: cycle found in trace graph (topological sort failed)");
     }
-
     outv
 }

@@ -1,5 +1,5 @@
 use gnx_expr::array::{ArrayInfo, DType, Shape};
-use gnx_expr::expr::{AttrMap, Capture, Op, OpString};
+use gnx_expr::expr::{AttrMap, Capture, Effect, Op, OpString};
 use gnx_expr::trace::{Generic, Tracer, ValueInfo};
 
 fn sample_op(name: &'static str) -> Op {
@@ -23,21 +23,24 @@ fn capture_linear_chain() {
     let b = Tracer::<Generic>::placeholder(f32x4_info());
     let t1 = Tracer::<Generic>::invoke(
         sample_op("sin"),
-        vec![b.clone().generic()],
+        vec![(b.clone(), Effect::Read)],
         vec![f32x4_info()],
     );
     let t2 = Tracer::<Generic>::invoke(
         sample_op("mul"),
-        vec![t1[0].clone(), b.clone().generic()],
+        vec![(t1[0].clone(), Effect::Read), (b.clone(), Effect::Read)],
         vec![f32x4_info()],
     );
     let t3 = Tracer::<Generic>::invoke(
         sample_op("add"),
-        vec![a.clone().generic(), t2[0].clone()],
+        vec![(a.clone(), Effect::Read), (t2[0].clone(), Effect::Read)],
         vec![f32x4_info()],
     );
 
-    let cap = Capture::from_tracers([&a, &b], [&t3[0]]);
+    let cap = Capture::from_trace_refs(
+        &[a.trace_ref(), b.trace_ref()],
+        &[t3[0].trace_ref()],
+    ).unwrap();
     let ex = cap.expr();
     assert_eq!(ex.closure_inputs().len(), 0);
     assert_eq!(
@@ -59,21 +62,21 @@ fn capture_diamond_distinct_intermediate_vars() {
     let x = Tracer::<Generic>::placeholder(f32x4_info());
     let u = Tracer::<Generic>::invoke(
         sample_op("abs"),
-        vec![x.clone().generic()],
+        vec![(x.clone(), Effect::Read)],
         vec![f32x4_info()],
     );
     let v = Tracer::<Generic>::invoke(
         sample_op("neg"),
-        vec![x.clone().generic()],
+        vec![(x.clone(), Effect::Read)],
         vec![f32x4_info()],
     );
     let w = Tracer::<Generic>::invoke(
         sample_op("add"),
-        vec![u[0].clone(), v[0].clone()],
+        vec![(u[0].clone(), Effect::Read), (v[0].clone(), Effect::Read)],
         vec![f32x4_info()],
     );
 
-    let cap = Capture::from_tracers([&x], [&w[0]]);
+    let cap = Capture::from_trace_refs(&[x.trace_ref()], &[w[0].trace_ref()]).unwrap();
     assert_eq!(cap.expr().eqns().len(), 3);
     let add = cap.expr().eqns().last().unwrap();
     assert_eq!(add.inputs().len(), 2);
@@ -88,10 +91,10 @@ fn capture_reuses_var_when_same_tracer_used_twice() {
     let x = Tracer::<Generic>::placeholder(f32x4_info());
     let w = Tracer::<Generic>::invoke(
         sample_op("add"),
-        vec![x.clone().generic(), x.clone().generic()],
+        vec![(x.clone(), Effect::Read), (x.clone(), Effect::Read)],
         vec![f32x4_info()],
     );
-    let cap = Capture::from_tracers([&x], [&w[0]]);
+    let cap = Capture::from_trace_refs(&[x.trace_ref()], &[w[0].trace_ref()]).unwrap();
     let add = cap.expr().eqns().last().unwrap();
     assert_eq!(add.inputs()[0], add.inputs()[1]);
 }
@@ -99,7 +102,7 @@ fn capture_reuses_var_when_same_tracer_used_twice() {
 #[test]
 fn capture_placeholder_only() {
     let x = Tracer::<Generic>::placeholder(f32x4_info());
-    let cap = Capture::from_tracers([&x], [&x]);
+    let cap = Capture::from_trace_refs(&[x.trace_ref()], &[x.trace_ref()]).unwrap();
     let ex = cap.expr();
     assert!(ex.eqns().is_empty());
     assert_eq!(ex.explicit_inputs().len(), 1);
@@ -112,12 +115,15 @@ fn capture_unlisted_leaf_tracer_is_closure() {
     let b = Tracer::<Generic>::placeholder(f32x4_info());
     let w = Tracer::<Generic>::invoke(
         sample_op("add"),
-        vec![a.clone().generic(), b.clone().generic()],
+        vec![(a.clone(), Effect::Read), (b.clone(), Effect::Read)],
         vec![f32x4_info()],
     );
-    let cap = Capture::from_tracers([&a], [&w[0]]);
+    let cap = Capture::from_trace_refs(&[a.trace_ref()], &[w[0].trace_ref()]).unwrap();
     assert_eq!(cap.expr().explicit_inputs().len(), 1);
     assert_eq!(cap.expr().closure_inputs().len(), 1);
     assert_eq!(cap.closure().len(), 1);
-    assert_eq!(cap.closure()[0].addr(), b.addr());
+    assert!(std::ptr::eq(
+        std::sync::Arc::as_ptr(&cap.closure()[0]),
+        std::sync::Arc::as_ptr(&b.trace_ref()),
+    ));
 }
