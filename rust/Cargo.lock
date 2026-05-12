@@ -2224,6 +2224,7 @@ name = "gnx-io"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "gnx-expr",
  "gnx-graph",
  "object_store",
  "ordered-float",
