@@ -102,13 +102,13 @@ pub fn to_string<T: ?Sized + Serialize>(value: &T) -> Result<String> {
 impl<'a, W: Write> Serializer for &'a mut JsonWriter<W> {
     type Ok = ();
     type Error = JsonError;
-    type SerializeSeq = Compound<'a, W, Array>;
-    type SerializeTuple = Compound<'a, W, Array>;
-    type SerializeTupleStruct = Compound<'a, W, Array>;
-    type SerializeTupleVariant = Compound<'a, W, TupleVariant>;
-    type SerializeMap = Compound<'a, W, ObjectMap>;
-    type SerializeStruct = Compound<'a, W, ObjectMap>;
-    type SerializeStructVariant = Compound<'a, W, StructVariant>;
+    type SerializeSeq = JsonCompound<'a, W, JsonArray>;
+    type SerializeTuple = JsonCompound<'a, W, JsonArray>;
+    type SerializeTupleStruct = JsonCompound<'a, W, JsonArray>;
+    type SerializeTupleVariant = JsonCompound<'a, W, JsonTupleVariant>;
+    type SerializeMap = JsonCompound<'a, W, JsonObject>;
+    type SerializeStruct = JsonCompound<'a, W, JsonObject>;
+    type SerializeStructVariant = JsonCompound<'a, W, JsonStructVariant>;
 
     fn serialize_shared<T: ?Sized + Serialize>(self, id: GraphId, value: &T) -> Result<()> {
         self.writer.write_all(b"{")?;
@@ -259,7 +259,7 @@ impl<'a, W: Write> Serializer for &'a mut JsonWriter<W> {
 
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq> {
         self.writer.write_all(b"[")?;
-        Ok(Compound::new(self, Array))
+        Ok(JsonCompound::new(self, JsonArray))
     }
 
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple> {
@@ -284,12 +284,12 @@ impl<'a, W: Write> Serializer for &'a mut JsonWriter<W> {
         self.writer.write_all(b"{")?;
         self.write_string(variant)?;
         self.writer.write_all(b":[")?;
-        Ok(Compound::new(self, TupleVariant))
+        Ok(JsonCompound::new(self, JsonTupleVariant))
     }
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
         self.writer.write_all(b"{")?;
-        Ok(Compound::new(self, ObjectMap))
+        Ok(JsonCompound::new(self, JsonObject))
     }
 
     fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
@@ -306,22 +306,27 @@ impl<'a, W: Write> Serializer for &'a mut JsonWriter<W> {
         self.writer.write_all(b"{")?;
         self.write_string(variant)?;
         self.writer.write_all(b":{")?;
-        Ok(Compound::new(self, StructVariant))
+        Ok(JsonCompound::new(self, JsonStructVariant))
     }
 }
 
-struct Array;
-struct ObjectMap;
-struct TupleVariant;
-struct StructVariant;
+#[doc(hidden)]
+pub struct JsonArray;
+#[doc(hidden)]
+pub struct JsonObject;
+#[doc(hidden)]
+pub struct JsonTupleVariant;
+#[doc(hidden)]
+pub struct JsonStructVariant;
 
-struct Compound<'a, W, Kind> {
+#[doc(hidden)]
+pub struct JsonCompound<'a, W, Kind> {
     writer: &'a mut JsonWriter<W>,
     first: bool,
     kind: Kind,
 }
 
-impl<'a, W, Kind> Compound<'a, W, Kind> {
+impl<'a, W, Kind> JsonCompound<'a, W, Kind> {
     fn new(writer: &'a mut JsonWriter<W>, kind: Kind) -> Self {
         Self {
             writer,
@@ -331,7 +336,7 @@ impl<'a, W, Kind> Compound<'a, W, Kind> {
     }
 }
 
-impl<W: Write, Kind> Compound<'_, W, Kind> {
+impl<W: Write, Kind> JsonCompound<'_, W, Kind> {
     fn write_seq_value<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<()> {
         if !self.first {
             self.writer.writer.write_all(b",")?;
@@ -356,7 +361,7 @@ impl<W: Write, Kind> Compound<'_, W, Kind> {
     }
 }
 
-impl<W: Write> SerializeSeq for Compound<'_, W, Array> {
+impl<W: Write> SerializeSeq for JsonCompound<'_, W, JsonArray> {
     type Ok = ();
     type Error = JsonError;
 
@@ -374,7 +379,7 @@ impl<W: Write> SerializeSeq for Compound<'_, W, Array> {
     }
 }
 
-impl<W: Write> SerializeTuple for Compound<'_, W, Array> {
+impl<W: Write> SerializeTuple for JsonCompound<'_, W, JsonArray> {
     type Ok = ();
     type Error = JsonError;
 
@@ -392,7 +397,7 @@ impl<W: Write> SerializeTuple for Compound<'_, W, Array> {
     }
 }
 
-impl<W: Write> SerializeTupleStruct for Compound<'_, W, Array> {
+impl<W: Write> SerializeTupleStruct for JsonCompound<'_, W, JsonArray> {
     type Ok = ();
     type Error = JsonError;
 
@@ -410,7 +415,7 @@ impl<W: Write> SerializeTupleStruct for Compound<'_, W, Array> {
     }
 }
 
-impl<W: Write> SerializeTupleVariant for Compound<'_, W, TupleVariant> {
+impl<W: Write> SerializeTupleVariant for JsonCompound<'_, W, JsonTupleVariant> {
     type Ok = ();
     type Error = JsonError;
 
@@ -428,7 +433,7 @@ impl<W: Write> SerializeTupleVariant for Compound<'_, W, TupleVariant> {
     }
 }
 
-impl<W: Write> SerializeMap for Compound<'_, W, ObjectMap> {
+impl<W: Write> SerializeMap for JsonCompound<'_, W, JsonObject> {
     type Ok = ();
     type Error = JsonError;
 
@@ -453,7 +458,7 @@ impl<W: Write> SerializeMap for Compound<'_, W, ObjectMap> {
     }
 }
 
-impl<W: Write> SerializeStruct for Compound<'_, W, ObjectMap> {
+impl<W: Write> SerializeStruct for JsonCompound<'_, W, JsonObject> {
     type Ok = ();
     type Error = JsonError;
 
@@ -477,7 +482,7 @@ impl<W: Write> SerializeStruct for Compound<'_, W, ObjectMap> {
     }
 }
 
-impl<W: Write> SerializeStructVariant for Compound<'_, W, StructVariant> {
+impl<W: Write> SerializeStructVariant for JsonCompound<'_, W, JsonStructVariant> {
     type Ok = ();
     type Error = JsonError;
 
@@ -520,13 +525,13 @@ impl<W: Write> MapKeySerializer<'_, W> {
 impl<W: Write> Serializer for MapKeySerializer<'_, W> {
     type Ok = ();
     type Error = JsonError;
-    type SerializeSeq = Impossible;
-    type SerializeTuple = Impossible;
-    type SerializeTupleStruct = Impossible;
-    type SerializeTupleVariant = Impossible;
-    type SerializeMap = Impossible;
-    type SerializeStruct = Impossible;
-    type SerializeStructVariant = Impossible;
+    type SerializeSeq = JsonImpossible;
+    type SerializeTuple = JsonImpossible;
+    type SerializeTupleStruct = JsonImpossible;
+    type SerializeTupleVariant = JsonImpossible;
+    type SerializeMap = JsonImpossible;
+    type SerializeStruct = JsonImpossible;
+    type SerializeStructVariant = JsonImpossible;
 
     fn serialize_shared<T: ?Sized + Serialize>(self, _id: GraphId, _value: &T) -> Result<()> {
         self.unsupported()
@@ -699,9 +704,10 @@ impl<W: Write> Serializer for MapKeySerializer<'_, W> {
     }
 }
 
-struct Impossible;
+#[doc(hidden)]
+pub struct JsonImpossible;
 
-impl SerializeSeq for Impossible {
+impl SerializeSeq for JsonImpossible {
     type Ok = ();
     type Error = JsonError;
 
@@ -717,7 +723,7 @@ impl SerializeSeq for Impossible {
     }
 }
 
-impl SerializeTuple for Impossible {
+impl SerializeTuple for JsonImpossible {
     type Ok = ();
     type Error = JsonError;
 
@@ -733,7 +739,7 @@ impl SerializeTuple for Impossible {
     }
 }
 
-impl SerializeTupleStruct for Impossible {
+impl SerializeTupleStruct for JsonImpossible {
     type Ok = ();
     type Error = JsonError;
 
@@ -749,7 +755,7 @@ impl SerializeTupleStruct for Impossible {
     }
 }
 
-impl SerializeTupleVariant for Impossible {
+impl SerializeTupleVariant for JsonImpossible {
     type Ok = ();
     type Error = JsonError;
 
@@ -765,7 +771,7 @@ impl SerializeTupleVariant for Impossible {
     }
 }
 
-impl SerializeMap for Impossible {
+impl SerializeMap for JsonImpossible {
     type Ok = ();
     type Error = JsonError;
 
@@ -788,7 +794,7 @@ impl SerializeMap for Impossible {
     }
 }
 
-impl SerializeStruct for Impossible {
+impl SerializeStruct for JsonImpossible {
     type Ok = ();
     type Error = JsonError;
 
@@ -804,7 +810,7 @@ impl SerializeStruct for Impossible {
     }
 }
 
-impl SerializeStructVariant for Impossible {
+impl SerializeStructVariant for JsonImpossible {
     type Ok = ();
     type Error = JsonError;
 
