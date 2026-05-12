@@ -106,8 +106,8 @@ impl<'a, W: Write> Serializer for &'a mut JsonWriter<W> {
     type SerializeTuple = Compound<'a, W, Array>;
     type SerializeTupleStruct = Compound<'a, W, Array>;
     type SerializeTupleVariant = Compound<'a, W, TupleVariant>;
-    type SerializeMap = Compound<'a, W, Map>;
-    type SerializeStruct = Compound<'a, W, Map>;
+    type SerializeMap = Compound<'a, W, ObjectMap>;
+    type SerializeStruct = Compound<'a, W, ObjectMap>;
     type SerializeStructVariant = Compound<'a, W, StructVariant>;
 
     fn serialize_shared<T: ?Sized + Serialize>(self, id: GraphId, value: &T) -> Result<()> {
@@ -289,7 +289,7 @@ impl<'a, W: Write> Serializer for &'a mut JsonWriter<W> {
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap> {
         self.writer.write_all(b"{")?;
-        Ok(Compound::new(self, Map))
+        Ok(Compound::new(self, ObjectMap))
     }
 
     fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<Self::SerializeStruct> {
@@ -310,12 +310,12 @@ impl<'a, W: Write> Serializer for &'a mut JsonWriter<W> {
     }
 }
 
-pub struct Array;
-pub struct Map;
-pub struct TupleVariant;
-pub struct StructVariant;
+struct Array;
+struct ObjectMap;
+struct TupleVariant;
+struct StructVariant;
 
-pub struct Compound<'a, W, Kind> {
+struct Compound<'a, W, Kind> {
     writer: &'a mut JsonWriter<W>,
     first: bool,
     kind: Kind,
@@ -428,7 +428,7 @@ impl<W: Write> SerializeTupleVariant for Compound<'_, W, TupleVariant> {
     }
 }
 
-impl<W: Write> SerializeMap for Compound<'_, W, Map> {
+impl<W: Write> SerializeMap for Compound<'_, W, ObjectMap> {
     type Ok = ();
     type Error = JsonError;
 
@@ -453,7 +453,7 @@ impl<W: Write> SerializeMap for Compound<'_, W, Map> {
     }
 }
 
-impl<W: Write> SerializeStruct for Compound<'_, W, Map> {
+impl<W: Write> SerializeStruct for Compound<'_, W, ObjectMap> {
     type Ok = ();
     type Error = JsonError;
 
@@ -699,7 +699,7 @@ impl<W: Write> Serializer for MapKeySerializer<'_, W> {
     }
 }
 
-pub struct Impossible;
+struct Impossible;
 
 impl SerializeSeq for Impossible {
     type Ok = ();

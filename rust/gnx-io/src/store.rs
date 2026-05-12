@@ -92,7 +92,11 @@ impl Object {
     pub fn relative<P: AsRef<str>>(&self, path: P) -> Self {
         Self {
             store: self.store.clone(),
-            path: self.path.child(path.as_ref()),
+            path: self
+                .path
+                .clone()
+                .join(path.as_ref())
+                .expect("valid object path"),
         }
     }
 
