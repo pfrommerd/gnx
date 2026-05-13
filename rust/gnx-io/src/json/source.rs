@@ -433,7 +433,7 @@ pub trait JsonSource<'src>: TextSource<'src> {
         // check if the next 5 characters start with "true" 
         // or are exactly "false"
         let b = self.peek_chars_and(5, |s| {
-            let maybe_true = &s[..4.max(s.len())] == "true";
+            let maybe_true = s.len() >= 4 && &s[..4] == "true";
             let maybe_false = s == "false";
             if maybe_true { (4, Ok(true)) }
             else if maybe_false { (5, Ok(false)) }
