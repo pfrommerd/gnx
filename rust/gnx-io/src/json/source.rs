@@ -2,61 +2,71 @@ use crate::{json::Number, util::{ScratchBuffer, Text, TextSource, BufferedSource
 
 use super::JsonError;
 
-fn hex_pair_to_u8(hex: [u8; 2]) -> Result<u8, JsonError> {
-    if hex[0] < b'0' || hex[0] > b'a' || hex[1] < b'0' || hex[1] > b'f' {
-        return Err(JsonError::InvalidEscape);
+fn hex_digit(c: char) -> Result<u32, JsonError> {
+    c.to_digit(16).ok_or(JsonError::InvalidEscape)
+}
+
+fn read_hex_scalar<I>(chars: &mut I) -> Result<u32, JsonError>
+where
+    I: Iterator<Item = char>,
+{
+    let mut value = 0;
+    for _ in 0..4 {
+        let c = chars.next().ok_or(JsonError::UnexpectedEOF)?;
+        value = (value << 4) | hex_digit(c)?;
     }
-    let a = hex[0] - b'0';
-    let b = hex[1] - b'0';
-    Ok(a * 16 + b)
+    Ok(value)
+}
+
+fn decode_unicode_escape<I>(chars: &mut std::iter::Peekable<I>) -> Result<char, JsonError>
+where
+    I: Iterator<Item = char>,
+{
+    let value = read_hex_scalar(chars)?;
+    if (0xD800..=0xDBFF).contains(&value) {
+        if chars.next() != Some('\\') || chars.next() != Some('u') {
+            return Err(JsonError::InvalidEscape);
+        }
+        let low = read_hex_scalar(chars)?;
+        if !(0xDC00..=0xDFFF).contains(&low) {
+            return Err(JsonError::InvalidEscape);
+        }
+        let codepoint = 0x10000 + (((value - 0xD800) << 10) | (low - 0xDC00));
+        char::from_u32(codepoint).ok_or(JsonError::InvalidEscape)
+    } else if (0xDC00..=0xDFFF).contains(&value) {
+        Err(JsonError::InvalidEscape)
+    } else {
+        char::from_u32(value).ok_or(JsonError::InvalidEscape)
+    }
 }
 
 // Unescape a string of bytes, returning the same string,
 // but with any escaped characters replaced with their unescaped equivalents.
 // Will mutate the buffer in-place!
 pub fn unescape(buffer: String) -> Result<String, JsonError> {
-    let mut bytes = buffer.into_bytes();
-    let (mut src, mut tgt) = (0, 0);
-    loop {
-        if src >= bytes.len() { break; }
-        if bytes[src] == b'\\' {
-            // Skip over the backslash and the escaped character.
-            src += 2;
-            // If there is no escaped character, return an error.
-            if src - 1 >= bytes.len() { return Err(JsonError::UnexpectedEOF); }
-            // Handle the escaped character
-            match bytes[src - 1] {
-                b'"' => bytes[tgt] = b'"',
-                b'\\' => bytes[tgt] = b'\\',
-                b'/' => bytes[tgt] = b'/',
-                b'b' => bytes[tgt] = b'\x08',
-                b'f' => bytes[tgt] = b'\x0C',
-                b'n' => bytes[tgt] = b'\n',
-                b'r' => bytes[tgt] = b'\r',
-                b't' => bytes[tgt] = b'\t',
-                b'u' => {
-                    // Ensure, src through src + 3 are valid indices into bytes.
-                    if src + 3 >= bytes.len() { return Err(JsonError::UnexpectedEOF); }
-                    let hex_a = [bytes[src], bytes[src + 1] ];
-                    let hex_b = [bytes[src + 2], bytes[src + 3] ];
-                    bytes[tgt] = hex_pair_to_u8(hex_a)?;
-                    tgt += 1;
-                    bytes[tgt + 1] = hex_pair_to_u8(hex_b)?;
-                },
+    let mut chars = buffer.chars().peekable();
+    let mut result = String::new();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next().ok_or(JsonError::UnexpectedEOF)? {
+                '"' => result.push('"'),
+                '\\' => result.push('\\'),
+                '/' => result.push('/'),
+                'b' => result.push('\x08'),
+                'f' => result.push('\x0C'),
+                'n' => result.push('\n'),
+                'r' => result.push('\r'),
+                't' => result.push('\t'),
+                'u' => result.push(decode_unicode_escape(&mut chars)?),
                 _ => return Err(JsonError::InvalidEscape),
             }
-            tgt += 1;
-            continue;
         } else {
-            bytes[tgt] = bytes[src];
-            src += 1;
-            tgt += 1;
+            if c <= '\u{1f}' {
+                return Err(JsonError::Unexpected(c));
+            }
+            result.push(c);
         }
     }
-    bytes.truncate(tgt);
-    // TODO: Use std::str::from_utf8_unchecked at some point
-    // when we feel good about the safety of this code.
-    let result = String::from_utf8(bytes).unwrap();
     Ok(result)
 }
 
@@ -76,12 +86,32 @@ fn skip_escaped<'src, S: TextSource<'src> + ?Sized>(source: &mut S) -> Result<()
         'r' => Ok(()),
         't' => Ok(()),
         'u' => {
+            let mut value = 0;
             for _ in 0..4 {
                 let c = match source.next()? {
                     Some(c) => c,
                     None => return Err(JsonError::UnexpectedEOF)
                 };
-                if c < '0' || c > 'f' { return Err(JsonError::InvalidEscape); }
+                value = (value << 4) | hex_digit(c)?;
+            }
+            if (0xD800..=0xDBFF).contains(&value) {
+                match (source.next()?, source.next()?) {
+                    (Some('\\'), Some('u')) => (),
+                    _ => return Err(JsonError::InvalidEscape),
+                }
+                let mut low = 0;
+                for _ in 0..4 {
+                    let c = match source.next()? {
+                        Some(c) => c,
+                        None => return Err(JsonError::UnexpectedEOF)
+                    };
+                    low = (low << 4) | hex_digit(c)?;
+                }
+                if !(0xDC00..=0xDFFF).contains(&low) {
+                    return Err(JsonError::InvalidEscape);
+                }
+            } else if (0xDC00..=0xDFFF).contains(&value) {
+                return Err(JsonError::InvalidEscape);
             }
             Ok(())
         },
@@ -482,6 +512,8 @@ pub trait JsonSource<'src>: TextSource<'src> {
                         escaping = true;
                     } else if c == '"' {
                         break;
+                    } else if c <= '\u{1f}' {
+                        return Err(JsonError::Unexpected(c));
                     }
                 } else {
                     escaping = false;
@@ -514,6 +546,7 @@ pub trait JsonSource<'src>: TextSource<'src> {
             };
             if c == '\\' { skip_escaped(self)?; }
             else if c == '"' { break; }
+            else if c <= '\u{1f}' { return Err(JsonError::Unexpected(c)); }
         }
         Ok(())
     }

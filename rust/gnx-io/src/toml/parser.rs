@@ -288,7 +288,20 @@ impl<'src, S: TextSource<'src>> TomlParser<S> {
     fn parse_multiline_basic_body(&mut self) -> Result<String> {
         let mut out = String::new();
         loop {
-            if self.source.peek_chars(3)? == "\"\"\"" {
+            let quotes = self.source.peek_chars(5)?;
+            if quotes.starts_with("\"\"\"\"\"") {
+                self.expect_str("\"\"")?;
+                out.push_str("\"\"");
+                self.expect_str("\"\"\"")?;
+                return Ok(out);
+            }
+            if quotes.starts_with("\"\"\"\"") {
+                self.expect_char('"')?;
+                out.push('"');
+                self.expect_str("\"\"\"")?;
+                return Ok(out);
+            }
+            if quotes.starts_with("\"\"\"") {
                 self.expect_str("\"\"\"")?;
                 return Ok(out);
             }
@@ -358,7 +371,20 @@ impl<'src, S: TextSource<'src>> TomlParser<S> {
     fn parse_multiline_literal_body(&mut self) -> Result<String> {
         let mut out = String::new();
         loop {
-            if self.source.peek_chars(3)? == "'''" {
+            let quotes = self.source.peek_chars(5)?;
+            if quotes.starts_with("'''''") {
+                self.expect_str("''")?;
+                out.push_str("''");
+                self.expect_str("'''")?;
+                return Ok(out);
+            }
+            if quotes.starts_with("''''") {
+                self.expect_char('\'')?;
+                out.push('\'');
+                self.expect_str("'''")?;
+                return Ok(out);
+            }
+            if quotes.starts_with("'''") {
                 self.expect_str("'''")?;
                 return Ok(out);
             }
