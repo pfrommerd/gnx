@@ -1,6 +1,9 @@
 wandb
 artifacts
 target
+target/*
+vendor/*
+.cargo/config.toml
 
 .pytest_cache
 .venv
