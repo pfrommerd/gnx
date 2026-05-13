@@ -63,6 +63,7 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
     type Error = JsonError;
 
     fn deserialize_any<V: DataVisitor<'src>>(self, visitor: V) -> Result<V::Value> {
+        self.source.consume_whitespace()?;
         match self.source.peek_type()? {
             ValueType::Null => self.deserialize_unit(visitor),
             ValueType::Bool => self.deserialize_bool(visitor),
@@ -182,8 +183,18 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
                     return Ok(None);
                 }
                 let value = seed.deserialize(&mut *self.parser)?;
+                self.parser.source.consume_whitespace()?;
                 if !self.parser.source.is_array_end()? {
-                    self.parser.source.consume_delim_whitespace()?;
+                    match self.parser.source.next()? {
+                        Some(',') => {
+                            self.parser.source.consume_whitespace()?;
+                            if self.parser.source.is_array_end()? {
+                                return Err(JsonError::Unexpected(']'));
+                            }
+                        },
+                        Some(c) => return Err(JsonError::Unexpected(c)),
+                        None => return Err(JsonError::UnexpectedEOF),
+                    }
                 }
                 Ok(Some(value))
             }
@@ -234,8 +245,18 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
                 seed: VS,
             ) -> Result<VS::Value> {
                 let value = seed.deserialize(&mut *self.parser)?;
+                self.parser.source.consume_whitespace()?;
                 if !self.parser.source.is_object_end()? {
-                    self.parser.source.consume_delim_whitespace()?;
+                    match self.parser.source.next()? {
+                        Some(',') => {
+                            self.parser.source.consume_whitespace()?;
+                            if self.parser.source.is_object_end()? {
+                                return Err(JsonError::Unexpected('}'));
+                            }
+                        },
+                        Some(c) => return Err(JsonError::Unexpected(c)),
+                        None => return Err(JsonError::UnexpectedEOF),
+                    }
                 }
                 Ok(value)
             }
