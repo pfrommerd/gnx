@@ -2,7 +2,7 @@ use gnx_expr::array::{ArrayInfo, DType, Shape};
 use gnx_expr::trace::{Generic, Tracer, ValueInfo};
 
 fn f32x4_info() -> ValueInfo {
-    ValueInfo::Array(ArrayInfo::new(Shape::from_dims([4]), DType::F32))
+    ValueInfo::Array(ArrayInfo::new(Shape::fixed([4]), DType::F32))
 }
 
 #[test]

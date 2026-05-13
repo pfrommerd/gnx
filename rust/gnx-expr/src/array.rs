@@ -4,6 +4,7 @@ use ordered_float::OrderedFloat;
 
 use crate::expr::trace::{ConcreteValue, Traceable, Tracer, ValueInfo};
 
+#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Dim {
     Fixed(usize),
     // unknown size, can be converted
@@ -13,27 +14,44 @@ pub enum Dim {
     // to resolve the dynamic size.
     // Contains the index of the dependent dimension.
     // The other dimension can potentially also be jagged.
-    Jagged(usize)
+    Jagged(usize),
+}
+
+impl Display for Dim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Dim::Fixed(n) => write!(f, "{}", n),
+            Dim::Dynamic => write!(f, "?"),
+            Dim::Jagged(i) => write!(f, "jagged({})", i),
+        }
+    }
 }
 
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Shape(Vec<usize>);
+pub struct Shape(Vec<Dim>);
 
 impl Shape {
-    pub fn from_dims(dims: impl IntoIterator<Item = usize>) -> Self {
-        Shape(dims.into_iter().collect())
+    pub fn fixed(dims: impl IntoIterator<Item = usize>) -> Self {
+        Shape(dims.into_iter().map(Dim::Fixed).collect())
+    }
+}
+
+impl FromIterator<Dim> for Shape {
+    fn from_iter<T: IntoIterator<Item = Dim>>(iter: T) -> Self {
+        Shape(iter.into_iter().collect())
     }
 }
 
 impl std::fmt::Display for Shape {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let shape_str = self
-            .0
-            .iter()
-            .map(|dim| dim.to_string())
-            .collect::<Vec<String>>()
-            .join(", ");
-        write!(f, "({})", shape_str)
+        write!(f, "(")?;
+        for (i, dim) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", dim)?;
+        }
+        write!(f, ")")
     }
 }
 
@@ -112,9 +130,59 @@ pub enum Data<'r> {
     C128(Cow<'r, [OrderedFloat<f64>]>, Cow<'r, [OrderedFloat<f64>]>),
 }
 
+fn fmt_display_slice<T: Display>(f: &mut std::fmt::Formatter<'_>, slice: &[T]) -> std::fmt::Result {
+    write!(f, "[")?;
+    let mut first = true;
+    for x in slice {
+        if !first {
+            write!(f, ", ")?;
+        }
+        first = false;
+        write!(f, "{}", x)?;
+    }
+    write!(f, "]")
+}
+
 impl<'r> std::fmt::Display for Data<'r> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        match self {
+            Data::Bool(v) => fmt_display_slice(f, v.as_ref()),
+            Data::U8(v) => fmt_display_slice(f, v.as_ref()),
+            Data::U16(v) => fmt_display_slice(f, v.as_ref()),
+            Data::U32(v) => fmt_display_slice(f, v.as_ref()),
+            Data::U64(v) => fmt_display_slice(f, v.as_ref()),
+            Data::I8(v) => fmt_display_slice(f, v.as_ref()),
+            Data::I16(v) => fmt_display_slice(f, v.as_ref()),
+            Data::I32(v) => fmt_display_slice(f, v.as_ref()),
+            Data::I64(v) => fmt_display_slice(f, v.as_ref()),
+            Data::F16(v) => fmt_display_slice(f, v.as_ref()),
+            Data::F32(v) => fmt_display_slice(f, v.as_ref()),
+            Data::F64(v) => fmt_display_slice(f, v.as_ref()),
+            Data::C64(re, im) => {
+                write!(f, "[")?;
+                let mut first = true;
+                for (r, i) in re.iter().zip(im.iter()) {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    first = false;
+                    write!(f, "{} + {}i", r, i)?;
+                }
+                write!(f, "]")
+            }
+            Data::C128(re, im) => {
+                write!(f, "[")?;
+                let mut first = true;
+                for (r, i) in re.iter().zip(im.iter()) {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    first = false;
+                    write!(f, "{} + {}i", r, i)?;
+                }
+                write!(f, "]")
+            }
+        }
     }
 }
 

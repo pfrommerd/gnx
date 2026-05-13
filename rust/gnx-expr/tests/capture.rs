@@ -29,7 +29,7 @@ impl Operation for SampleOperation {
 
 fn f32x4_info() -> ValueInfo {
     ValueInfo::Array(ArrayInfo::new(
-        Shape::from_dims([4]),
+        Shape::fixed([4]),
         DType::F32,
     ))
 }
