@@ -4,8 +4,6 @@ pub mod expr;
 pub use expr::trace;
 pub use expr::value;
 
-pub mod builtins;
-
 pub mod backend;
 pub mod device;
 pub mod array;

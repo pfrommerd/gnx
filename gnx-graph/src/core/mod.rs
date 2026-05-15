@@ -55,15 +55,21 @@ pub trait Graph: Clone {
     // The owned version of this graph
     type Owned: Graph + Clone + 'static;
 
+    // Replace nodes in this graph according to the given filter and source.
+    // This is more efficient than creating a builder() and then calling build().
     fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self, replace: F, source: S, ctx: &mut GraphContext
     ) -> Result<Self::Owned, S::Error>;
 
+    // A 'builder' stores the graph structure information
+    // and can be used to construct the owned graph from a source.
     type Builder<L: Leaf>: Builder<L, Graph = Self::Owned> + 'static;
+
     fn builder<L: Leaf, F: Filter<L>, E: Error>(
         &self, replace: F, ctx: &mut GraphContext
     ) -> Result<Self::Builder<L>, E>;
 
+    // Visitor functions for visiting the graph and its children.
     fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
         &'g self, filter: F, visitor: V
     ) -> V::Output;

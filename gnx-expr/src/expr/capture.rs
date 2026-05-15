@@ -1,4 +1,4 @@
-use crate::expr::{Expr, VarScope, Var, Input, Effects, Eqn};
+use crate::expr::{Expr, VarScope, Var, Input, Effects, Eqn, Effect};
 use crate::trace::{Generic, Invocation, Tracer, TraceRef};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -12,20 +12,17 @@ pub struct Capture {
 
 impl Capture {
     /// Materialize the trace subgraph needed for `outputs` into an [`Expr`].
-    ///
-    /// `inputs` is the ordered formal parameter list (jaxpr `invars` / `constvars` split).
-    /// A boundary trace is classified as **closure** (and listed in [`Capture::closure`]) when
-    /// it is not among `inputs`, or when it holds a concrete [`crate::expr::value::Value`]. Otherwise
-    /// it is an **explicit** input slot.
-    pub fn from_trace_refs<'a, I, O>(inputs: I, outputs: O) -> Result<Self, ()>
+    pub fn from_trace_refs<'a, A: 'a, B: 'a, I, O>(inputs: I, outputs: O) -> Result<Self, ()>
     where
-        I: IntoIterator<Item = &'a TraceRef>,
-        O: IntoIterator<Item = &'a TraceRef>,
+        A: AsRef<TraceRef>,
+        B: AsRef<TraceRef>,
+        I: IntoIterator<Item = &'a A>,
+        O: IntoIterator<Item = &'a B>,
     {
-        let inputs: Vec<&TraceRef> = inputs.into_iter().collect();
-        let outputs: Vec<&TraceRef> = outputs.into_iter().collect();
+        // Convert the types to references.
+        let inputs: Vec<&TraceRef> = inputs.into_iter().map(|t| t.as_ref()).collect();
+        let outputs: Vec<&TraceRef> = outputs.into_iter().map(|t| t.as_ref()).collect();
         let input_keys: HashSet<TracerKey> = inputs.iter().map(|t| TracerKey::from(*t)).collect();
-
         let mut var_scope = VarScope::new();
         let mut trace_to_var: HashMap<TracerKey, Var> = HashMap::new();
         let mut input_vars = Vec::new();
@@ -45,27 +42,27 @@ impl Capture {
         // Create an equation for each invocation.
         for inv in &ordered_invs {
             let closure : Vec<Input> = inv.closure().iter().map(|inp| {
-                match trace_to_var.get(&TracerKey::from(&inp.trace)) {
-                    Some(var) => Input { var: var.clone(), effect: inp.effect},
+                match trace_to_var.get(&TracerKey::from(inp)) {
+                    Some(var) => Input { var: var.clone(), effect: Effect::Unused},
                     None => {
                         let v = var_scope.create_var();
-                        trace_to_var.insert(TracerKey::from(&inp.trace), v.clone());
+                        trace_to_var.insert(TracerKey::from(inp), v.clone());
                         closure_vars.push(v.clone());
-                        closure_refs.push(inp.trace.clone());
-                        Input { var: v, effect: inp.effect }
+                        closure_refs.push(inp.clone());
+                        Input { var: v, effect: Effect::Unused }
                     }
                 }
             }).collect();
             let inputs : Vec<Input> = inv.inputs().iter().map(|inp| {
-                match trace_to_var.get(&TracerKey::from(&inp.trace)) {
-                    Some(var) => Input { var: var.clone(), effect: inp.effect},
+                match trace_to_var.get(&TracerKey::from(inp)) {
+                    Some(var) => Input { var: var.clone(), effect: Effect::Unused},
                     None => {
                         // Capture the trace as a closure variable.
                         let v = var_scope.create_var();
-                        trace_to_var.insert(TracerKey::from(&inp.trace), v.clone());
+                        trace_to_var.insert(TracerKey::from(inp), v.clone());
                         closure_vars.push(v.clone());
-                        closure_refs.push(inp.trace.clone());
-                        Input { var: v, effect: inp.effect }
+                        closure_refs.push(inp.clone());
+                        Input { var: v, effect: Effect::Unused }
                     }
                 }
             }).collect();
@@ -133,7 +130,7 @@ impl From<&TraceRef> for TracerKey {
 
 impl From<&Tracer<Generic>> for TracerKey {
     fn from(t: &Tracer<Generic>) -> Self {
-        TracerKey::from(&t.trace_ref())
+        TracerKey::from(t.trace_ref())
     }
 }
 
@@ -168,10 +165,10 @@ fn collect_invocations(outputs: &[&TraceRef]) -> (HashMap<InvKey, Arc<Invocation
         }
         invs.insert(k, inv.clone());
         for inp in inv.inputs() {
-            if let Some((pred, out_idx)) = inp.trace.producer() {
+            if let Some((pred, out_idx)) = inp.producer() {
                 let key = InvKey::from(&pred);
                 pending.push(pred);
-                output_vars.entry(key).or_default().insert(out_idx, inp.trace.clone());
+                output_vars.entry(key).or_default().insert(out_idx, inp.clone());
             }
         }
     }
@@ -190,7 +187,7 @@ fn topo_sort_invocations(invs: HashMap<InvKey, Arc<Invocation>>) -> Vec<Arc<Invo
     for inv in invs.values() {
         let kid = InvKey::from(inv);
         for inp in inv.inputs() {
-            if let Some((pred, _)) = inp.trace.producer() {
+            if let Some((pred, _)) = inp.producer() {
                 let pid = InvKey::from(&pred);
                 if pid != kid && invs.contains_key(&pid) {
                     succ.entry(pid).or_default().push(kid);

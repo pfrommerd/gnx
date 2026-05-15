@@ -3,16 +3,17 @@ pub mod graph;
 pub mod leaf;
 pub mod string;
 
-
 use pyo3::prelude::*;
 
 /// A Python module implemented in Rust.
 
 #[pymodule]
-mod gnxlib {
+pub mod gnxlib {
+    use crate::graph::PyGraph;
     use gnx::backend::{Backend, Device};
-    use uuid::Uuid;
     use pyo3::prelude::*;
+    use uuid::Uuid;
+    use std::sync::Arc;
 
     #[pyclass(name = "Backend", eq)]
     #[derive(PartialEq, Eq)]
@@ -36,13 +37,21 @@ mod gnxlib {
     #[pymethods]
     impl PyDevice {
         #[getter]
-        fn uuid(&self) -> &Uuid { self.0.uuid() }
+        fn uuid(&self) -> &Uuid {
+            self.0.uuid()
+        }
         #[getter]
-        fn platform(&self) -> &str { self.0.platform() }
+        fn platform(&self) -> &str {
+            self.0.platform()
+        }
         #[getter]
-        fn hardware_id(&self) -> &str { self.0.hardware_id() }
+        fn hardware_id(&self) -> &str {
+            self.0.hardware_id()
+        }
         #[getter]
-        fn hardware_kind(&self) -> &str { self.0.hardware_kind() }
+        fn hardware_kind(&self) -> &str {
+            self.0.hardware_kind()
+        }
 
         fn __str__(&self) -> String {
             format!("{}", self.0)
@@ -67,27 +76,20 @@ mod gnxlib {
         Ok(gnx::backend::devices()?.into_iter().map(PyDevice).collect())
     }
 
-    // use crate::*;
-    // #[pyclass(name = "Graph")]
-    // struct GraphWrapper(PyGraph);
+    // Contains a shared graph reference.
+    #[pyclass(name = "Graph")]
+    #[derive(Clone)]
+    pub struct GraphContainer(pub Arc<PyGraph>);
 
-    // #[pymethods]
-    // impl GraphWrapper {
-    //     // #[getter]
-    //     // fn graphdef(&self) -> PyGraphDef {}
-    //     #[staticmethod]
-    //     fn from_value(value: PyGraph) -> Self {
-    //         GraphWrapper(value)
-    //     }
-
-    //     fn value(&self) -> &PyGraph {
-    //         &self.0
-    //     }
-    //     fn __repr__(&self) -> String {
-    //         format!("{:?}", self.0)
-    //     }
-    //     fn __str__(&self) -> String {
-    //         format!("{}", self.0)
-    //     }
-    // }
+    #[pymethods]
+    impl GraphContainer {
+        #[staticmethod]
+        fn from_value(value: PyGraph) -> Self {
+            GraphContainer(Arc::new(value))
+        }
+        // Will return a copy of the graph
+        fn to_value(&self) -> PyGraph {
+            (*self.0).clone()
+        }
+    }
 }

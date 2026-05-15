@@ -2,7 +2,9 @@ use crate::{bytes::ImBytes, string::ImString};
 use gnx::graph::*;
 use gnx::util::{try_specialize, LifetimeFree};
 use pyo3::prelude::*;
-use std::sync::Arc;
+use pyo3::types::{PyBool, PyBytes};
+use pyo3::Bound as PyBound;
+use std::{convert::Infallible, sync::Arc};
 
 #[derive(Clone)]
 pub struct ObjectHandle(pub Arc<Py<PyAny>>);
@@ -19,6 +21,57 @@ pub enum PyLeaf {
     // A generic python object as a leaf
     Other(ObjectHandle),
 }
+
+impl PyLeaf {
+    pub fn into_pyobject_bound<'py>(self, py: Python<'py>) -> PyResult<PyBound<'py, PyAny>> {
+        Ok(match self {
+            PyLeaf::None => py.None().into_bound(py),
+            PyLeaf::Int(v) => v.into_pyobject(py)?.into_any(),
+            PyLeaf::Float(v) => v.into_pyobject(py)?.into_any(),
+            PyLeaf::Bool(v) => PyBool::new(py, v).to_owned().into_any(),
+            PyLeaf::Bytes(v) => PyBytes::new(py, v.as_slice()).into_any(),
+            PyLeaf::String(v) => v.as_str().into_pyobject(py)?.into_any(),
+            PyLeaf::Other(v) => v.0.bind(py).clone(),
+        })
+    }
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for PyLeaf {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        if obj.is_none() {
+            Ok(PyLeaf::None)
+        } else if let Ok(value) = obj.extract::<bool>() {
+            Ok(PyLeaf::Bool(value))
+        } else if let Ok(value) = obj.extract::<i64>() {
+            Ok(PyLeaf::Int(value))
+        } else if let Ok(value) = obj.extract::<f64>() {
+            Ok(PyLeaf::Float(value))
+        } else if let Ok(value) = obj.extract::<ImBytes>() {
+            Ok(PyLeaf::Bytes(value))
+        } else if let Ok(value) = obj.extract::<ImString>() {
+            Ok(PyLeaf::String(value))
+        } else {
+            Ok(PyLeaf::Other(ObjectHandle(Arc::new(
+                obj.as_unbound().clone_ref(obj.py()),
+            ))))
+        }
+    }
+}
+
+impl<'py> IntoPyObject<'py> for PyLeaf {
+    type Target = PyAny;
+    type Output = PyBound<'py, PyAny>;
+    type Error = Infallible;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(self
+            .into_pyobject_bound(py)
+            .expect("PyLeaf conversion is infallible"))
+    }
+}
+
 #[rustfmt::skip]
 #[derive(Clone, Copy)]
 pub enum PyLeafRef<'l> {

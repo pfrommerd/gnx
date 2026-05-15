@@ -19,7 +19,7 @@ impl GraphContext {
         Self::default()
     }
 
-    // For use by the ctx_build_shared macro
+    // For use by the ctx_build macro
     // through which you should interact with the GraphContext
     // The macro released the &mut borrow while building child nodes
     pub fn _reserve<T: Clone + 'static, E: Error>(&mut self, id: GraphId) -> Result<Option<T>, E> {
