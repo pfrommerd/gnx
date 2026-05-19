@@ -45,6 +45,7 @@ impl DictKey {
             Key::DictKey(key) => KeyRef::DictKey(key.as_ref()),
             Key::DictIndex(index) => KeyRef::DictIndex(*index),
             Key::Index(index) => KeyRef::Index(*index),
+            Key::Transparent => KeyRef::Transparent,
         }
     }
 
