@@ -1,7 +1,7 @@
 use crate::expr::builtins::update_op;
 use crate::expr::{Effect, Eqn, Expr, Input, Effects, Var, VarScope};
 use crate::trace::{
-    CellKey, ContextID, Generic, Invocation, TraceCellRef, TraceContext, TraceOperand,
+    CellKey, ContextID, Generic, Invocation, TraceCellRef, TraceContext, TraceObject,
     TraceRef, Tracer,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -22,20 +22,14 @@ pub struct Capture {
 
 impl Capture {
     /// Materialize the trace subgraph for `outputs` within `ctx` into an [`Expr`].
-    pub fn from_context<'a, A: 'a, B: 'a, I, O>(
-        ctx: &TraceContext,
-        inputs: I,
-        outputs: O,
-    ) -> Result<Self, ()>
+    pub fn from_context<'a, I, O>(ctx: &TraceContext, inputs: I, outputs: O) -> Result<Self, ()>
     where
-        A: AsRef<TraceRef>,
-        B: AsRef<TraceRef>,
-        I: IntoIterator<Item = &'a A>,
-        O: IntoIterator<Item = &'a B>,
+        I: IntoIterator<Item = &'a TraceObject>,
+        O: IntoIterator<Item = &'a TraceObject>,
     {
         let target = ctx.id();
-        let inputs: Vec<&TraceRef> = inputs.into_iter().map(|t| t.as_ref()).collect();
-        let outputs: Vec<&TraceRef> = outputs.into_iter().map(|t| t.as_ref()).collect();
+        let inputs: Vec<&'a TraceObject> = inputs.into_iter().collect();
+        let outputs: Vec<&'a TraceObject> = outputs.into_iter().collect();
 
         let mut var_scope = VarScope::new();
         let mut binding_to_var: HashMap<BindingKey, Var> = HashMap::new();
@@ -43,25 +37,15 @@ impl Capture {
         let mut closure_vars = Vec::new();
         let mut closure_values = Vec::new();
 
-        for inp in &inputs {
-            let v = var_scope.create_var();
-            binding_to_var.insert(BindingKey::Trace(TracerKey::from(*inp)), v.clone());
-            input_vars.push(v);
-        }
-
-        let (invocations, output_vars) = collect_invocations(&outputs, target);
-        let ordered_invs = topo_sort_invocations(invocations, target);
-        let mut eqns = Vec::with_capacity(ordered_invs.len() + ctx.updates().len());
-
         let alloc_operand =
-            |op: &TraceOperand,
+            |op: &TraceObject,
              binding_to_var: &mut HashMap<BindingKey, Var>,
              closure_vars: &mut Vec<Var>,
              closure_values: &mut Vec<CapturedValue>,
              var_scope: &mut VarScope|
              -> Input {
                 match op {
-                    TraceOperand::Ref(r) => {
+                    TraceObject::Ref(r) => {
                         let key = BindingKey::Trace(TracerKey::from(r));
                         if let Some(var) = binding_to_var.get(&key).cloned() {
                             return Input::new(var, Effect::Read);
@@ -77,7 +61,7 @@ impl Capture {
                         binding_to_var.insert(key, v.clone());
                         Input::new(v, Effect::Read)
                     }
-                    TraceOperand::Cell(c) => {
+                    TraceObject::Cell(c) => {
                         let key = BindingKey::Cell(CellKey::from(c));
                         if let Some(var) = binding_to_var.get(&key).cloned() {
                             return Input::new(var, Effect::Read);
@@ -93,6 +77,22 @@ impl Capture {
                     }
                 }
             };
+
+        for inp in &inputs {
+            let input = alloc_operand(
+                inp,
+                &mut binding_to_var,
+                &mut closure_vars,
+                &mut closure_values,
+                &mut var_scope,
+            );
+            input_vars.push(input.var().clone());
+        }
+
+        let output_refs: Vec<TraceRef> = outputs.iter().map(|o| o.resolve()).collect();
+        let (invocations, output_vars) = collect_invocations(&output_refs, target);
+        let ordered_invs = topo_sort_invocations(invocations, target);
+        let mut eqns = Vec::with_capacity(ordered_invs.len() + ctx.updates().len());
 
         for inv in &ordered_invs {
             let closure: Vec<Input> = inv
@@ -176,15 +176,25 @@ impl Capture {
             ));
         }
 
-        for trace in &outputs {
-            let k = BindingKey::Trace(TracerKey::from(*trace));
-            if !binding_to_var.contains_key(&k) {
+        for obj in &outputs {
+            let key = match obj {
+                TraceObject::Ref(r) => BindingKey::Trace(TracerKey::from(r)),
+                TraceObject::Cell(c) => BindingKey::Cell(CellKey::from(c)),
+            };
+            if !binding_to_var.contains_key(&key) {
                 return Err(());
             }
         }
         let output_vars: Vec<Var> = outputs
             .iter()
-            .map(|t| binding_to_var[&BindingKey::Trace(TracerKey::from(*t))].clone())
+            .map(|obj| match obj {
+                TraceObject::Ref(r) => {
+                    binding_to_var[&BindingKey::Trace(TracerKey::from(r))].clone()
+                }
+                TraceObject::Cell(c) => {
+                    binding_to_var[&BindingKey::Cell(CellKey::from(c))].clone()
+                }
+            })
             .collect();
 
         let mut effects = Effects::new();
@@ -248,7 +258,7 @@ impl From<&Arc<Invocation>> for InvKey {
 }
 
 fn collect_invocations(
-    outputs: &[&TraceRef],
+    outputs: &[TraceRef],
     target: ContextID,
 ) -> (
     HashMap<InvKey, Arc<Invocation>>,
@@ -272,7 +282,7 @@ fn collect_invocations(
                 output_vars
                     .entry(key)
                     .or_default()
-                    .insert(ret_idx, (*out).clone());
+                    .insert(ret_idx, out.clone());
             }
         }
     }

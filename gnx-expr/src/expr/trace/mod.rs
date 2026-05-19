@@ -149,36 +149,55 @@ impl Debug for Trace {
     }
 }
 
-/// Operand to an [`Invocation`]: immutable trace or mutable cell.
+/// A traced value referenced by an [`Invocation`]: immutable trace or mutable cell.
 #[derive(Clone, Debug)]
-pub enum TraceOperand {
+pub enum TraceObject {
     Ref(TraceRef),
     Cell(TraceCellRef),
 }
 
-impl TraceOperand {
-    pub fn from_ref(t: impl AsRef<TraceRef>) -> Self {
-        TraceOperand::Ref(t.as_ref().clone())
-    }
+/// Closure or input lists for [`Invocation::invoke`] and [`crate::Capture::from_context`].
+pub type TraceOperands = Vec<TraceObject>;
 
-    pub fn from_cell(c: TraceCellRef) -> Self {
-        TraceOperand::Cell(c)
-    }
-
+impl TraceObject {
     /// Effective trace value for dependency walking and context checks.
     pub fn resolve(&self) -> TraceRef {
         match self {
-            TraceOperand::Ref(r) => r.clone(),
-            TraceOperand::Cell(c) => c.get(),
+            TraceObject::Ref(r) => r.clone(),
+            TraceObject::Cell(c) => c.get(),
         }
+    }
+}
+
+impl<T: Traceable> From<Tracer<T>> for TraceObject {
+    fn from(t: Tracer<T>) -> Self {
+        TraceObject::Ref(t.into())
+    }
+}
+
+impl<T: Traceable> From<TracerCell<T>> for TraceObject {
+    fn from(c: TracerCell<T>) -> Self {
+        TraceObject::Cell(c.into())
+    }
+}
+
+impl From<TraceRef> for TraceObject {
+    fn from(r: TraceRef) -> Self {
+        TraceObject::Ref(r)
+    }
+}
+
+impl From<TraceCellRef> for TraceObject {
+    fn from(c: TraceCellRef) -> Self {
+        TraceObject::Cell(c)
     }
 }
 
 pub struct Invocation {
     op: Op,
     context_id: ContextID,
-    closure: Vec<TraceOperand>,
-    inputs: Vec<TraceOperand>,
+    closure: Vec<TraceObject>,
+    inputs: Vec<TraceObject>,
     outputs: usize,
 }
 
@@ -201,11 +220,11 @@ impl Invocation {
         self.context_id
     }
 
-    pub fn closure(&self) -> &[TraceOperand] {
+    pub fn closure(&self) -> &[TraceObject] {
         &self.closure
     }
 
-    pub fn inputs(&self) -> &[TraceOperand] {
+    pub fn inputs(&self) -> &[TraceObject] {
         &self.inputs
     }
 
@@ -215,8 +234,8 @@ impl Invocation {
 
     pub fn invoke(
         op: Op,
-        closure: Vec<TraceOperand>,
-        inputs: Vec<TraceOperand>,
+        closure: Vec<TraceObject>,
+        inputs: Vec<TraceObject>,
         outputs: Vec<ValueInfo>,
     ) -> Vec<Tracer<Generic>> {
         if operands_abstract(&closure, &inputs) {
@@ -228,8 +247,8 @@ impl Invocation {
 
     pub fn invoke_abstract(
         op: Op,
-        closure: Vec<TraceOperand>,
-        inputs: Vec<TraceOperand>,
+        closure: Vec<TraceObject>,
+        inputs: Vec<TraceObject>,
         outputs: Vec<ValueInfo>,
     ) -> Vec<Tracer<Generic>> {
         let context_id = TraceContext::current_id();
@@ -258,8 +277,8 @@ impl Invocation {
 
     pub fn invoke_updatable(
         op: Op,
-        closure: Vec<TraceOperand>,
-        inputs: Vec<TraceOperand>,
+        closure: Vec<TraceObject>,
+        inputs: Vec<TraceObject>,
         outputs: Vec<ValueInfo>,
     ) -> Vec<Tracer<Generic>> {
         let context_id = TraceContext::current_id();
@@ -287,10 +306,10 @@ impl Invocation {
     }
 }
 
-fn operands_abstract(closure: &[TraceOperand], inputs: &[TraceOperand]) -> bool {
+fn operands_abstract(closure: &[TraceObject], inputs: &[TraceObject]) -> bool {
     closure.iter().chain(inputs.iter()).any(|op| match op {
-        TraceOperand::Ref(r) => r.is_abstract(),
-        TraceOperand::Cell(c) => c.get().is_abstract(),
+        TraceObject::Ref(r) => r.is_abstract(),
+        TraceObject::Cell(c) => c.get().is_abstract(),
     })
 }
 
@@ -325,13 +344,13 @@ fn produced_trace(
 
 fn bind_cell_operands(
     invocation: &Arc<Invocation>,
-    closure: &[TraceOperand],
-    inputs: &[TraceOperand],
+    closure: &[TraceObject],
+    inputs: &[TraceObject],
     context_id: ContextID,
     abstract_: bool,
 ) {
     for (i, op) in closure.iter().enumerate() {
-        if let TraceOperand::Cell(cell) = op {
+        if let TraceObject::Cell(cell) = op {
             let info = cell.get().info().clone();
             let trace = produced_trace(
                 invocation.clone(),
@@ -344,7 +363,7 @@ fn bind_cell_operands(
         }
     }
     for (i, op) in inputs.iter().enumerate() {
-        if let TraceOperand::Cell(cell) = op {
+        if let TraceObject::Cell(cell) = op {
             let info = cell.get().info().clone();
             let trace = produced_trace(
                 invocation.clone(),
@@ -514,6 +533,10 @@ impl<T: Traceable> AsRef<TraceRef> for Tracer<T> {
     fn as_ref(&self) -> &TraceRef {
         &self.trace
     }
+}
+
+impl<T: Traceable> From<Tracer<T>> for TraceRef {
+    fn from(t: Tracer<T>) -> Self { t.trace }
 }
 
 impl<T: Traceable> Clone for Tracer<T> {

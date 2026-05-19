@@ -164,6 +164,10 @@ impl<T: Traceable> TracerCell<T> {
     }
 }
 
+impl<T: Traceable> From<TracerCell<T>> for TraceCellRef {
+    fn from(c: TracerCell<T>) -> Self { c.cell }
+}
+
 impl<T: Traceable> Clone for TracerCell<T> {
     fn clone(&self) -> Self {
         TracerCell {
