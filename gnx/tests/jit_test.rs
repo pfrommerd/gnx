@@ -1,4 +1,5 @@
-use gnx::transforms::*;
+use gnx::jit;
+use gnx::transform;
 
 #[transform(jit)]
 fn f(x: u32) -> u32 {

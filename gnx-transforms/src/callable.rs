@@ -1,4 +1,4 @@
-use gnx::graph::Graph;
+use gnx_graph::Graph;
 
 #[rustfmt::skip]
 pub trait Callable<Input: Graph> {
@@ -9,7 +9,7 @@ pub trait Callable<Input: Graph> {
 
 pub mod as_fn {
     use super::Callable;
-    use gnx::graph::Graph;
+    use gnx_graph::Graph;
     macro_rules! callable_ext {
         ($num:expr, $($T:ty)*) => {
             paste::paste! {

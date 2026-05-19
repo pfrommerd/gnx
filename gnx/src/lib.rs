@@ -1,8 +1,6 @@
-pub mod callable;
-pub mod transforms;
 
-pub use callable::Callable;
-pub use transforms::{jit, transform};
+pub use gnx_transforms as transforms;
+pub use gnx_transforms::callable as callable;
 
 // Re-export gnx-graph as graph
 // and gnx-io as io
@@ -33,5 +31,7 @@ pub use gnx_expr::array::{Array, Shape};
 pub use gnx_expr::device::Device;
 pub use gnx_expr::backend::devices;
 pub use gnx_graph::{Graph, GraphId};
+
+pub use gnx_transforms::{jit, transform, Callable};
 
 extern crate self as gnx;

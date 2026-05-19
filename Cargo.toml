@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "gnx",
+    "gnx-transforms",
     "gnx-derive",
     "gnx-expr",
     "gnx-graph",
