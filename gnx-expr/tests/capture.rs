@@ -1,7 +1,7 @@
 use gnx_expr::array::{ArrayInfo, DType, Shape};
 use gnx_expr::expr::{AttrMap, Capture, Effect, Op};
 use gnx_expr::trace::{
-    Generic, Invocation, TraceCell, TraceContext, TraceOperand, Tracer, ValueInfo,
+    Generic, Invocation, TraceCellRef, TraceContext, TraceOperand, Tracer, ValueInfo,
 };
 use gnx_expr::expr::{Dialect, Operation};
 
@@ -205,7 +205,7 @@ fn capture_trace_cell_cross_context_update_emits_gnx_update() {
     let outer = TraceContext::enter();
     let _outer_ctx = outer.context();
     let value = Tracer::<Generic>::placeholder(f32x4_info());
-    let cell = TraceCell::new(value.trace_ref().clone());
+    let cell = TraceCellRef::new(value.trace_ref().clone());
 
     let inner = TraceContext::enter();
     let inner_ctx = inner.context();
@@ -235,7 +235,7 @@ fn capture_trace_cell_in_context_override_no_update_eqn() {
     let guard = TraceContext::enter();
     let ctx = guard.context();
     let base = Tracer::<Generic>::placeholder(f32x4_info());
-    let cell = TraceCell::new(base.trace_ref().clone());
+    let cell = TraceCellRef::new(base.trace_ref().clone());
     let replacement = Tracer::<Generic>::placeholder(f32x4_info());
     cell.set(replacement.trace_ref().clone());
 

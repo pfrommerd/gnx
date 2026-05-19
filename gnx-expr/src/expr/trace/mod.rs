@@ -6,7 +6,10 @@ pub use context::{CellUpdate, ContextID, TraceContext, TraceContextGuard};
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::{Arc, OnceLock, Weak};
+
+use castaway::LifetimeFree;
 
 use crate::expr::Op;
 use crate::util::DgArc;
@@ -59,7 +62,51 @@ pub struct Trace {
     context_id: ContextID,
 }
 
-pub type TraceRef = Arc<Trace>;
+/// Shared handle to an immutable [`Trace`].
+#[repr(transparent)]
+#[derive(Clone)]
+pub struct TraceRef(pub(crate) Arc<Trace>);
+
+impl TraceRef {
+    pub fn new(inner: Arc<Trace>) -> Self {
+        TraceRef(inner)
+    }
+}
+
+impl Deref for TraceRef {
+    type Target = Trace;
+
+    fn deref(&self) -> &Trace {
+        &self.0
+    }
+}
+
+impl From<Arc<Trace>> for TraceRef {
+    fn from(value: Arc<Trace>) -> Self {
+        TraceRef(value)
+    }
+}
+
+impl From<TraceRef> for Arc<Trace> {
+    fn from(value: TraceRef) -> Self {
+        value.0
+    }
+}
+
+impl AsRef<Trace> for TraceRef {
+    fn as_ref(&self) -> &Trace {
+        self
+    }
+}
+
+impl Debug for TraceRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&*self.0, f)
+    }
+}
+
+unsafe impl LifetimeFree for TraceRef {}
+
 pub type WeakTraceRef = Weak<Trace>;
 
 impl Debug for Trace {
@@ -255,16 +302,16 @@ fn produced_trace(
     abstract_: bool,
 ) -> TraceRef {
     if abstract_ {
-        Arc::new(Trace {
+        TraceRef::new(Arc::new(Trace {
             inner: TraceInner::Abstract(AbstractTrace::Computed {
                 invocation,
                 position,
             }),
             info,
             context_id,
-        })
+        }))
     } else {
-        Arc::new(Trace {
+        TraceRef::new(Arc::new(Trace {
             inner: TraceInner::Updatable(UpdatableTrace {
                 invocation: invocation.into(),
                 position,
@@ -272,7 +319,7 @@ fn produced_trace(
             }),
             info,
             context_id,
-        })
+        }))
     }
 }
 
@@ -409,16 +456,19 @@ impl<T: Traceable> Tracer<T> {
 
     pub fn placeholder(info: T::Info) -> Self {
         let context_id = TraceContext::current_id();
-        Tracer::new(Arc::new(Trace::placeholder(ValueInfo::new(info), context_id)))
+        Tracer::new(TraceRef::new(Arc::new(Trace::placeholder(
+            ValueInfo::new(info),
+            context_id,
+        ))))
     }
 
     pub fn concrete(value: T::Concrete, info: T::Info) -> Self {
         let context_id = TraceContext::current_id();
-        Tracer::new(Arc::new(Trace::concrete(
+        Tracer::new(TraceRef::new(Arc::new(Trace::concrete(
             Value::new(value),
             ValueInfo::new(info),
             context_id,
-        )))
+        ))))
     }
 
     pub fn trace_ref(&self) -> &TraceRef {

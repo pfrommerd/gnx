@@ -1,7 +1,9 @@
 use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
-use std::marker::PhantomData;
+use castaway::LifetimeFree;
 
 use super::context::{CellUpdate, ContextID, TraceContext};
 use super::{TraceRef, Traceable, Tracer};
@@ -12,7 +14,7 @@ pub struct CellKey(usize);
 
 impl CellKey {
     pub fn from(cell: &TraceCellRef) -> Self {
-        CellKey(Arc::as_ptr(cell) as usize)
+        CellKey(Arc::as_ptr(&cell.0) as usize)
     }
 }
 
@@ -28,7 +30,59 @@ pub struct TraceCell {
     cell: RwLock<Cell>,
 }
 
-pub type TraceCellRef = Arc<TraceCell>;
+/// Shared handle to a mutable [`TraceCell`].
+#[repr(transparent)]
+#[derive(Clone)]
+pub struct TraceCellRef(pub(crate) Arc<TraceCell>);
+
+impl TraceCellRef {
+    pub fn new(base: TraceRef) -> Self {
+        let context_id = TraceContext::current_id();
+        TraceCellRef(Arc::new(TraceCell {
+            context_id,
+            base: base.clone(),
+            cell: RwLock::new(Cell { trace: base }),
+        }))
+    }
+
+    /// Resolve the trace for this cell in the active context.
+    pub fn get(&self) -> TraceRef {
+        self.0.get(self)
+    }
+
+    /// Bind the cell: update home storage in-context, otherwise via [`TraceContext`].
+    pub fn set(&self, value: TraceRef) {
+        self.0.set(self, value);
+    }
+}
+
+impl Deref for TraceCellRef {
+    type Target = TraceCell;
+
+    fn deref(&self) -> &TraceCell {
+        &self.0
+    }
+}
+
+impl From<Arc<TraceCell>> for TraceCellRef {
+    fn from(value: Arc<TraceCell>) -> Self {
+        TraceCellRef(value)
+    }
+}
+
+impl From<TraceCellRef> for Arc<TraceCell> {
+    fn from(value: TraceCellRef) -> Self {
+        value.0
+    }
+}
+
+impl Debug for TraceCellRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&*self.0, f)
+    }
+}
+
+unsafe impl LifetimeFree for TraceCellRef {}
 
 impl Debug for TraceCell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,15 +94,6 @@ impl Debug for TraceCell {
 }
 
 impl TraceCell {
-    pub fn new(base: TraceRef) -> TraceCellRef {
-        let context_id = TraceContext::current_id();
-        Arc::new(TraceCell {
-            context_id,
-            base: base.clone(),
-            cell: RwLock::new(Cell { trace: base }),
-        })
-    }
-
     pub fn context_id(&self) -> ContextID {
         self.context_id
     }
@@ -61,29 +106,27 @@ impl TraceCell {
         self.cell.read().unwrap().trace.clone()
     }
 
-    /// Resolve the trace for this cell in the active context.
-    pub fn get(self: &Arc<Self>) -> TraceRef {
+    fn get(&self, cell_ref: &TraceCellRef) -> TraceRef {
         if self.context_id == TraceContext::current_id() {
             return self.home_trace();
         }
         TraceContext::active()
-            .cell_override(CellKey::from(self))
+            .cell_override(CellKey::from(cell_ref))
             .unwrap_or_else(|| self.home_trace())
     }
 
-    /// Bind the cell: update home storage in-context, otherwise via [`TraceContext`].
-    pub fn set(self: &Arc<Self>, value: TraceRef) {
+    fn set(&self, cell_ref: &TraceCellRef, value: TraceRef) {
         if self.context_id == TraceContext::current_id() {
             self.cell.write().unwrap().trace = value;
             return;
         }
         let ctx = TraceContext::active();
-        let effective = self.get();
+        let effective = self.get(cell_ref);
         if value.context_id() == effective.context_id() {
-            ctx.override_cell(CellKey::from(self), value);
+            ctx.override_cell(CellKey::from(cell_ref), value);
         } else {
             ctx.register_update(CellUpdate {
-                cell: self.clone(),
+                cell: cell_ref.clone(),
                 value,
             });
         }
@@ -99,7 +142,7 @@ pub struct TracerCell<T: Traceable> {
 impl<T: Traceable> TracerCell<T> {
     pub fn new(trace: Tracer<T>) -> Self {
         TracerCell {
-            cell: TraceCell::new(trace.trace_ref().clone()),
+            cell: TraceCellRef::new(trace.trace_ref().clone()),
             _phantom: PhantomData,
         }
     }

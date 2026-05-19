@@ -228,7 +228,7 @@ pub struct TracerKey(usize);
 
 impl From<&TraceRef> for TracerKey {
     fn from(t: &TraceRef) -> Self {
-        TracerKey(Arc::as_ptr(t) as usize)
+        TracerKey(Arc::as_ptr(&t.0) as usize)
     }
 }
 
