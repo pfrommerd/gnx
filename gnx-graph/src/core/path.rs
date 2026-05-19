@@ -6,6 +6,8 @@ pub enum Key {
     DictKey(Cow<'static, str>),
     DictIndex(i64),
     Index(usize),
+    // Used if the parent is a "wrapper" around the child (e.g. newtype structs)
+    Transparent, 
 }
 
 impl Key {
@@ -15,6 +17,7 @@ impl Key {
             Key::DictKey(key) => KeyRef::DictKey(key.as_ref()),
             Key::DictIndex(index) => KeyRef::DictIndex(*index),
             Key::Index(index) => KeyRef::Index(*index),
+            Key::Transparent => KeyRef::Transparent,
         }
     }
 }
@@ -25,6 +28,7 @@ pub enum KeyRef<'r> {
     DictKey(&'r str),
     DictIndex(i64),
     Index(usize),
+    Transparent,
 }
 impl<'r> KeyRef<'r> {
     pub fn to_value(&self) -> Key {
@@ -33,6 +37,7 @@ impl<'r> KeyRef<'r> {
             KeyRef::DictKey(key) => Key::DictKey(Cow::Owned(key.to_string())),
             KeyRef::DictIndex(index) => Key::DictIndex(*index),
             KeyRef::Index(index) => Key::Index(*index),
+            KeyRef::Transparent => Key::Transparent,
         }
     }
 }
@@ -53,6 +58,7 @@ impl std::fmt::Display for Key {
             Key::DictKey(key) => write!(f, "[\"{}\"]", key),
             Key::DictIndex(index) => write!(f, "[{}]", index),
             Key::Index(index) => write!(f, "[{}]", index),
+            Key::Transparent => write!(f, ""), // Transparent keys are not displayed
         }
     }
 }
