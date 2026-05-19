@@ -1,23 +1,16 @@
 use crate::expr::builtins::update_op;
 use crate::expr::{Effect, Eqn, Expr, Input, Effects, Var, VarScope};
 use crate::trace::{
-    CellKey, ContextID, Generic, Invocation, TraceCellRef, TraceContext, TraceObject,
+    CellKey, ContextID, Generic, Invocation, TraceContext, TraceObject,
     TraceRef, Tracer,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-/// Runtime value hoisted into a captured expression's closure.
-#[derive(Clone, Debug)]
-pub enum CapturedValue {
-    Ref(TraceRef),
-    Cell(TraceCellRef),
-}
-
 /// Snapshot of a trace subgraph in jaxpr-like [`Expr`] form, plus hoisted closure values.
 pub struct Capture {
     expr: Expr,
-    closure: Vec<CapturedValue>,
+    closure: Vec<TraceObject>,
 }
 
 impl Capture {
@@ -41,7 +34,7 @@ impl Capture {
             |op: &TraceObject,
              binding_to_var: &mut HashMap<BindingKey, Var>,
              closure_vars: &mut Vec<Var>,
-             closure_values: &mut Vec<CapturedValue>,
+             closure_values: &mut Vec<TraceObject>,
              var_scope: &mut VarScope|
              -> Input {
                 match op {
@@ -54,7 +47,7 @@ impl Capture {
                             let v = var_scope.create_var();
                             binding_to_var.insert(key, v.clone());
                             closure_vars.push(v.clone());
-                            closure_values.push(CapturedValue::Ref(r.clone()));
+                            closure_values.push(TraceObject::from(r.clone()));
                             return Input::new(v, Effect::Read);
                         }
                         let v = var_scope.create_var();
@@ -71,7 +64,7 @@ impl Capture {
                         let resolved = c.get();
                         if resolved.context_id() != target {
                             closure_vars.push(v.clone());
-                            closure_values.push(CapturedValue::Cell(c.clone()));
+                            closure_values.push(TraceObject::from(c.clone()));
                         }
                         Input::new(v, Effect::Read)
                     }
@@ -157,7 +150,7 @@ impl Capture {
                 let v = var_scope.create_var();
                 binding_to_var.insert(value_key, v.clone());
                 closure_vars.push(v.clone());
-                closure_values.push(CapturedValue::Ref(update.value.clone()));
+                closure_values.push(TraceObject::from(update.value.clone()));
                 v
             } else {
                 let v = var_scope.create_var();
@@ -219,10 +212,13 @@ impl Capture {
     pub fn expr(&self) -> &Expr {
         &self.expr
     }
-    pub fn closure(&self) -> &[CapturedValue] {
+    pub fn closure(&self) -> &[TraceObject] {
         &self.closure
     }
-    pub fn into_parts(self) -> (Expr, Vec<CapturedValue>) {
+}
+
+impl Into<(Expr, Vec<TraceObject>)> for Capture {
+    fn into(self) -> (Expr, Vec<TraceObject>) {
         (self.expr, self.closure)
     }
 }

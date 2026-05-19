@@ -1,8 +1,10 @@
 mod cell;
 mod context;
+mod capture;
 
 pub use cell::{CellKey, TraceCell, TraceCellRef, TracerCell};
 pub use context::{CellUpdate, ContextID, TraceContext, TraceContextGuard};
+pub use capture::Capture;
 
 use std::fmt::Debug;
 use std::marker::PhantomData;

@@ -14,7 +14,6 @@ pub use gnx_expr::{
 // expr module contains the expr, trace, and value modules from gnx-expr
 pub mod expr {
     pub use gnx_expr::expr::*;
-    pub use gnx_expr::trace::*;
     pub use gnx_expr::value::*;
 }
 

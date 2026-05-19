@@ -2,10 +2,9 @@ pub mod value;
 pub mod trace;
 pub mod builtins;
 mod attr;
-mod capture;
 
 pub use attr::*;
-pub use capture::*;
+pub use trace::*;
 
 use std::collections::BTreeMap;
 use std::fmt;
