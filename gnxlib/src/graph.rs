@@ -219,8 +219,6 @@ impl Graph for PyGraph {
     }
 }
 
-impl TypedGraph<PyLeaf> for PyGraph {}
-
 impl Node for PyGraph {
     fn visit_children<'g, L, F, V>(&'g self, filter: F, mut visitor: V) -> V::Output
     where

@@ -91,16 +91,18 @@ pub trait Node: Graph {
         C: ChildrenConsumer<Self, L>;
 }
 
+// A typed view of a graph.
+// All graph types get a blanket implementation for all leaf types.
 pub trait TypedGraph<L: Leaf>: Graph {
     fn as_source<'g>(&'g self) -> AsSource<'g, Self, Of<L>> {
         AsSource::new(self, Of::<L>::filter())
     }
 }
 
-pub trait Leaf: TypedGraph<Self, Owned = Self> + Clone + 'static {
-    type Ref<'l>: Copy
-    where
-        Self: 'l;
+impl<L: Leaf, G: Graph> TypedGraph<L> for G {}
+
+pub trait Leaf: Graph<Owned = Self> + 'static {
+    type Ref<'l>: Copy;
     fn as_ref<'l>(&'l self) -> Self::Ref<'l>;
     fn clone_ref(v: Self::Ref<'_>) -> Self;
     fn try_from_value<V>(g: V) -> Result<Self, V>;

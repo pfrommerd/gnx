@@ -9,9 +9,7 @@ pub use capture::Capture;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::sync::{Arc, OnceLock, Weak};
-
-use castaway::LifetimeFree;
+use std::sync::{Arc, OnceLock};
 
 use crate::expr::Op;
 use crate::util::DgArc;
@@ -106,10 +104,6 @@ impl Debug for TraceRef {
         Debug::fmt(&*self.0, f)
     }
 }
-
-unsafe impl LifetimeFree for TraceRef {}
-
-pub type WeakTraceRef = Weak<Trace>;
 
 impl Debug for Trace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

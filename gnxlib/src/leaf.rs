@@ -134,7 +134,6 @@ impl Graph for PyLeaf {
         }
     }
 }
-impl TypedGraph<PyLeaf> for PyLeaf {}
 
 #[rustfmt::skip]
 impl Leaf for PyLeaf {

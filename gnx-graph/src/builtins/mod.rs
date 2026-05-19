@@ -50,7 +50,6 @@ macro_rules! impl_leaf {
                 }
             }
         }
-        impl TypedGraph<$name> for $name {}
         impl Leaf for $name {
             type Ref<'l> = &'l Self
                 where Self: 'l;

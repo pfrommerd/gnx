@@ -1,3 +1,5 @@
+use crate::util::LifetimeFree;
+
 use super::*;
 
 impl<T: Graph> Graph for Vec<T> {
@@ -69,7 +71,6 @@ impl<T: Graph> Graph for Vec<T> {
         }
     }
 }
-impl<L: Leaf, T: TypedGraph<L>> TypedGraph<L> for Vec<T> {}
 
 impl<T: Graph> Node for Vec<T> {
     fn visit_children<'g, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Self, L>>(
@@ -111,6 +112,23 @@ impl<'g, L: Leaf, B: Builder<L>> Builder<L> for Vec<B> {
                 b.build(ns.expect_child(key)?, ctx)
             })
             .collect()
+    }
+}
+
+// A Vec<A> can be treated as a leaf if A is 'static (so that Vec<A> is 'static)
+// and lifetime-free (so that we can specialize at compile time).
+impl<A: Graph<Owned=A> + LifetimeFree + 'static> Leaf for Vec<A> {
+    type Ref<'l> = &'l Self;
+    fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
+    fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
+    fn try_from_value<V>(g: V) -> Result<Self, V> {
+        try_specialize!(g, Self)
+    }
+    fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
+        try_specialize!(graph, &Self)
+    }
+    fn try_into_value<V: 'static>(self) -> Result<V, Self> {
+        try_specialize!(self, V)
     }
 }
 
@@ -177,7 +195,6 @@ macro_rules! impl_tuple_graph {
                     }
                 }
             }
-            impl<L: Leaf, $($T: TypedGraph<L>,)*> TypedGraph<L> for ($($T,)*) {}
             impl<$($T: Graph,)*> Node for ($($T,)*) {
                 #[allow(unused_variables, unused_mut)]
                 fn visit_children<'g, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Self, L>>(

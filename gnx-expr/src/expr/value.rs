@@ -1,4 +1,4 @@
-use crate::array::{ArrayInfo, DataHandle, MutDataHandle};
+use crate::array::{ArrayInfo, DataHandle};
 use crate::backend::DeviceHandle;
 use crate::device::DeviceInfo;
 
@@ -50,10 +50,6 @@ impl Value {
         };
         let value = match castaway::cast!(value, DeviceHandle) {
             Ok(value) => return Value::Device(value),
-            Err(value) => value,
-        };
-        let value = match castaway::cast!(value, MutDataHandle) {
-            Ok(value) => return Value::Other(Box::new(value)),
             Err(value) => value,
         };
         Value::Other(Box::new(value))

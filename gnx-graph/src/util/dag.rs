@@ -235,7 +235,6 @@ impl<I: Leaf> Node for Dag<I> {
         }
     }
 }
-impl<I: Leaf> TypedGraph<I> for Dag<I> {}
 
 #[derive(Clone)]
 pub enum DagBuilder<I> {

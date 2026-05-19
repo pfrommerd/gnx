@@ -247,17 +247,6 @@ impl ConcreteValue for DataHandle {
     }
 }
 
-pub trait MutDataImpl: Send + Sync + Debug + Display {
-    fn info(&self) -> &ArrayInfo;
-}
-pub type MutDataHandle = Box<dyn MutDataImpl>;
-
-impl ConcreteValue for MutDataHandle {
-    fn to_info(&self) -> ValueInfo {
-        ValueInfo::Array(self.info().clone())
-    }
-}
-
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ArrayInfo {
     shape: Shape,

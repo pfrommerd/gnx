@@ -2211,7 +2211,6 @@ dependencies = [
 name = "gnx-graph"
 version = "0.1.0"
 dependencies = [
- "castaway",
  "gnx-derive",
  "gnx-expr",
  "ordered-float",

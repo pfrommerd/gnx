@@ -43,7 +43,6 @@ macro_rules! impl_rc {
                 consumer.consume_shared(id, View::new(self.as_ref(), filter))
             }
         }
-        impl<L: Leaf, S: TypedGraph<L>> TypedGraph<L> for $W<S> {}
         impl<L: Leaf, B: Builder<L>> Builder<L> for $W<B> {
             type Graph = $W<B::Graph>;
             fn build<S: GraphSource<(), L>>(

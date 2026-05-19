@@ -3,8 +3,6 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
-use castaway::LifetimeFree;
-
 use super::context::{CellUpdate, ContextID, TraceContext};
 use super::{TraceRef, Traceable, Tracer};
 
@@ -81,8 +79,6 @@ impl Debug for TraceCellRef {
         Debug::fmt(&*self.0, f)
     }
 }
-
-unsafe impl LifetimeFree for TraceCellRef {}
 
 impl Debug for TraceCell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
