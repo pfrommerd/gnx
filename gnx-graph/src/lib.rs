@@ -9,6 +9,4 @@ pub use des::*;
 pub use builtins::*;
 pub mod util;
 
-mod gnx {
-    extern crate self as graph;
-}
+extern crate self as gnx_graph;

@@ -1,8 +1,21 @@
 use proc_macro::TokenStream as ProcTokenStream;
 use quote::quote;
-use syn::{DeriveInput, parse_macro_input};
+use syn::{parse_macro_input, DeriveInput};
 
+mod leaf;
+mod lifetime_free;
+mod paths;
 mod transforms;
+
+#[proc_macro]
+pub fn impl_leaf(input: ProcTokenStream) -> ProcTokenStream {
+    leaf::impl_leaf(input)
+}
+
+#[proc_macro]
+pub fn impl_lifetime_free(input: ProcTokenStream) -> ProcTokenStream {
+    lifetime_free::impl_lifetime_free(input)
+}
 
 #[proc_macro]
 pub fn jit(input: ProcTokenStream) -> ProcTokenStream {
@@ -19,23 +32,23 @@ pub fn transform(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStre
 
 #[proc_macro_derive(Leaf)]
 pub fn derive_leaf(input: ProcTokenStream) -> ProcTokenStream {
-    // Parse the input into a syntax tree
-    let _ = parse_macro_input!(input as DeriveInput);
-    // let ty = Type::Path(TypePath {
-    //     qself: None,
-    //     path: Path::from(input.ident),
-    // });
-    ProcTokenStream::from(quote! {})
+    leaf::derive_leaf(input)
+}
+
+#[proc_macro_derive(LifetimeFree)]
+pub fn derive_lifetime_free(input: ProcTokenStream) -> ProcTokenStream {
+    lifetime_free::derive_lifetime_free(input)
 }
 
 #[proc_macro_derive(Graph)]
 pub fn derive_graph(input: ProcTokenStream) -> ProcTokenStream {
-    // Parse the input into a syntax tree
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    // Generate code
+    let g = paths::graph_crate();
+    let err = paths::require_graph_crate();
     let expanded = quote! {
-        impl ::gnx::graph::Graph for #name {
+        #err
+        impl #g::Graph for #name {
         }
     };
     ProcTokenStream::from(expanded)

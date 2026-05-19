@@ -1,4 +1,4 @@
-pub use gnx_derive::{Graph, Leaf};
+pub use gnx_derive::{Graph, Leaf, impl_leaf};
 use std::fmt::Display;
 
 mod path;
