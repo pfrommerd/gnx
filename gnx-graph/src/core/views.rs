@@ -62,5 +62,4 @@ impl<G: Graph, F> Bound<G, F> {
         self.graph.visit_into(self.filter, visitor)
     }
 }
-// TODO: The view types should implement
-// Graph and TypedGraph
+// TODO: The view types should implement Graph

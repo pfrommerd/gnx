@@ -4,6 +4,7 @@ use super::*;
 
 mod containers;
 mod refs;
+mod expr;
 
 impl_leaf!(());
 impl_leaf!(char);
