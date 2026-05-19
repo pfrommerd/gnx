@@ -1,5 +1,6 @@
 pub mod value;
 pub mod trace;
+pub mod builtins;
 mod attr;
 mod capture;
 

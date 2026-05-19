@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display};
 
 use ordered_float::OrderedFloat;
 
-use crate::expr::trace::{ConcreteValue, Traceable, Tracer, ValueInfo};
+use crate::expr::trace::{ConcreteValue, Traceable, Tracer, TracerCell, ValueInfo};
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Dim {
@@ -254,7 +254,7 @@ pub type MutDataHandle = Box<dyn MutDataImpl>;
 
 impl ConcreteValue for MutDataHandle {
     fn to_info(&self) -> ValueInfo {
-        ValueInfo::ArrayRef(ArrayRefInfo(self.info().clone()))
+        ValueInfo::Array(self.info().clone())
     }
 }
 
@@ -304,39 +304,31 @@ impl Array {
     }
 }
 
-// Used for the tracer
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct ArrayRefInfo(ArrayInfo);
-
-impl Display for ArrayRefInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-pub struct ArrayRef(Tracer<ArrayRef>);
-
-impl From<ArrayRef> for Tracer<ArrayRef> {
-    fn from(value: ArrayRef) -> Self {
-        value.0
-    }
-}
-impl From<Tracer<ArrayRef>> for ArrayRef {
-    fn from(value: Tracer<ArrayRef>) -> Self {
-        ArrayRef(value)
-    }
-}
-
-impl Traceable for ArrayRef {
-    type Concrete = MutDataHandle;
-    type Info = ArrayRefInfo;
-}
+/// Mutable array traced via [`TracerCell`] (JAX-style ref).
+pub struct ArrayRef(TracerCell<Array>);
 
 impl ArrayRef {
-    pub fn dtype(&self) -> DType {
-        self.0.info().0.dtype
+    pub fn new(base: impl Into<Tracer<Array>>) -> Self {
+        ArrayRef(TracerCell::new(base.into()))
     }
-    pub fn shape(&self) -> &Shape {
-        &self.0.info().0.shape
+
+    pub fn cell(&self) -> &TracerCell<Array> {
+        &self.0
+    }
+
+    pub fn get(&self) -> Array {
+        Array(self.0.get())
+    }
+
+    pub fn set(&self, value: impl Into<Tracer<Array>>) {
+        self.0.set(value.into());
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.0.get().info().dtype
+    }
+
+    pub fn shape(&self) -> Shape {
+        self.0.get().info().shape.clone()
     }
 }

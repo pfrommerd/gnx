@@ -1,4 +1,4 @@
-use crate::array::{ArrayInfo, ArrayRefInfo, DataHandle, MutDataHandle};
+use crate::array::{ArrayInfo, DataHandle, MutDataHandle};
 use crate::backend::DeviceHandle;
 use crate::device::DeviceInfo;
 
@@ -11,16 +11,9 @@ pub trait ConcreteValue: Any + Send + Sync + Debug + Display {
     fn to_info(&self) -> ValueInfo;
 }
 
-// A generic concrete value.
-// Array, ArrayRef, Device are enum variants
-// for convenience.
 #[derive(Debug)]
 pub enum Value {
-    // The physical (immutable) data for this array.
     Array(DataHandle),
-    // The mutable data underlying this array.
-    ArrayRef(MutDataHandle),
-    // A handle to a device.
     Device(DeviceHandle),
     Other(Box<dyn ConcreteValue>),
 }
@@ -29,7 +22,6 @@ impl ConcreteValue for Value {
     fn to_info(&self) -> ValueInfo {
         match self {
             Value::Array(data) => data.to_info(),
-            Value::ArrayRef(data) => data.to_info(),
             Value::Device(device) => device.to_info(),
             Value::Other(value) => value.to_info(),
         }
@@ -40,7 +32,6 @@ impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Array(data) => Display::fmt(data, f),
-            Value::ArrayRef(data) => Display::fmt(data, f),
             Value::Device(device) => Display::fmt(device, f),
             Value::Other(value) => Display::fmt(value, f),
         }
@@ -57,12 +48,12 @@ impl Value {
             Ok(value) => return Value::Array(value),
             Err(value) => value,
         };
-        let value = match castaway::cast!(value, MutDataHandle) {
-            Ok(value) => return Value::ArrayRef(value),
-            Err(value) => value,
-        };
         let value = match castaway::cast!(value, DeviceHandle) {
             Ok(value) => return Value::Device(value),
+            Err(value) => value,
+        };
+        let value = match castaway::cast!(value, MutDataHandle) {
+            Ok(value) => return Value::Other(Box::new(value)),
             Err(value) => value,
         };
         Value::Other(Box::new(value))
@@ -70,7 +61,6 @@ impl Value {
     pub fn downcast<T: ConcreteValue>(self) -> Result<T, Self> {
         match self {
             Value::Array(data) => castaway::cast!(data, T).map_err(Value::Array),
-            Value::ArrayRef(data) => castaway::cast!(data, T).map_err(Value::ArrayRef),
             Value::Device(device) => castaway::cast!(device, T).map_err(Value::Device),
             Value::Other(value) => {
                 let v: &dyn Any = &value;
@@ -86,7 +76,6 @@ impl Value {
     pub fn downcast_ref<T: 'static>(&self) -> Result<&T, ()> {
         match self {
             Value::Array(data) => castaway::cast!(data, &T).ok(),
-            Value::ArrayRef(data) => castaway::cast!(data, &T).ok(),
             Value::Device(device) => castaway::cast!(device, &T).ok(),
             Value::Other(value) => {
                 let v: &dyn Any = value;
@@ -98,7 +87,6 @@ impl Value {
     pub fn downcast_mut<T: 'static>(&mut self) -> Result<&mut T, ()> {
         match self {
             Value::Array(data) => castaway::cast!(data, &mut T).ok(),
-            Value::ArrayRef(data) => castaway::cast!(data, &mut T).ok(),
             Value::Device(device) => castaway::cast!(device, &mut T).ok(),
             Value::Other(value) => {
                 let v: &mut dyn Any = value;
@@ -112,7 +100,6 @@ impl Value {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum ValueInfo {
     Array(ArrayInfo),
-    ArrayRef(ArrayRefInfo),
     Device(DeviceInfo),
     Other(Box<dyn AnyInfo>),
 }
@@ -127,10 +114,6 @@ impl ValueInfo {
             Ok(value) => return ValueInfo::Array(value),
             Err(value) => value,
         };
-        let value = match castaway::cast!(value, ArrayRefInfo) {
-            Ok(value) => return ValueInfo::ArrayRef(value),
-            Err(value) => value,
-        };
         let value = match castaway::cast!(value, DeviceInfo) {
             Ok(value) => return ValueInfo::Device(value),
             Err(value) => value,
@@ -141,7 +124,6 @@ impl ValueInfo {
     pub fn downcast<T: AnyInfo>(self) -> Result<T, Self> {
         match self {
             ValueInfo::Array(info) => castaway::cast!(info, T).map_err(ValueInfo::Array),
-            ValueInfo::ArrayRef(info) => castaway::cast!(info, T).map_err(ValueInfo::ArrayRef),
             ValueInfo::Device(info) => castaway::cast!(info, T).map_err(ValueInfo::Device),
             ValueInfo::Other(info) => {
                 let v: &dyn Any = &info;
@@ -157,7 +139,6 @@ impl ValueInfo {
     pub fn downcast_ref<T: AnyInfo>(&self) -> Result<&T, ()> {
         match self {
             ValueInfo::Array(info) => castaway::cast!(info, &T).ok(),
-            ValueInfo::ArrayRef(info) => castaway::cast!(info, &T).ok(),
             ValueInfo::Device(info) => castaway::cast!(info, &T).ok(),
             ValueInfo::Other(info) => {
                 let v: &dyn Any = info;
@@ -169,7 +150,6 @@ impl ValueInfo {
     pub fn downcast_mut<T: AnyInfo>(&mut self) -> Result<&mut T, ()> {
         match self {
             ValueInfo::Array(info) => castaway::cast!(info, &mut T).ok(),
-            ValueInfo::ArrayRef(info) => castaway::cast!(info, &mut T).ok(),
             ValueInfo::Device(info) => castaway::cast!(info, &mut T).ok(),
             ValueInfo::Other(info) => {
                 let v: &mut dyn Any = info;
@@ -184,7 +164,6 @@ impl Display for ValueInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ValueInfo::Array(info) => Display::fmt(info, f),
-            ValueInfo::ArrayRef(info) => Display::fmt(info, f),
             ValueInfo::Device(info) => Display::fmt(info, f),
             ValueInfo::Other(info) => Display::fmt(info, f),
         }
@@ -214,8 +193,6 @@ impl Traceable for Generic {
     type Concrete = Value;
     type Info = ValueInfo;
 }
-
-// AnyInfo
 
 pub trait AnyInfo: Any + Send + Sync + Debug + Display {
     fn dyn_hash(&self, state: &mut dyn std::hash::Hasher);
