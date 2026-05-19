@@ -77,7 +77,7 @@ pub mod gnxlib {
     }
 
     // Contains a shared graph reference.
-    #[pyclass(name = "Graph")]
+    #[pyclass(name = "Graph", skip_from_py_object)]
     #[derive(Clone)]
     pub struct GraphContainer(pub Arc<PyGraph>);
 

@@ -2,7 +2,7 @@ use gnx::graph::*;
 use gnx::util::LifetimeFree;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyModule, PyString, PyTuple, PyType};
+use pyo3::types::{PyDict, PyList, PyModule, PyTuple, PyType};
 use pyo3::Bound as PyBound;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -49,8 +49,8 @@ impl DictKey {
     }
 
     fn from_py(key: PyBound<'_, PyAny>) -> PyResult<Self> {
-        let graph_key = if let Ok(key_str) = key.cast::<PyString>() {
-            Key::DictKey(Cow::Owned(key_str.to_str()?.to_owned()))
+        let graph_key = if let Ok(key_str) = key.extract::<String>() {
+            Key::DictKey(Cow::Owned(key_str))
         } else if let Ok(index) = key.extract::<i64>() {
             Key::DictIndex(index)
         } else {

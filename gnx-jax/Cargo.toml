@@ -6,5 +6,5 @@ edition = "2024"
 [dependencies]
 async-trait = "0.1.89"
 gnx = { version = "0.1.0", path = "../gnx" }
-pyo3 = "0.27.1"
+pyo3 = { version = "0.28.3", features = ["abi3-py310", "extension-module"] }
 uuid = { version = "1.19.0", features = ["v4"] }
