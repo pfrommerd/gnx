@@ -168,10 +168,6 @@ impl<L: Leaf, F: Filter<L>> Filter<()> for Invert<L, F> {
 
 /// Try `Filter::matches_ref` on each graph expression in order; return the first `Ok`.
 ///
-/// ```ignore
-/// filter_matches_ref_any!(filter, value.bar, value.foo)
-/// // ~> match filter.matches_ref(value.bar) { Ok(r) => Ok(r), Err(_) => ... }
-/// ```
 #[macro_export]
 macro_rules! filter_matches_ref_any {
     ($filter:expr, $($case:expr),+ $(,)?) => {
