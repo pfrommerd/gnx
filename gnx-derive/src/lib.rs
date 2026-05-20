@@ -2,6 +2,7 @@ use proc_macro::TokenStream as ProcTokenStream;
 use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
+mod dag;
 mod graph_traits;
 mod leaf;
 mod lifetime_free;
@@ -26,6 +27,11 @@ pub fn jit(input: ProcTokenStream) -> ProcTokenStream {
 #[proc_macro]
 pub fn jittable(input: ProcTokenStream) -> ProcTokenStream {
     transforms::jittable(input)
+}
+
+#[proc_macro]
+pub fn dag(input: ProcTokenStream) -> ProcTokenStream {
+    dag::dag(input)
 }
 
 #[proc_macro_attribute]

@@ -23,6 +23,11 @@ impl From<isize> for Key {
         Key::Index(value)
     }
 }
+impl From<i32> for Key {
+    fn from(value: i32) -> Self {
+        Key::Index(value as isize)
+    }
+}
 impl From<usize> for Key {
     fn from(value: usize) -> Self {
         Key::Index(value as isize)
@@ -59,6 +64,11 @@ impl<'r> From<&'r str> for KeyRef<'r> {
 impl<'r> From<isize> for KeyRef<'r> {
     fn from(value: isize) -> Self {
         KeyRef::Index(value)
+    }
+}
+impl<'r> From<i32> for KeyRef<'r> {
+    fn from(value: i32) -> Self {
+        KeyRef::Index(value as isize)
     }
 }
 impl<'r> From<usize> for KeyRef<'r> {
