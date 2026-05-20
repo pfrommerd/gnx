@@ -8,6 +8,7 @@ pub enum Dag<I> {
     Leaf(Option<I>),
     Node(DagNode<I>),
 }
+
 #[derive(Clone)]
 pub enum DagNode<I> {
     Map(HashMap<Key, DagChild<I>>),
@@ -96,8 +97,8 @@ impl<I: Leaf> Graph for Dag<I> {
                     let mut ns = source.node()?;
                     let children: Result<Vec<DagChild<I>>, S::Error> =
                         children.iter().enumerate().map(|(i, v)| v.replace(
-                            filter.child(KeyRef::Index(i)),
-                            ns.expect_child(KeyRef::Index(i))?,
+                            filter.child(KeyRef::Index(i as isize)),
+                            ns.expect_child(KeyRef::Index(i as isize))?,
                             ctx
                         )).collect();
                     Dag::Node(DagNode::List(children?))
@@ -127,7 +128,7 @@ impl<I: Leaf> Graph for Dag<I> {
                 Dag::Node(DagNode::List(children)) => {
                     let children: Result<Vec<ChildBuilder<I>>, E> =
                         children.iter().enumerate().map(|(i, v)| v.builder(
-                            filter.child(KeyRef::Index(i)),
+                            filter.child(KeyRef::Index(i as isize)),
                             &mut ctx
                         )).collect();
                     DagBuilder::ListNode(children?)
@@ -191,7 +192,7 @@ impl<I: Leaf> Node for Dag<I> {
                         DagChild::Owned(v) => v,
                         DagChild::Shared(v) => v.as_ref(),
                     };
-                    let k = KeyRef::Index(i);
+                    let k = KeyRef::Index(i as isize);
                     v.visit_child(k, View::new(child, filter.child(k)));
                 }
                 v.finish()
@@ -221,7 +222,7 @@ impl<I: Leaf> Node for Dag<I> {
             Dag::Node(DagNode::List(children)) => {
                 let mut c = consumer;
                 for (i, child) in children.into_iter().enumerate() {
-                    let (k, kr) = (Key::Index(i), KeyRef::Index(i));
+                    let (k, kr) = (Key::from(i), KeyRef::from(i));
                     match child {
                         DagChild::Owned(v) => c.consume_child(k, Bound::new(v, filter.child(kr))),
                         DagChild::Shared(v) => {
@@ -291,7 +292,7 @@ impl<L: Leaf, I: Leaf> Builder<L> for DagBuilder<I> {
                 children
                     .into_iter()
                     .enumerate()
-                    .map(|(i, child)| child.build(ns.expect_child(KeyRef::Index(i))?, &mut ctx))
+                    .map(|(i, child)| child.build(ns.expect_child(KeyRef::from(i))?, &mut ctx))
                     .collect::<Result<Vec<DagChild<I>>, S::Error>>()?
             }))),
             MapNode(children) => Ok(Dag::Node(DagNode::Map({
@@ -367,7 +368,7 @@ where
             map: &mut self.map,
             ctx: self.ctx,
         });
-        if key == Key::Index(self.seq_children.len()) {
+        if key == Key::from(self.seq_children.len()) {
             self.seq_children.push(child);
         } else {
             self.map_children.insert(key, child);
@@ -383,7 +384,7 @@ where
                 self.seq_children
                     .into_iter()
                     .enumerate()
-                    .map(|(i, x)| (Key::Index(i), x)),
+                    .map(|(i, x)| (Key::from(i), x)),
             );
             Dag::Node(DagNode::Map(children))
         }

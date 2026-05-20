@@ -2,6 +2,7 @@ use proc_macro::TokenStream as ProcTokenStream;
 use quote::quote;
 use syn::{DeriveInput, parse_macro_input};
 
+mod graph_traits;
 mod leaf;
 mod lifetime_free;
 mod paths;
@@ -57,4 +58,19 @@ pub fn derive_graph(input: ProcTokenStream) -> ProcTokenStream {
         }
     };
     ProcTokenStream::from(expanded)
+}
+
+#[proc_macro_derive(GraphHash)]
+pub fn derive_graph_hash(input: ProcTokenStream) -> ProcTokenStream {
+    graph_traits::derive_graph_hash(input)
+}
+
+#[proc_macro_derive(GraphPartialEq)]
+pub fn derive_graph_partial_eq(input: ProcTokenStream) -> ProcTokenStream {
+    graph_traits::derive_graph_partial_eq(input)
+}
+
+#[proc_macro_derive(GraphEq)]
+pub fn derive_graph_eq(input: ProcTokenStream) -> ProcTokenStream {
+    graph_traits::derive_graph_eq(input)
 }

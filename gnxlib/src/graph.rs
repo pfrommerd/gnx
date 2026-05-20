@@ -4,7 +4,6 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule, PyTuple, PyType};
 use pyo3::Bound as PyBound;
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::gnxlib::GraphContainer;
@@ -41,19 +40,17 @@ pub struct DictKey(Arc<Py<PyAny>>, Key);
 impl DictKey {
     pub fn as_ref<'r>(&'r self) -> KeyRef<'r> {
         match &self.1 {
-            Key::Attr(name) => KeyRef::Attr(name.as_ref()),
-            Key::DictKey(key) => KeyRef::DictKey(key.as_ref()),
-            Key::DictIndex(index) => KeyRef::DictIndex(*index),
-            Key::Index(index) => KeyRef::Index(*index),
+            Key::Named(name) => KeyRef::from(name.as_ref()),
+            Key::Index(index) => KeyRef::from(*index),
             Key::Transparent => KeyRef::Transparent,
         }
     }
 
     fn from_py(key: PyBound<'_, PyAny>) -> PyResult<Self> {
         let graph_key = if let Ok(key_str) = key.extract::<String>() {
-            Key::DictKey(Cow::Owned(key_str))
-        } else if let Ok(index) = key.extract::<i64>() {
-            Key::DictIndex(index)
+            Key::from(key_str)
+        } else if let Ok(index) = key.extract::<isize>() {
+            Key::from(index)
         } else {
             return Err(PyTypeError::new_err(
                 "graph keys must be str or int-compatible values",
@@ -108,16 +105,16 @@ impl Graph for PyGraph {
                     Err(_) => PyBuilder::Static(leaf.clone()),
                 },
                 Tuple(children) => PyBuilder::Tuple(children.iter().enumerate().map(|(i, child)| {
-                    child.builder(filter.child(KeyRef::Index(i)), &mut ctx)
+                    child.builder(filter.child(KeyRef::from(i)), &mut ctx)
                 }).collect::<Result<Vec<PyBuilder>, E>>()?),
                 List(children) => PyBuilder::List(children.iter().enumerate().map(|(i, child)| {
-                    child.builder(filter.child(KeyRef::Index(i)), &mut ctx)
+                    child.builder(filter.child(KeyRef::from(i)), &mut ctx)
                 }).collect::<Result<Vec<PyBuilder>, E>>()?),
                 Dict(children) => PyBuilder::Dict(children.iter().map(|(key, child)| {
                     Ok((key.clone(), child.builder(filter.child(key.as_ref()), &mut ctx)?))
                 }).collect::<Result<Vec<(DictKey, PyBuilder)>, E>>()?),
                 Dataclass(typ, children) => PyBuilder::Dataclass(typ.clone(), children.iter().map(|(key, child)| {
-                    Ok((key.clone(), child.builder(filter.child(KeyRef::Attr(key)), &mut ctx)?))
+                    Ok((key.clone(), child.builder(filter.child(KeyRef::from(key.as_str())), &mut ctx)?))
                 }).collect::<Result<Vec<(String, PyBuilder)>, E>>()?),
                 Custom(typ, children) => PyBuilder::Custom(typ.clone(), children.iter().map(|(key, child)| {
                     Ok((key.clone(), child.builder(filter.child(key.as_ref()), &mut ctx)?))
@@ -141,13 +138,13 @@ impl Graph for PyGraph {
                 Tuple(children) => Tuple({
                     let mut ns = source.node()?;
                     children.iter().enumerate().map(|(i, child)| child.replace(
-                            filter.child(KeyRef::Index(i)), ns.expect_child(KeyRef::Index(i))?, ctx
+                            filter.child(KeyRef::from(i)), ns.expect_child(KeyRef::from(i))?, ctx
                     )).collect::<Result<Vec<PyGraph>, S::Error>>()?
                 }),
                 List(children) => List({
                     let mut ns = source.node()?;
                     children.iter().enumerate().map(|(i, child)| child.replace(
-                        filter.child(KeyRef::Index(i)), ns.expect_child(KeyRef::Index(i))?, ctx
+                        filter.child(KeyRef::from(i)), ns.expect_child(KeyRef::from(i))?, ctx
                     )).collect::<Result<Vec<PyGraph>, S::Error>>()?
                 }),
                 Dict(children) => Dict({
@@ -160,7 +157,7 @@ impl Graph for PyGraph {
                 Dataclass(typ, children) => Dataclass(typ.clone(), {
                     let mut ns = source.node()?;
                     children.iter().map(|(key, child)| {
-                        let key_ref = KeyRef::Attr(key);
+                        let key_ref = KeyRef::from(key.as_str());
                         let child = child.replace(filter.child(key_ref), ns.expect_child(key_ref)?, ctx)?;
                         Ok((key.clone(), child))
                     }).collect::<Result<Vec<(String, PyGraph)>, S::Error>>()?
@@ -229,7 +226,7 @@ impl Node for PyGraph {
         match self {
             PyGraph::Tuple(children) | PyGraph::List(children) => {
                 children.iter().enumerate().for_each(|(i, child)| {
-                    let key = KeyRef::Index(i);
+                    let key = KeyRef::from(i);
                     visitor.visit_child(key, View::new(child, filter.child(key)));
                 });
             }
@@ -240,7 +237,7 @@ impl Node for PyGraph {
             }
             PyGraph::Dataclass(_, children) => {
                 children.iter().for_each(|(key, child)| {
-                    let key = KeyRef::Attr(key);
+                    let key = KeyRef::from(key.as_str());
                     visitor.visit_child(key, View::new(child, filter.child(key)));
                 });
             }
@@ -259,8 +256,8 @@ impl Node for PyGraph {
             PyGraph::Tuple(children) | PyGraph::List(children) => {
                 children.into_iter().enumerate().for_each(|(i, child)| {
                     consumer.consume_child(
-                        Key::Index(i),
-                        gnx::graph::Bound::new(child, filter.child(KeyRef::Index(i))),
+                        Key::from(i),
+                        gnx::graph::Bound::new(child, filter.child(KeyRef::from(i))),
                     );
                 });
             }
@@ -275,8 +272,8 @@ impl Node for PyGraph {
             PyGraph::Dataclass(_, children) => {
                 children.into_iter().for_each(|(key, child)| {
                     consumer.consume_child(
-                        Key::Attr(key.clone().into()),
-                        gnx::graph::Bound::new(child, filter.child(KeyRef::Attr(&key))),
+                        Key::from(key.clone()),
+                        gnx::graph::Bound::new(child, filter.child(KeyRef::from(key.as_str()))),
                     );
                 });
             }
@@ -327,7 +324,7 @@ fn build_indexed<L: Leaf, S: GraphSource<(), L>>(
     children
         .into_iter()
         .enumerate()
-        .map(|(i, child)| child.build(ns.expect_child(KeyRef::Index(i))?, ctx))
+        .map(|(i, child)| child.build(ns.expect_child(KeyRef::from(i))?, ctx))
         .collect()
 }
 
@@ -355,7 +352,7 @@ fn build_attrs<L: Leaf, S: GraphSource<(), L>>(
     children
         .into_iter()
         .map(|(key, child)| {
-            let child = child.build(ns.expect_child(KeyRef::Attr(&key))?, ctx)?;
+            let child = child.build(ns.expect_child(KeyRef::from(key.as_str()))?, ctx)?;
             Ok((key, child))
         })
         .collect()

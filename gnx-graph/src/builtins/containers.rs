@@ -18,7 +18,7 @@ impl<T: Graph> Graph for Vec<T> {
                     .iter()
                     .enumerate()
                     .map(|(i, g)| {
-                        let key = KeyRef::Index(i);
+                        let key = KeyRef::from(i);
                         g.builder(filter.child(key), &mut ctx)
                     })
                     .collect::<Result<Vec<T::Builder<L>>, E>>()?,
@@ -42,7 +42,7 @@ impl<T: Graph> Graph for Vec<T> {
                     .iter()
                     .enumerate()
                     .map(|(i, g)| {
-                        let key = KeyRef::Index(i);
+                        let key = KeyRef::from(i);
                         g.replace(filter.child(key), ns.expect_child(key)?, ctx)
                     })
                     .collect()
@@ -79,7 +79,7 @@ impl<T: Graph> Node for Vec<T> {
         mut visitor: V,
     ) -> V::Output {
         self.iter().enumerate().for_each(|(i, x)| {
-            let r = KeyRef::Index(i);
+            let r = KeyRef::from(i);
             visitor.visit_child(r, View::new(x, filter.child(r)));
         });
         visitor.finish()
@@ -90,7 +90,7 @@ impl<T: Graph> Node for Vec<T> {
         mut consumer: C,
     ) -> C::Output {
         self.into_iter().enumerate().for_each(|(i, x)| {
-            consumer.consume_child(Key::Index(i), Bound::new(x, &filter));
+            consumer.consume_child(Key::from(i), Bound::new(x, &filter));
         });
         consumer.finish()
     }
@@ -108,7 +108,7 @@ impl<'g, L: Leaf, B: Builder<L>> Builder<L> for Vec<B> {
         self.into_iter()
             .enumerate()
             .map(|(i, b)| {
-                let key = KeyRef::Index(i);
+                let key = KeyRef::from(i);
                 b.build(ns.expect_child(key)?, ctx)
             })
             .collect()
