@@ -1,5 +1,5 @@
 use super::trace::Tracer;
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::fmt::{Debug, Display};
 use std::hash::{Hash, Hasher};
 
@@ -9,7 +9,7 @@ pub trait ConcreteValue: Any + Send + Sync + Debug + Display {
 
 #[derive(Debug)]
 pub struct Value(Box<dyn ConcreteValue>);
-
+// Allows us to catch when a Value is downcast into a different type.
 unsafe impl castaway::LifetimeFree for Value {}
 
 impl ConcreteValue for Value {
@@ -30,10 +30,16 @@ impl Value {
         }
     }
     pub fn downcast_into<T: ConcreteValue>(self) -> Result<T, Self> {
-        castaway::cast!(self.0, T).map_err(|_value| Value(_value))
+        // If T is Value, just return self
+        castaway::cast!(self, T).map_err(|_value| {
+            todo!()
+        })
     }
     pub fn downcast<T: 'static>(&self) -> Result<&T, ()> {
-        castaway::cast!(&self.0, &T).ok().ok_or(())
+        // If T is &Value, just return self
+        castaway::cast!(self, &T).map_err(|_value| {
+            todo!()
+        })
     }
 }
 
@@ -41,17 +47,55 @@ pub struct ValueInfo(Box<dyn AnyInfo>);
 
 impl ValueInfo {
     pub fn new<T: AnyInfo>(value: T) -> Self {
+        // if T is ValueInfo, use it directly
         match castaway::cast!(value, Self) {
             Ok(value) => return value,
             Err(value) => ValueInfo(Box::new(value)),
         }
     }
 
+    pub unsafe fn downcast_into_unchecked<T: AnyInfo>(self) -> T {
+        // If T is ValueInfo, use it directly. Otherwise upcast to dyn Any
+        let value: Box<dyn Any> = match castaway::cast!(self, T) {
+            Ok(value) => return value,
+            Err(value) => value.0,
+        };
+        // TODO: use downcast_unchecked on Any when stabilized.
+        // SAFETY: We know that the value is of type T because we checked the type_id above.
+        let value: Box<T> = unsafe { value.downcast().unwrap_unchecked() };
+        *value
+    }
+
     pub fn downcast_into<T: AnyInfo>(self) -> Result<T, Self> {
-        castaway::cast!(self.0, T).map_err(|_value| ValueInfo(_value))
+        // If T is ValueInfo, just return self
+        castaway::cast!(self, T).or_else(|_value| {
+            let value: &dyn Any = &_value.0;
+            if value.type_id() == TypeId::of::<T>() {
+                let value: Box<dyn Any> = _value.0;
+                let value: Box<T> = value.downcast().unwrap();
+                return Ok(*value)
+            } else {
+                return Err(_value)
+            }
+        })
+    }
+    pub unsafe fn downcast_unchecked<T: AnyInfo>(&self) -> &T {
+        // If T is &ValueInfo, use it directly. Otherwise upcast to dyn Any
+        let value: &dyn Any = match castaway::cast!(self, &T) {
+            Ok(value) => return value,
+            Err(value) => &value.0,
+        };
+        // SAFETY: We know that the value is of type T because we checked the type_id above.
+        let value: &T = unsafe { value.downcast_ref().unwrap_unchecked() };
+        value
     }
     pub fn downcast<T: AnyInfo>(&self) -> Result<&T, ()> {
-        castaway::cast!(&self.0, &T).ok().ok_or(())
+        // If T is &ValueInfo, just return self
+        castaway::cast!(self, &T).or_else(|_value| {
+            // upcast to dyn Any
+            let value: &dyn Any = &_value.0;
+            value.downcast_ref::<T>().ok_or(())
+        })
     }
 }
 
