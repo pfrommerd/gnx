@@ -72,6 +72,8 @@ impl<T: Graph> Graph for Vec<T> {
     }
 }
 
+impl<T: OwnedGraph> OwnedGraph for Vec<T> {}
+
 impl<T: Graph> Node for Vec<T> {
     fn visit_children<'g, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Self, L>>(
         &'g self,
@@ -96,6 +98,7 @@ impl<T: Graph> Node for Vec<T> {
     }
 }
 
+
 impl<'g, L: Leaf, B: Builder<L>> Builder<L> for Vec<B> {
     type Graph = Vec<B::Graph>;
 
@@ -117,7 +120,7 @@ impl<'g, L: Leaf, B: Builder<L>> Builder<L> for Vec<B> {
 
 // A Vec<A> can be treated as a leaf if A is 'static (so that Vec<A> is 'static)
 // and lifetime-free (so that we can specialize at compile time).
-impl<A: Graph<Owned=A> + LifetimeFree + 'static> Leaf for Vec<A> {
+impl<A: OwnedGraph + LifetimeFree> Leaf for Vec<A> {
     type Ref<'l> = &'l Self;
     fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
     fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
@@ -195,6 +198,8 @@ macro_rules! impl_tuple_graph {
                     }
                 }
             }
+            impl<$($T: OwnedGraph,)*> OwnedGraph for ($($T,)*) {}
+
             impl<$($T: Graph,)*> Node for ($($T,)*) {
                 #[allow(unused_variables, unused_mut)]
                 fn visit_children<'g, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Self, L>>(
@@ -241,7 +246,7 @@ macro_rules! impl_tuple_graph {
             }
             // A (T, ...) can be treated as a leaf if each element is 'static (so the tuple is
             // 'static) and lifetime-free (so that we can specialize at compile time).
-            impl<$($T: Graph<Owned = $T> + LifetimeFree + 'static,)*> Leaf for ($($T,)*) {
+            impl<$($T: OwnedGraph + LifetimeFree,)*> Leaf for ($($T,)*) {
                 type Ref<'l> = &'l Self;
                 fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
                 fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }

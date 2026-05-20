@@ -61,6 +61,11 @@ pub trait Graph: Clone {
         &'g self, replace: F, source: S, ctx: &mut GraphContext
     ) -> Result<Self::Owned, S::Error>;
 
+    // Duplicate this graph by calling replace with a Nothing filter and a NullSource.
+    fn duplicate(&self) -> Self::Owned {
+        self.replace(Nothing::<()>::filter(), NullSource, &mut GraphContext::new()).unwrap()
+    }
+
     // A 'builder' stores the graph structure information
     // and can be used to construct the owned graph from a source.
     type Builder<L: Leaf>: Builder<L, Graph = Self::Owned> + 'static;
@@ -76,6 +81,7 @@ pub trait Graph: Clone {
     fn visit_into<'g, L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
         self, filter: F, consumer: C
     ) -> C::Output;
+
 }
 
 pub trait Node: Graph {
@@ -91,6 +97,7 @@ pub trait Node: Graph {
         C: ChildrenConsumer<Self, L>;
 }
 
+
 // A typed view of a graph.
 // All graph types get a blanket implementation for all leaf types.
 pub trait TypedGraph<L: Leaf>: Graph {
@@ -101,7 +108,9 @@ pub trait TypedGraph<L: Leaf>: Graph {
 
 impl<L: Leaf, G: Graph> TypedGraph<L> for G {}
 
-pub trait Leaf: Graph<Owned = Self> + 'static {
+pub trait OwnedGraph: Graph<Owned=Self> + 'static {}
+
+pub trait Leaf: OwnedGraph {
     type Ref<'l>: Copy;
     fn as_ref<'l>(&'l self) -> Self::Ref<'l>;
     fn clone_ref(v: Self::Ref<'_>) -> Self;
@@ -111,8 +120,6 @@ pub trait Leaf: Graph<Owned = Self> + 'static {
     fn try_into_value<V: 'static>(self) -> Result<V, Self>;
 }
 
-pub trait OwnedGraph: Graph<Owned=Self> + Clone + 'static {}
-impl<T: Graph<Owned=Self> + Clone + 'static> OwnedGraph for T {}
 
 pub enum LeafCow<'l, L: Leaf + 'l> {
     Borrowed(L::Ref<'l>),

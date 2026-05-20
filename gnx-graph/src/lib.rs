@@ -2,6 +2,7 @@ mod core;
 mod builtins;
 mod ser;
 mod des;
+mod traits;
 
 pub use core::*;
 pub use ser::*;

@@ -135,6 +135,7 @@ impl Filter<()> for All {
     }
 }
 
+
 #[derive(Clone)]
 pub struct Invert<L: Leaf, F: Filter<L>>(F, PhantomData<L>);
 

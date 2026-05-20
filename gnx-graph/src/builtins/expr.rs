@@ -73,6 +73,8 @@ impl Graph for Array {
     }
 }
 
+impl OwnedGraph for Array {}
+
 impl Leaf for Array {
     type Ref<'l> = &'l Array;
     fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
@@ -161,6 +163,8 @@ impl Graph for Device {
     }
 }
 
+impl OwnedGraph for Device {}
+
 impl Leaf for Device {
     type Ref<'l> = &'l Device;
     fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
@@ -247,6 +251,8 @@ impl Graph for ArrayRef {
         consumer.consume_static::<Self>(self)
     }
 }
+
+impl OwnedGraph for ArrayRef {}
 
 impl Leaf for ArrayRef {
     type Ref<'l> = &'l ArrayRef;

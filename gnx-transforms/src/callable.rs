@@ -7,6 +7,30 @@ pub trait Callable<Input: Graph> {
     fn invoke(&self, input: Input) -> Self::Output;
 }
 
+// A Jitable is any Callable that can also be called
+// with an owned version of its input and where the output is owned.
+// E.g. a fn(&u32, &u32) -> u32 is Jitable with (Arc<u32>, Arc<u32>) -> u32
+//
+// This is not always true. For instance (Vec<&u32>) -> u32 is not Jitable
+// as we cannot coerce a Vec<Arc<u32>> into a Vec<&u32>.
+pub trait Jitable<I: Graph>: Callable<I, Output=Self::OwnedOutput>
+{
+    type OwnedOutput: Graph<Owned=Self::OwnedOutput>;
+
+    fn invoke_owned(&self, input: I::Owned) -> Self::Output;
+}
+
+impl<I: Graph<Owned=I>, F: Callable<I>> Jitable<I> for F 
+where
+    F::Output: Graph<Owned=F::Output>,
+{
+    type OwnedOutput = F::Output;
+
+    fn invoke_owned(&self, input: I::Owned) -> Self::Output {
+        self.invoke(input)
+    }
+}
+
 pub mod as_fn {
     use super::Callable;
     use gnx_graph::Graph;

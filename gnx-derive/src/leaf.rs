@@ -54,6 +54,7 @@ pub fn expand_leaf(ty: &Type) -> TokenStream2 {
                 }
             }
         }
+        impl #g::OwnedGraph for #ty {}
         impl #g::Leaf for #ty {
             type Ref<'l> = &'l Self
                 where Self: 'l;
@@ -128,6 +129,7 @@ pub fn expand_leaf_from_derive(input: &DeriveInput) -> TokenStream2 {
                 }
             }
         }
+        impl #impl_generics #g::OwnedGraph for #name #ty_generics #where_clause {}
         impl #impl_generics #g::Leaf for #name #ty_generics #where_clause {
             type Ref<'l> = &'l Self
                 where Self: 'l;
