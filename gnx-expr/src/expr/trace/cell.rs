@@ -3,6 +3,8 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
+use crate::expr::{Generic, ValueInfo};
+
 use super::context::{CellUpdate, ContextID, TraceContext};
 use super::{TraceRef, Traceable, Tracer};
 
@@ -16,16 +18,11 @@ impl CellKey {
     }
 }
 
-/// Home-context storage for a cell's current trace binding.
-struct Cell {
-    trace: TraceRef,
-}
-
 /// Mutable traced slot (JAX-style ref). [`TraceRef`] values are immutable.
 pub struct TraceCell {
     context_id: ContextID,
-    base: TraceRef,
-    cell: RwLock<Cell>,
+    type_info: ValueInfo,
+    cell: RwLock<TraceRef>
 }
 
 /// Shared handle to a mutable [`TraceCell`].
@@ -38,9 +35,13 @@ impl TraceCellRef {
         let context_id = TraceContext::current_id();
         TraceCellRef(Arc::new(TraceCell {
             context_id,
-            base: base.clone(),
-            cell: RwLock::new(Cell { trace: base }),
+            type_info: base.info().clone(),
+            cell: RwLock::new(base),
         }))
+    }
+
+    pub fn type_info(&self) -> &ValueInfo {
+        &self.0.type_info
     }
 
     /// Resolve the trace for this cell in the active context.
@@ -82,9 +83,11 @@ impl Debug for TraceCellRef {
 
 impl Debug for TraceCell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = self.cell.read().unwrap().clone();
         f.debug_struct("TraceCell")
             .field("ctx", &self.context_id)
-            .field("base", &self.base)
+            .field("type_info", &self.type_info)
+            .field("value", &value)
             .finish()
     }
 }
@@ -94,26 +97,18 @@ impl TraceCell {
         self.context_id
     }
 
-    pub fn base(&self) -> &TraceRef {
-        &self.base
-    }
-
-    fn home_trace(&self) -> TraceRef {
-        self.cell.read().unwrap().trace.clone()
-    }
-
     fn get(&self, cell_ref: &TraceCellRef) -> TraceRef {
         if self.context_id == TraceContext::current_id() {
-            return self.home_trace();
+            return self.cell.read().unwrap().clone();
         }
         TraceContext::active()
             .cell_override(CellKey::from(cell_ref))
-            .unwrap_or_else(|| self.home_trace())
+            .unwrap_or_else(|| self.cell.read().unwrap().clone())
     }
 
     fn set(&self, cell_ref: &TraceCellRef, value: TraceRef) {
         if self.context_id == TraceContext::current_id() {
-            self.cell.write().unwrap().trace = value;
+            *self.cell.write().unwrap() = value;
             return;
         }
         let ctx = TraceContext::active();
@@ -131,43 +126,56 @@ impl TraceCell {
 
 /// Typed handle to a [`TraceCell`] (analogous to [`Tracer`] for [`Trace`]).
 pub struct TracerCell<T: Traceable> {
-    cell: TraceCellRef,
+    shared: TraceCellRef,
     _phantom: PhantomData<T>,
 }
 
 impl<T: Traceable> TracerCell<T> {
     pub fn new(trace: Tracer<T>) -> Self {
         TracerCell {
-            cell: TraceCellRef::new(trace.trace_ref().clone()),
+            shared: TraceCellRef::new(trace.trace_ref().clone()),
             _phantom: PhantomData,
         }
     }
 
     pub fn cell_ref(&self) -> &TraceCellRef {
-        &self.cell
+        &self.shared
     }
 
     pub fn context_id(&self) -> ContextID {
-        self.cell.context_id()
+        self.shared.context_id()
     }
 
     pub fn get(&self) -> Tracer<T> {
-        Tracer::new(self.cell.get())
+        Tracer::unchecked_new(self.shared.get())
     }
 
     pub fn set(&self, value: Tracer<T>) {
-        self.cell.set(value.trace_ref().clone());
+        self.shared.set(value.trace_ref().clone());
+    }
+
+    pub fn cast<U: Traceable>(self) -> Result<TracerCell<U>, ()> {
+        match self.shared.type_info().downcast_ref::<U::Info>() {
+            Ok(_) => Ok(TracerCell { shared: self.shared, _phantom: PhantomData }),
+            Err(_) => Err(()),
+        }
     }
 }
 
 impl<T: Traceable> From<TracerCell<T>> for TraceCellRef {
-    fn from(c: TracerCell<T>) -> Self { c.cell }
+    fn from(c: TracerCell<T>) -> Self { c.shared }
+}
+
+impl From<TraceCellRef> for TracerCell<Generic> {
+    fn from(c: TraceCellRef) -> Self {
+        TracerCell { shared: c, _phantom: PhantomData }
+    }
 }
 
 impl<T: Traceable> Clone for TracerCell<T> {
     fn clone(&self) -> Self {
         TracerCell {
-            cell: self.cell.clone(),
+            shared: self.shared.clone(),
             _phantom: PhantomData,
         }
     }
@@ -175,6 +183,7 @@ impl<T: Traceable> Clone for TracerCell<T> {
 
 impl<T: Traceable> std::fmt::Debug for TracerCell<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TracerCell").field("cell", &self.cell).finish()
+        let value = self.shared.get().clone();
+        f.debug_struct("TracerCell").field("shared", &self.shared).field("value", &value).finish()
     }
 }

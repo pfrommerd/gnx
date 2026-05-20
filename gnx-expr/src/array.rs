@@ -265,6 +265,7 @@ impl Display for ArrayInfo {
     }
 }
 
+#[derive(Clone)]
 pub struct Array(Tracer<Array>);
 
 impl From<Array> for Tracer<Array> {
@@ -291,6 +292,8 @@ impl Array {
     pub fn shape(&self) -> &Shape {
         &self.0.info().shape
     }
+
+    pub fn tracer(&self) -> &Tracer<Array> { &self.0 }
 }
 
 /// Mutable array traced via [`TracerCell`] (JAX-style ref).
@@ -319,5 +322,19 @@ impl ArrayRef {
 
     pub fn shape(&self) -> Shape {
         self.0.get().info().shape.clone()
+    }
+
+    pub fn tracer(&self) -> &TracerCell<Array> { &self.0 }
+}
+
+impl From<TracerCell<Array>> for ArrayRef {
+    fn from(value: TracerCell<Array>) -> Self {
+        ArrayRef(value)
+    }
+}
+
+impl From<ArrayRef> for TracerCell<Array> {
+    fn from(value: ArrayRef) -> Self {
+        value.0
     }
 }

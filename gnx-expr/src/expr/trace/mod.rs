@@ -67,50 +67,12 @@ pub struct Trace {
 #[derive(Clone)]
 pub struct TraceRef(pub(crate) Arc<Trace>);
 
-impl TraceRef {
-    pub fn new(inner: Arc<Trace>) -> Self {
-        TraceRef(inner)
-    }
-}
-
-impl Deref for TraceRef {
-    type Target = Trace;
-
-    fn deref(&self) -> &Trace {
-        &self.0
-    }
-}
-
-impl From<Arc<Trace>> for TraceRef {
-    fn from(value: Arc<Trace>) -> Self {
-        TraceRef(value)
-    }
-}
-
-impl From<TraceRef> for Arc<Trace> {
-    fn from(value: TraceRef) -> Self {
-        value.0
-    }
-}
-
-impl AsRef<Trace> for TraceRef {
-    fn as_ref(&self) -> &Trace {
-        self
-    }
-}
-
 impl Debug for TraceRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(&*self.0, f)
-    }
-}
-
-impl Debug for Trace {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.inner {
+        match &self.0.inner {
             TraceInner::Abstract(AbstractTrace::Placeholder) => {
                 f.debug_struct("Placeholder")
-                    .field("ctx", &self.context_id)
+                    .field("ctx", &self.0.context_id)
                     .finish()
             }
             TraceInner::Abstract(AbstractTrace::Computed {
@@ -120,7 +82,7 @@ impl Debug for Trace {
                 .debug_struct("Computed")
                 .field("call", &invocation)
                 .field("position", position)
-                .field("ctx", &self.context_id)
+                .field("ctx", &self.0.context_id)
                 .finish(),
             TraceInner::Updatable(UpdatableTrace {
                 invocation,
@@ -141,6 +103,110 @@ impl Debug for Trace {
             TraceInner::Constant(value) => {
                 f.debug_struct("Constant").field("value", value).finish()
             }
+        }
+    }
+}
+
+impl TraceRef {
+    pub fn placeholder(info: ValueInfo, context_id: ContextID) -> Self {
+        TraceRef(Arc::new(Trace {
+            inner: TraceInner::Abstract(AbstractTrace::Placeholder),
+            info,
+            context_id,
+        }))
+    }
+
+    pub fn concrete(value: Value, info: ValueInfo, context_id: ContextID) -> Self {
+        TraceRef(Arc::new(Trace {
+            inner: TraceInner::Constant(value),
+            info,
+            context_id,
+        }))
+    }
+
+    pub fn produced(abstract_: bool, invocation: Arc<Invocation>, position: Position,
+                    info: ValueInfo, context_id: ContextID) -> Self {
+        if abstract_ {
+            TraceRef(Arc::new(Trace {
+                inner: TraceInner::Abstract(AbstractTrace::Computed {
+                    invocation,
+                    position,
+                }),
+                info,
+                context_id,
+            }))
+        } else {
+            TraceRef(Arc::new(Trace {
+                inner: TraceInner::Updatable(UpdatableTrace {
+                    invocation: invocation.into(),
+                    position,
+                    value: OnceLock::new(),
+                }),
+                info,
+                context_id,
+            }))
+        }
+    }
+
+    pub fn context_id(&self) -> ContextID { self.0.context_id }
+
+    fn is_abstract(&self) -> bool {
+        matches!(self.0.inner, TraceInner::Abstract(_))
+    }
+
+    pub fn producer(&self) -> Option<(Arc<Invocation>, Position)> {
+        match &self.0.inner {
+            TraceInner::Abstract(AbstractTrace::Computed {
+                invocation,
+                position,
+            }) => Some((invocation.clone(), *position)),
+            TraceInner::Updatable(u) => u
+                .invocation
+                .get()
+                .map(|inv| (inv, u.position)),
+            TraceInner::Abstract(AbstractTrace::Placeholder) | TraceInner::Constant(_) => None,
+        }
+    }
+
+    pub fn is_placeholder(&self) -> bool {
+        matches!(
+            self.0.inner,
+            TraceInner::Abstract(AbstractTrace::Placeholder)
+        )
+    }
+
+    pub fn info(&self) -> &ValueInfo {
+        &self.0.info
+    }
+
+    /// Concrete evaluation only; effectful programs use [`TraceCell::set`].
+    pub fn update(&self, value: Value) {
+        match &self.0.inner {
+            TraceInner::Updatable(updatable) => {
+                updatable
+                    .value
+                    .set(value)
+                    .ok()
+                    .expect("Value has already been set");
+                updatable.invocation.downgrade();
+            }
+            TraceInner::Abstract(_) => panic!("Cannot update an abstract Tracer"),
+            TraceInner::Constant(_) => panic!("Cannot update a constant Tracer"),
+        }
+    }
+
+    pub fn try_concrete(&self) -> Option<&Value> {
+        match &self.0.inner {
+            TraceInner::Updatable(updatable) => updatable.value.get(),
+            TraceInner::Constant(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn try_constant(&self) -> Option<&Value> {
+        match &self.0.inner {
+            TraceInner::Constant(value) => Some(value),
+            _ => None,
         }
     }
 }
@@ -234,19 +300,10 @@ impl Invocation {
         inputs: Vec<TraceObject>,
         outputs: Vec<ValueInfo>,
     ) -> Vec<Tracer<Generic>> {
-        if operands_abstract(&closure, &inputs) {
-            Self::invoke_abstract(op, closure, inputs, outputs)
-        } else {
-            Self::invoke_updatable(op, closure, inputs, outputs)
-        }
-    }
-
-    pub fn invoke_abstract(
-        op: Op,
-        closure: Vec<TraceObject>,
-        inputs: Vec<TraceObject>,
-        outputs: Vec<ValueInfo>,
-    ) -> Vec<Tracer<Generic>> {
+        let abstract_ = closure.iter().chain(inputs.iter()).any(|op| match op {
+            TraceObject::Ref(r) => r.is_abstract(),
+            TraceObject::Cell(c) => c.get().is_abstract(),
+        });
         let context_id = TraceContext::current_id();
         let invocation = Arc::new(Invocation {
             op,
@@ -255,203 +312,46 @@ impl Invocation {
             inputs: inputs.clone(),
             outputs: outputs.len(),
         });
-        bind_cell_operands(&invocation, &closure, &inputs, context_id, true);
-        outputs
-            .into_iter()
-            .enumerate()
-            .map(|(index, info)| {
-                Tracer::new(produced_trace(
+        // For any cells in closure, inputs set their new values to the output of the invocation.
+        for (i, op) in closure.iter().enumerate() {
+            if let TraceObject::Cell(cell) = op {
+                let info = cell.get().info().clone();
+                let trace = TraceRef::produced(
+                    abstract_,
                     invocation.clone(),
-                    Position::Return(index),
+                    Position::ClosureUpdate(i),
                     info,
                     context_id,
-                    true,
-                ))
-            })
-            .collect()
-    }
-
-    pub fn invoke_updatable(
-        op: Op,
-        closure: Vec<TraceObject>,
-        inputs: Vec<TraceObject>,
-        outputs: Vec<ValueInfo>,
-    ) -> Vec<Tracer<Generic>> {
-        let context_id = TraceContext::current_id();
-        let invocation = Arc::new(Invocation {
-            op,
-            context_id,
-            closure: closure.clone(),
-            inputs: inputs.clone(),
-            outputs: outputs.len(),
-        });
-        bind_cell_operands(&invocation, &closure, &inputs, context_id, false);
-        outputs
-            .into_iter()
-            .enumerate()
-            .map(|(index, info)| {
-                Tracer::new(produced_trace(
-                    invocation.clone(),
-                    Position::Return(index),
-                    info,
-                    context_id,
-                    false,
-                ))
-            })
-            .collect()
-    }
-}
-
-fn operands_abstract(closure: &[TraceObject], inputs: &[TraceObject]) -> bool {
-    closure.iter().chain(inputs.iter()).any(|op| match op {
-        TraceObject::Ref(r) => r.is_abstract(),
-        TraceObject::Cell(c) => c.get().is_abstract(),
-    })
-}
-
-fn produced_trace(
-    invocation: Arc<Invocation>,
-    position: Position,
-    info: ValueInfo,
-    context_id: ContextID,
-    abstract_: bool,
-) -> TraceRef {
-    if abstract_ {
-        TraceRef::new(Arc::new(Trace {
-            inner: TraceInner::Abstract(AbstractTrace::Computed {
-                invocation,
-                position,
-            }),
-            info,
-            context_id,
-        }))
-    } else {
-        TraceRef::new(Arc::new(Trace {
-            inner: TraceInner::Updatable(UpdatableTrace {
-                invocation: invocation.into(),
-                position,
-                value: OnceLock::new(),
-            }),
-            info,
-            context_id,
-        }))
-    }
-}
-
-fn bind_cell_operands(
-    invocation: &Arc<Invocation>,
-    closure: &[TraceObject],
-    inputs: &[TraceObject],
-    context_id: ContextID,
-    abstract_: bool,
-) {
-    for (i, op) in closure.iter().enumerate() {
-        if let TraceObject::Cell(cell) = op {
-            let info = cell.get().info().clone();
-            let trace = produced_trace(
-                invocation.clone(),
-                Position::ClosureUpdate(i),
-                info,
-                context_id,
-                abstract_,
-            );
-            cell.set(trace);
-        }
-    }
-    for (i, op) in inputs.iter().enumerate() {
-        if let TraceObject::Cell(cell) = op {
-            let info = cell.get().info().clone();
-            let trace = produced_trace(
-                invocation.clone(),
-                Position::InputUpdate(i),
-                info,
-                context_id,
-                abstract_,
-            );
-            cell.set(trace);
-        }
-    }
-}
-
-impl Trace {
-    pub fn placeholder(info: ValueInfo, context_id: ContextID) -> Self {
-        Trace {
-            inner: TraceInner::Abstract(AbstractTrace::Placeholder),
-            info,
-            context_id,
-        }
-    }
-
-    pub fn concrete(value: Value, info: ValueInfo, context_id: ContextID) -> Self {
-        Trace {
-            inner: TraceInner::Constant(value),
-            info,
-            context_id,
-        }
-    }
-
-    pub fn context_id(&self) -> ContextID {
-        self.context_id
-    }
-
-    fn is_abstract(&self) -> bool {
-        matches!(self.inner, TraceInner::Abstract(_))
-    }
-
-    pub fn producer(&self) -> Option<(Arc<Invocation>, Position)> {
-        match &self.inner {
-            TraceInner::Abstract(AbstractTrace::Computed {
-                invocation,
-                position,
-            }) => Some((invocation.clone(), *position)),
-            TraceInner::Updatable(u) => u
-                .invocation
-                .get()
-                .map(|inv| (inv, u.position)),
-            TraceInner::Abstract(AbstractTrace::Placeholder) | TraceInner::Constant(_) => None,
-        }
-    }
-
-    pub fn is_placeholder(&self) -> bool {
-        matches!(
-            self.inner,
-            TraceInner::Abstract(AbstractTrace::Placeholder)
-        )
-    }
-
-    pub fn info(&self) -> &ValueInfo {
-        &self.info
-    }
-
-    /// Concrete evaluation only; effectful programs use [`TraceCell::set`].
-    pub fn update(&self, value: Value) {
-        match &self.inner {
-            TraceInner::Updatable(updatable) => {
-                updatable
-                    .value
-                    .set(value)
-                    .ok()
-                    .expect("Value has already been set");
-                updatable.invocation.downgrade();
+                );
+                cell.set(trace);
             }
-            TraceInner::Abstract(_) => panic!("Cannot update an abstract Tracer"),
-            TraceInner::Constant(_) => panic!("Cannot update a constant Tracer"),
         }
-    }
-
-    pub fn try_concrete(&self) -> Option<&Value> {
-        match &self.inner {
-            TraceInner::Updatable(updatable) => updatable.value.get(),
-            TraceInner::Constant(value) => Some(value),
-            _ => None,
+        for (i, op) in inputs.iter().enumerate() {
+            if let TraceObject::Cell(cell) = op {
+                let info = cell.get().info().clone();
+                let trace = TraceRef::produced(
+                    abstract_,
+                    invocation.clone(),
+                    Position::InputUpdate(i),
+                    info,
+                    context_id,
+                );
+                cell.set(trace);
+            }
         }
-    }
-
-    pub fn try_constant(&self) -> Option<&Value> {
-        match &self.inner {
-            TraceInner::Constant(value) => Some(value),
-            _ => None,
-        }
+        // Return the outputs as tracers.
+        outputs
+            .into_iter()
+            .enumerate()
+            .map(|(index, info)| {
+                Tracer::from(TraceRef::produced(
+                    abstract_,
+                    invocation.clone(),
+                    Position::Return(index),
+                    info,
+                    context_id,
+                ))
+            }).collect()
     }
 }
 
@@ -462,7 +362,7 @@ pub struct Tracer<T: Traceable> {
 }
 
 impl<T: Traceable> Tracer<T> {
-    pub(crate) fn new(trace: TraceRef) -> Self {
+    pub fn unchecked_new(trace: TraceRef) -> Self {
         Tracer {
             trace,
             _phantom: PhantomData,
@@ -471,19 +371,19 @@ impl<T: Traceable> Tracer<T> {
 
     pub fn placeholder(info: T::Info) -> Self {
         let context_id = TraceContext::current_id();
-        Tracer::new(TraceRef::new(Arc::new(Trace::placeholder(
+        Tracer::unchecked_new(TraceRef::placeholder(
             ValueInfo::new(info),
             context_id,
-        ))))
+        ))
     }
 
     pub fn concrete(value: T::Concrete, info: T::Info) -> Self {
         let context_id = TraceContext::current_id();
-        Tracer::new(TraceRef::new(Arc::new(Trace::concrete(
+        Tracer::unchecked_new(TraceRef::concrete(
             Value::new(value),
             ValueInfo::new(info),
             context_id,
-        ))))
+        ))
     }
 
     pub fn trace_ref(&self) -> &TraceRef {
@@ -509,10 +409,14 @@ impl<T: Traceable> Tracer<T> {
         }
     }
 
-    pub fn cast<U: Traceable>(self) -> Tracer<U> {
-        Tracer {
-            trace: self.trace,
-            _phantom: PhantomData,
+    pub fn unchecked_cast<U: Traceable>(self) -> Tracer<U> {
+        Tracer::unchecked_new(self.trace)
+    }
+
+    pub fn cast<U: Traceable>(self) -> Result<Tracer<U>, ()> {
+        match self.trace.info().downcast_ref::<U::Info>() {
+            Ok(_) => Ok(Tracer::unchecked_new(self.trace)),
+            Err(_) => Err(()),
         }
     }
 
@@ -533,6 +437,12 @@ impl<T: Traceable> AsRef<TraceRef> for Tracer<T> {
 
 impl<T: Traceable> From<Tracer<T>> for TraceRef {
     fn from(t: Tracer<T>) -> Self { t.trace }
+}
+
+impl From<TraceRef> for Tracer<Generic> {
+    fn from(t: TraceRef) -> Self {
+        Tracer { trace: t, _phantom: PhantomData }
+    }
 }
 
 impl<T: Traceable> Clone for Tracer<T> {
