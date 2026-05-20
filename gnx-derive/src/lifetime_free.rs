@@ -2,8 +2,8 @@ use proc_macro::TokenStream as ProcTokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
-    DeriveInput, GenericParam, Token, Type, TypeParam,
-    parse::Parse, parse_macro_input, punctuated::Punctuated, token::Comma
+    DeriveInput, GenericParam, Token, Type, TypeParam, parse::Parse, parse_macro_input,
+    punctuated::Punctuated, token::Comma,
 };
 
 use crate::paths::{graph_util_mod, require_graph_crate};
@@ -105,7 +105,6 @@ impl Parse for LifetimeFreeEntry {
                 ty,
             })
         }
-
     }
 }
 

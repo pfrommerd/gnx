@@ -22,7 +22,7 @@ impl CellKey {
 pub struct TraceCell {
     context_id: ContextID,
     type_info: ValueInfo,
-    cell: RwLock<TraceRef>
+    cell: RwLock<TraceRef>,
 }
 
 /// Shared handle to a mutable [`TraceCell`].
@@ -156,7 +156,10 @@ impl<T: Traceable> TracerCell<T> {
 
     pub fn try_cast<U: Traceable>(self) -> Result<TracerCell<U>, ()> {
         match self.shared.type_info().downcast::<U::Info>() {
-            Ok(_) => Ok(TracerCell { shared: self.shared, _phantom: PhantomData }),
+            Ok(_) => Ok(TracerCell {
+                shared: self.shared,
+                _phantom: PhantomData,
+            }),
             Err(_) => Err(()),
         }
     }
@@ -177,12 +180,17 @@ impl From<&TraceCellRef> for &TracerCell<Generic> {
 }
 
 impl<T: Traceable> From<TracerCell<T>> for TraceCellRef {
-    fn from(c: TracerCell<T>) -> Self { c.shared }
+    fn from(c: TracerCell<T>) -> Self {
+        c.shared
+    }
 }
 
 impl From<TraceCellRef> for TracerCell<Generic> {
     fn from(c: TraceCellRef) -> Self {
-        TracerCell { shared: c, _phantom: PhantomData }
+        TracerCell {
+            shared: c,
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -198,6 +206,9 @@ impl<T: Traceable> Clone for TracerCell<T> {
 impl<T: Traceable> std::fmt::Debug for TracerCell<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = self.shared.get().clone();
-        f.debug_struct("TracerCell").field("shared", &self.shared).field("value", &value).finish()
+        f.debug_struct("TracerCell")
+            .field("shared", &self.shared)
+            .field("value", &value)
+            .finish()
     }
 }

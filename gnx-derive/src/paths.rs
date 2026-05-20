@@ -1,5 +1,5 @@
+use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::TokenStream as TokenStream2;
-use proc_macro_crate::{crate_name, FoundCrate};
 use quote::quote;
 use syn::Path;
 
@@ -68,17 +68,6 @@ pub fn transforms_jit_fn() -> Path {
     }
 }
 
-pub fn transforms_jit_type() -> Path {
-    match crate_name("gnx-transforms") {
-        Ok(FoundCrate::Itself) => syn::parse_quote!(crate::Jit),
-        Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx_transforms::Jit),
-        Err(_) => match crate_name("gnx") {
-            Ok(_) => syn::parse_quote!(::gnx::transforms::Jit),
-            Err(_) => syn::parse_quote!(::gnx_transforms::Jit),
-        },
-    }
-}
-
 pub fn transforms_callable() -> Path {
     match crate_name("gnx-transforms") {
         Ok(FoundCrate::Itself) => syn::parse_quote!(crate::Callable),
@@ -86,6 +75,17 @@ pub fn transforms_callable() -> Path {
         Err(_) => match crate_name("gnx") {
             Ok(_) => syn::parse_quote!(::gnx::Callable),
             Err(_) => syn::parse_quote!(::gnx_transforms::Callable),
+        },
+    }
+}
+
+pub fn transforms_jitable() -> Path {
+    match crate_name("gnx-transforms") {
+        Ok(FoundCrate::Itself) => syn::parse_quote!(crate::Jitable),
+        Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx_transforms::Jitable),
+        Err(_) => match crate_name("gnx") {
+            Ok(_) => syn::parse_quote!(::gnx::transforms::Jitable),
+            Err(_) => syn::parse_quote!(::gnx_transforms::Jitable),
         },
     }
 }

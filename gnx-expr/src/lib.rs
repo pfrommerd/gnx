@@ -1,18 +1,18 @@
-pub mod value;
-pub mod trace;
-pub mod builtins;
-pub mod util;
 mod attr;
+pub mod builtins;
+pub mod trace;
+pub mod util;
+pub mod value;
 
 pub use attr::*;
 pub use trace::*;
 
-use std::collections::BTreeMap;
-use std::fmt;
-use std::hash::{Hash, Hasher};
-use std::fmt::Debug;
 use std::cmp::{Eq, PartialEq};
 use std::cmp::{Ord, PartialOrd};
+use std::collections::BTreeMap;
+use std::fmt;
+use std::fmt::Debug;
+use std::hash::{Hash, Hasher};
 
 pub trait Operation: Sync {
     fn name(&self) -> &'static str;
@@ -47,7 +47,12 @@ impl Hash for Op {
 
 impl PartialEq for Op {
     fn eq(&self, other: &Self) -> bool {
-        (self.impl_.dialect().name(), self.impl_.name(), &self.attrs) == (other.impl_.dialect().name(), other.impl_.name(), &other.attrs)
+        (self.impl_.dialect().name(), self.impl_.name(), &self.attrs)
+            == (
+                other.impl_.dialect().name(),
+                other.impl_.name(),
+                &other.attrs,
+            )
     }
 }
 
@@ -93,7 +98,6 @@ impl VarScope {
     }
 }
 
-
 /// A jaxpr-style variable: bound to an index or 0 for a hole.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Var {
@@ -128,7 +132,10 @@ impl fmt::Display for Var {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Effect {
-    Unused, Read, Write, ReadWrite
+    Unused,
+    Read,
+    Write,
+    ReadWrite,
 }
 
 impl Effect {
@@ -145,12 +152,14 @@ impl Effect {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Effects {
-    effected: BTreeMap<Var, Effect>
+    effected: BTreeMap<Var, Effect>,
 }
 
 impl Effects {
     pub fn new() -> Self {
-        Effects { effected: BTreeMap::new() }
+        Effects {
+            effected: BTreeMap::new(),
+        }
     }
     pub fn insert(&mut self, var: Var, effect: Effect) {
         self.effected.insert(var, effect);
@@ -236,7 +245,7 @@ impl Eqn {
     pub fn outputs(&self) -> &[Var] {
         &self.outputs
     }
-    
+
     // Propagate effects *backwards* through an equation.
     pub fn propagate_effects(&self, effects: &mut Effects) {
         // By default add any input effects to the effects map.
@@ -254,7 +263,9 @@ impl Eqn {
                 max_effect = max_effect.combine(e);
             }
         }
-        if output_effects.is_empty() { return; }
+        if output_effects.is_empty() {
+            return;
+        }
         // TODO: Lookup the operation effects implementation.
         // If there is no implementation, pessimistically assume
         // the worst possible input-output association.
@@ -297,8 +308,6 @@ impl fmt::Display for Eqn {
     }
 }
 
-
-
 /// Functional ANF expression: `lambda closure* ; explicit* . let eqns* in outputs*`.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct Expr {
@@ -308,7 +317,6 @@ pub struct Expr {
     outputs: Vec<Var>,
     var_scope: VarScope,
 }
-
 
 impl Expr {
     pub fn new(
@@ -327,8 +335,12 @@ impl Expr {
         }
     }
 
-    pub fn closure(&self) -> &[Input] { &self.closure }
-    pub fn inputs(&self) -> &[Input] { &self.inputs }
+    pub fn closure(&self) -> &[Input] {
+        &self.closure
+    }
+    pub fn inputs(&self) -> &[Input] {
+        &self.inputs
+    }
 
     pub fn eqns(&self) -> &[Eqn] {
         &self.eqns

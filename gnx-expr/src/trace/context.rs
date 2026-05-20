@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::cell::CellKey;
 use super::TraceRef;
+use super::cell::CellKey;
 
 static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -83,11 +83,7 @@ impl TraceContext {
     }
 
     pub(crate) fn override_cell(&self, cell: CellKey, trace: TraceRef) {
-        self.state
-            .overrides
-            .lock()
-            .unwrap()
-            .insert(cell, trace);
+        self.state.overrides.lock().unwrap().insert(cell, trace);
     }
 
     pub(crate) fn cell_override(&self, cell: CellKey) -> Option<TraceRef> {

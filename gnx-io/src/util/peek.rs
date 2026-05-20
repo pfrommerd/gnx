@@ -1,5 +1,4 @@
-use std::io::{Read, BufRead, Result, Error, ErrorKind};
-
+use std::io::{BufRead, Error, ErrorKind, Read, Result};
 
 pub trait PeekRead: BufRead {
     // Get access to the current
@@ -20,7 +19,7 @@ impl<R: PeekRead> PeekRead for &mut R {
 }
 
 // TODO: This is a placeholder implementation
-// which is inefficient as it always uses a fully 
+// which is inefficient as it always uses a fully
 // initialized buffer. To do this efficiently, we require
 // the unstable read_buf feature of the std library such
 // that R can read into an uninitialized buffer.
@@ -33,7 +32,7 @@ pub struct BufReader<R: Read> {
     filled: usize,
 }
 
-const DEFAULT_BUFFER_SIZE: usize = 8*1024;
+const DEFAULT_BUFFER_SIZE: usize = 8 * 1024;
 
 impl<R: Read> BufReader<R> {
     pub fn new(reader: R) -> Self {
@@ -109,7 +108,10 @@ impl<R: Read> PeekRead for BufReader<R> {
     }
     fn peek(&mut self, len: usize) -> Result<&[u8]> {
         if len > self.buffer.len() {
-            return Err(Error::new(ErrorKind::InvalidInput, "Cannot peek more than the buffer size"));
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "Cannot peek more than the buffer size",
+            ));
         }
         // Check if we need to shift the buffer back to the start.
         if len > self.buffer.len() - self.pos {
@@ -135,7 +137,9 @@ impl<R: std::io::Read> PeekRead for std::io::BufReader<R> {
         self.fill_buf()?;
         let mut buf = PeekRead::buffer(self);
         // Truncate the buffer to at most the requested length.
-        if buf.len() > len { buf = &buf[..len]; }
+        if buf.len() > len {
+            buf = &buf[..len];
+        }
         Ok(buf)
     }
 }

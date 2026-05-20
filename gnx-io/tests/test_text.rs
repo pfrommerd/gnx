@@ -22,7 +22,8 @@ fn test_text_source() {
 
         assert_eq!(source.next()?, None);
         Ok(pos)
-    }().unwrap();
+    }()
+    .unwrap();
     // Rewind...
     source.goto(pos).unwrap();
     assert_eq!(source.next().unwrap(), Some('l'));

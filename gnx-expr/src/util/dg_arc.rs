@@ -23,23 +23,29 @@ pub struct DgArc<T: ?Sized> {
 impl<T: ?Sized> Clone for DgArc<T> {
     fn clone(&self) -> Self {
         let w = self.inner.read().unwrap();
-        DgArc { inner: RwLock::new(w.clone()) }
+        DgArc {
+            inner: RwLock::new(w.clone()),
+        }
     }
 }
 
 impl<T> From<T> for DgArc<T> {
     fn from(value: T) -> Self {
-        DgArc { inner: RwLock::new(MaybeArcInner::Arc(Arc::new(value))) }
+        DgArc {
+            inner: RwLock::new(MaybeArcInner::Arc(Arc::new(value))),
+        }
     }
 }
 impl<T: ?Sized> From<Arc<T>> for DgArc<T> {
     fn from(value: Arc<T>) -> Self {
-        DgArc { inner: RwLock::new(MaybeArcInner::Arc(value)) }
+        DgArc {
+            inner: RwLock::new(MaybeArcInner::Arc(value)),
+        }
     }
 }
 
 impl<T: ?Sized> DgArc<T> {
-    pub fn downgrade(&self) { 
+    pub fn downgrade(&self) {
         let mut w = self.inner.write().unwrap();
         match &*w {
             MaybeArcInner::Arc(arc) => {

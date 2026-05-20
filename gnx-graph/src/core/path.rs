@@ -7,7 +7,7 @@ pub enum Key {
     DictIndex(i64),
     Index(usize),
     // Used if the parent is a "wrapper" around the child (e.g. newtype structs)
-    Transparent, 
+    Transparent,
 }
 
 impl Key {

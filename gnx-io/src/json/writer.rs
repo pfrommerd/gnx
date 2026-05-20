@@ -2,11 +2,11 @@ use std::fmt::Display;
 use std::io::Write;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use gnx_backend::Array;
 use gnx_graph::{
     GraphId, Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
     SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
-use gnx_backend::Array;
 
 use super::{JsonError, Result};
 

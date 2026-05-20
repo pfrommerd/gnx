@@ -12,8 +12,8 @@ pub mod gnxlib {
     use crate::graph::PyGraph;
     use gnx::backend::{Backend, Device};
     use pyo3::prelude::*;
-    use uuid::Uuid;
     use std::sync::Arc;
+    use uuid::Uuid;
 
     #[pyclass(name = "Backend", eq)]
     #[derive(PartialEq, Eq)]

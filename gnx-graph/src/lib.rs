@@ -1,13 +1,13 @@
-mod core;
 mod builtins;
-mod ser;
+mod core;
 mod des;
+mod ser;
 mod traits;
 
-pub use core::*;
-pub use ser::*;
-pub use des::*;
 pub use builtins::*;
+pub use core::*;
+pub use des::*;
+pub use ser::*;
 pub mod util;
 
 extern crate self as gnx_graph;

@@ -1,12 +1,12 @@
 use std::fmt::Display;
 use std::io::Write;
 
+use super::{Result, TomlError, Value};
+use gnx_backend::Array;
 use gnx_graph::{
     GraphId, Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
     SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
-use gnx_backend::Array;
-use super::{Result, TomlError, Value};
 
 pub struct TomlWriter<W> {
     writer: W,

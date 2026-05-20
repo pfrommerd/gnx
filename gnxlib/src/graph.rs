@@ -7,8 +7,8 @@ use pyo3::Bound as PyBound;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use crate::leaf::PyLeaf;
 use crate::gnxlib::GraphContainer;
+use crate::leaf::PyLeaf;
 
 #[derive(Clone)]
 pub struct TypeInfo {
@@ -258,17 +258,26 @@ impl Node for PyGraph {
         match self {
             PyGraph::Tuple(children) | PyGraph::List(children) => {
                 children.into_iter().enumerate().for_each(|(i, child)| {
-                    consumer.consume_child(Key::Index(i), gnx::graph::Bound::new(child, filter.child(KeyRef::Index(i))));
+                    consumer.consume_child(
+                        Key::Index(i),
+                        gnx::graph::Bound::new(child, filter.child(KeyRef::Index(i))),
+                    );
                 });
             }
             PyGraph::Dict(children) | PyGraph::Custom(_, children) => {
                 children.into_iter().for_each(|(key, child)| {
-                    consumer.consume_child(key.as_ref().to_value(), gnx::graph::Bound::new(child, filter.child(key.as_ref())));
+                    consumer.consume_child(
+                        key.as_ref().to_value(),
+                        gnx::graph::Bound::new(child, filter.child(key.as_ref())),
+                    );
                 });
             }
             PyGraph::Dataclass(_, children) => {
                 children.into_iter().for_each(|(key, child)| {
-                    consumer.consume_child(Key::Attr(key.clone().into()), gnx::graph::Bound::new(child, filter.child(KeyRef::Attr(&key))));
+                    consumer.consume_child(
+                        Key::Attr(key.clone().into()),
+                        gnx::graph::Bound::new(child, filter.child(KeyRef::Attr(&key))),
+                    );
                 });
             }
             PyGraph::Leaf(_) | PyGraph::Shared(_) => {}
@@ -300,7 +309,9 @@ impl<L: Leaf> Builder<L> for PyBuilder {
             Tuple(children) => PyGraph::Tuple(build_indexed(children, source, ctx)?),
             List(children) => PyGraph::List(build_indexed(children, source, ctx)?),
             Dict(children) => PyGraph::Dict(build_keyed(children, source, ctx)?),
-            Dataclass(typ, children) => PyGraph::Dataclass(typ, build_attrs(children, source, ctx)?),
+            Dataclass(typ, children) => {
+                PyGraph::Dataclass(typ, build_attrs(children, source, ctx)?)
+            }
             Custom(typ, children) => PyGraph::Custom(typ, build_keyed(children, source, ctx)?),
             Shared(builder) => PyGraph::Shared(builder.build(source, ctx)?),
         })
@@ -399,7 +410,9 @@ impl PyGraph {
         if let Ok(graph_attr) = py_type.getattr("__graph__") {
             let graph = graph_attr.cast_into::<PyTuple>()?;
             if graph.len() != 2 {
-                return Err(PyTypeError::new_err("type.__graph__ must be a (flatten, unflatten) tuple"));
+                return Err(PyTypeError::new_err(
+                    "type.__graph__ must be a (flatten, unflatten) tuple",
+                ));
             }
             let flatten = graph.get_item(0)?;
             let flattened = flatten.call1((obj,))?;
@@ -441,9 +454,9 @@ impl PyGraph {
             return Ok(PyGraph::Dataclass(TypeInfo::from_type(&py_type)?, children));
         }
 
-        Ok(PyGraph::Leaf(PyLeaf::Other(crate::leaf::ObjectHandle(Arc::new(
-            obj.as_unbound().clone_ref(obj.py()),
-        )))))
+        Ok(PyGraph::Leaf(PyLeaf::Other(crate::leaf::ObjectHandle(
+            Arc::new(obj.as_unbound().clone_ref(obj.py())),
+        ))))
     }
 
     pub fn into_pyobject_bound<'py>(self, py: Python<'py>) -> PyResult<PyBound<'py, PyAny>> {
@@ -490,7 +503,9 @@ impl PyGraph {
                 let py_type = typ.import(py)?;
                 let graph = py_type.getattr("__graph__")?.cast_into::<PyTuple>()?;
                 if graph.len() != 2 {
-                    return Err(PyTypeError::new_err("type.__graph__ must be a (flatten, unflatten) tuple"));
+                    return Err(PyTypeError::new_err(
+                        "type.__graph__ must be a (flatten, unflatten) tuple",
+                    ));
                 }
                 let unflatten = graph.get_item(1)?;
                 let items = children

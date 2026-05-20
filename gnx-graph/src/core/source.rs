@@ -90,7 +90,9 @@ impl<I, L, S: GraphSource<I, L>> GraphSource<I, L> for PermissiveSource<S> {
         }
     }
     type Permissive = Self;
-    fn permissive(self) -> Self::Permissive { self }
+    fn permissive(self) -> Self::Permissive {
+        self
+    }
 }
 impl<I, L, S: ChildrenSource<I, L>> ChildrenSource<I, L> for PermissiveSource<S> {
     type Error = S::Error;
@@ -102,7 +104,7 @@ impl<I, L, S: ChildrenSource<I, L>> ChildrenSource<I, L> for PermissiveSource<S>
             Null => Ok(Some(Null)),
             Source(s) => match s.child(key)? {
                 Some(s) => Ok(Some(Source(s))),
-                None => Ok(Some(Null))
+                None => Ok(Some(Null)),
             },
         }
     }

@@ -13,7 +13,9 @@ pub struct Value(Box<dyn ConcreteValue>);
 unsafe impl castaway::LifetimeFree for Value {}
 
 impl ConcreteValue for Value {
-    fn to_info(&self) -> ValueInfo { self.0.to_info() }
+    fn to_info(&self) -> ValueInfo {
+        self.0.to_info()
+    }
 }
 
 impl Display for Value {
@@ -83,9 +85,9 @@ impl ValueInfo {
                 let value: Box<dyn Any> = _value.0;
                 // SAFETY: We know that the value is of type T because we checked the type_id above.
                 let value: Box<T> = unsafe { value.downcast().unwrap_unchecked() };
-                return Ok(*value)
+                return Ok(*value);
             } else {
-                return Err(_value)
+                return Err(_value);
             }
         })
     }

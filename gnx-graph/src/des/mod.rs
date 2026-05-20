@@ -1,8 +1,8 @@
-use std::marker::PhantomData;
 use std::fmt::Display;
+use std::marker::PhantomData;
 
 use crate::Error;
-use crate::{GraphId, GraphContext};
+use crate::{GraphContext, GraphId};
 use gnx_backend::array::Array;
 
 mod builtins;
@@ -69,7 +69,8 @@ pub trait Deserializer<'de>: Sized {
     fn deserialize_str<V: DataVisitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error>;
     fn deserialize_string<V: DataVisitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error>;
     fn deserialize_bytes<V: DataVisitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error>;
-    fn deserialize_byte_buf<V: DataVisitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error>;
+    fn deserialize_byte_buf<V: DataVisitor<'de>>(self, visitor: V)
+    -> Result<V::Value, Self::Error>;
     fn deserialize_option<V: DataVisitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error>;
     fn deserialize_unit<V: DataVisitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error>;
 
@@ -102,15 +103,22 @@ pub trait Deserializer<'de>: Sized {
     /// Hint that the `Deserialize` type is expecting a map of key-value pairs.
     fn deserialize_map<V: DataVisitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error>;
     fn deserialize_struct<V: DataVisitor<'de>>(
-        self, name: &str, fields: &[&str], visitor: V,
+        self,
+        name: &str,
+        fields: &[&str],
+        visitor: V,
     ) -> Result<V::Value, Self::Error>;
 
     fn deserialize_enum<V: DataVisitor<'de>>(
-        self, name: &str, variants: &[&str], visitor: V,
+        self,
+        name: &str,
+        variants: &[&str],
+        visitor: V,
     ) -> Result<V::Value, Self::Error>;
 
     fn deserialize_identifier<V: DataVisitor<'de>>(
-        self, visitor: V,
+        self,
+        visitor: V,
     ) -> Result<V::Value, Self::Error>;
 
     fn deserialize_ignored_any<V: DataVisitor<'de>>(
@@ -223,39 +231,38 @@ pub trait DataVisitor<'de> : Sized + Expecting {
     }
 }
 
-pub trait SeqAccess<'de> : Sized {
+pub trait SeqAccess<'de>: Sized {
     type Error: Error;
-    fn next_element_seed<T>(
-        &mut self, 
-        seed: T
-    ) -> Result<Option<T::Value>, Self::Error>
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
     where
         T: DeserializeSeed<'de>;
 
     fn next_element<T>(&mut self) -> Result<Option<T>, Self::Error>
     where
         T: Deserialize<'de>,
-    { 
+    {
         self.next_element_seed(PhantomData)
     }
-    fn size_hint(&self) -> Option<usize> { None }
+    fn size_hint(&self) -> Option<usize> {
+        None
+    }
 }
 
-pub trait MapAccess<'de> : Sized {
+pub trait MapAccess<'de>: Sized {
     type Error: Error;
     fn next_key_seed<K: DeserializeSeed<'de>>(
-        &mut self, 
-        seed: K
+        &mut self,
+        seed: K,
     ) -> Result<Option<K::Value>, Self::Error>;
     fn next_value_seed<V: DeserializeSeed<'de>>(
-        &mut self, 
-        seed: V
+        &mut self,
+        seed: V,
     ) -> Result<V::Value, Self::Error>;
 
     fn next_entry_seed<K: DeserializeSeed<'de>, V: DeserializeSeed<'de>>(
-        &mut self, 
+        &mut self,
         key_seed: K,
-        value_seed: V
+        value_seed: V,
     ) -> Result<Option<(K::Value, V::Value)>, Self::Error> {
         let key = self.next_key_seed(key_seed)?;
         match key {
@@ -263,26 +270,33 @@ pub trait MapAccess<'de> : Sized {
                 let value = self.next_value_seed(value_seed)?;
                 (key, value)
             })),
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
-    fn next_key<K: Deserialize<'de>>(&mut self) -> Result<Option<K>, Self::Error> { 
+    fn next_key<K: Deserialize<'de>>(&mut self) -> Result<Option<K>, Self::Error> {
         self.next_key_seed(PhantomData)
     }
-    fn next_value<V: Deserialize<'de>>(&mut self) -> Result<V, Self::Error> { 
+    fn next_value<V: Deserialize<'de>>(&mut self) -> Result<V, Self::Error> {
         self.next_value_seed(PhantomData)
     }
-    fn next_entry<K: Deserialize<'de>, V: Deserialize<'de>>(&mut self) -> Result<Option<(K, V)>, Self::Error> {
+    fn next_entry<K: Deserialize<'de>, V: Deserialize<'de>>(
+        &mut self,
+    ) -> Result<Option<(K, V)>, Self::Error> {
         self.next_entry_seed(PhantomData, PhantomData)
     }
-    fn size_hint(&self) -> Option<usize> { None }
+    fn size_hint(&self) -> Option<usize> {
+        None
+    }
 }
 
 pub trait EnumAccess<'de>: Sized {
     type Error: Error;
     type Variant: VariantAccess<'de>;
-    fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>;
+    fn variant_seed<V: DeserializeSeed<'de>>(
+        self,
+        seed: V,
+    ) -> Result<(V::Value, Self::Variant), Self::Error>;
     fn variant<V: Deserialize<'de>>(self) -> Result<(V, Self::Variant), Self::Error> {
         self.variant_seed(PhantomData)
     }
@@ -292,15 +306,22 @@ pub trait VariantAccess<'de>: Sized {
     type Error: Error;
     fn unit_variant(self) -> Result<(), Self::Error>;
 
-    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, Self::Error>;
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(
+        self,
+        seed: T,
+    ) -> Result<T::Value, Self::Error>;
     fn newtype_variant<T: Deserialize<'de>>(self) -> Result<T, Self::Error> {
         self.newtype_variant_seed(PhantomData)
     }
 
     fn tuple_variant<V: DataVisitor<'de>>(
-        self, len: usize, visitor: V
+        self,
+        len: usize,
+        visitor: V,
     ) -> Result<V::Value, Self::Error>;
     fn struct_variant<V: DataVisitor<'de>>(
-        self, fields: &[&str],  visitor: V
+        self,
+        fields: &[&str],
+        visitor: V,
     ) -> Result<V::Value, Self::Error>;
 }

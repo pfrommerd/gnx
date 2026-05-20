@@ -1,4 +1,4 @@
-use crate::{Graph, Leaf, KeyRef};
+use crate::{Graph, KeyRef, Leaf};
 use std::marker::PhantomData;
 
 pub trait Filter<L: Leaf>: Clone {
@@ -134,7 +134,6 @@ impl Filter<()> for All {
         self.clone()
     }
 }
-
 
 #[derive(Clone)]
 pub struct Invert<L: Leaf, F: Filter<L>>(F, PhantomData<L>);

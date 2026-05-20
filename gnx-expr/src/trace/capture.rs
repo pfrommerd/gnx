@@ -1,9 +1,8 @@
 use crate::builtins::update_op;
-use crate::{Effect, Eqn, Expr, Input, Effects, Var, VarScope};
 use crate::trace::{
-    CellKey, ContextID, Generic, Invocation, TraceContext, TraceObject,
-    TraceRef, Tracer,
+    CellKey, ContextID, Generic, Invocation, TraceContext, TraceObject, TraceRef, Tracer,
 };
+use crate::{Effect, Effects, Eqn, Expr, Input, Var, VarScope};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -30,46 +29,45 @@ impl Capture {
         let mut closure_vars = Vec::new();
         let mut closure_values = Vec::new();
 
-        let alloc_operand =
-            |op: &TraceObject,
-             binding_to_var: &mut HashMap<BindingKey, Var>,
-             closure_vars: &mut Vec<Var>,
-             closure_values: &mut Vec<TraceObject>,
-             var_scope: &mut VarScope|
-             -> Input {
-                match op {
-                    TraceObject::Ref(r) => {
-                        let key = BindingKey::Trace(TracerKey::from(r));
-                        if let Some(var) = binding_to_var.get(&key).cloned() {
-                            return Input::new(var, Effect::Read);
-                        }
-                        if r.context_id() != target {
-                            let v = var_scope.create_var();
-                            binding_to_var.insert(key, v.clone());
-                            closure_vars.push(v.clone());
-                            closure_values.push(TraceObject::from(r.clone()));
-                            return Input::new(v, Effect::Read);
-                        }
+        let alloc_operand = |op: &TraceObject,
+                             binding_to_var: &mut HashMap<BindingKey, Var>,
+                             closure_vars: &mut Vec<Var>,
+                             closure_values: &mut Vec<TraceObject>,
+                             var_scope: &mut VarScope|
+         -> Input {
+            match op {
+                TraceObject::Ref(r) => {
+                    let key = BindingKey::Trace(TracerKey::from(r));
+                    if let Some(var) = binding_to_var.get(&key).cloned() {
+                        return Input::new(var, Effect::Read);
+                    }
+                    if r.context_id() != target {
                         let v = var_scope.create_var();
                         binding_to_var.insert(key, v.clone());
-                        Input::new(v, Effect::Read)
+                        closure_vars.push(v.clone());
+                        closure_values.push(TraceObject::from(r.clone()));
+                        return Input::new(v, Effect::Read);
                     }
-                    TraceObject::Cell(c) => {
-                        let key = BindingKey::Cell(CellKey::from(c));
-                        if let Some(var) = binding_to_var.get(&key).cloned() {
-                            return Input::new(var, Effect::Read);
-                        }
-                        let v = var_scope.create_var();
-                        binding_to_var.insert(key, v.clone());
-                        let resolved = c.get();
-                        if resolved.context_id() != target {
-                            closure_vars.push(v.clone());
-                            closure_values.push(TraceObject::from(c.clone()));
-                        }
-                        Input::new(v, Effect::Read)
-                    }
+                    let v = var_scope.create_var();
+                    binding_to_var.insert(key, v.clone());
+                    Input::new(v, Effect::Read)
                 }
-            };
+                TraceObject::Cell(c) => {
+                    let key = BindingKey::Cell(CellKey::from(c));
+                    if let Some(var) = binding_to_var.get(&key).cloned() {
+                        return Input::new(var, Effect::Read);
+                    }
+                    let v = var_scope.create_var();
+                    binding_to_var.insert(key, v.clone());
+                    let resolved = c.get();
+                    if resolved.context_id() != target {
+                        closure_vars.push(v.clone());
+                        closure_values.push(TraceObject::from(c.clone()));
+                    }
+                    Input::new(v, Effect::Read)
+                }
+            }
+        };
 
         for inp in &inputs {
             let input = alloc_operand(
@@ -121,10 +119,8 @@ impl Capture {
                 match outs.get(&out_idx) {
                     Some(out_tracer) => {
                         let v = var_scope.create_var();
-                        binding_to_var.insert(
-                            BindingKey::Trace(TracerKey::from(out_tracer)),
-                            v.clone(),
-                        );
+                        binding_to_var
+                            .insert(BindingKey::Trace(TracerKey::from(out_tracer)), v.clone());
                         out_vars.push(v);
                     }
                     None => out_vars.push(Var::hole()),
@@ -184,9 +180,7 @@ impl Capture {
                 TraceObject::Ref(r) => {
                     binding_to_var[&BindingKey::Trace(TracerKey::from(r))].clone()
                 }
-                TraceObject::Cell(c) => {
-                    binding_to_var[&BindingKey::Cell(CellKey::from(c))].clone()
-                }
+                TraceObject::Cell(c) => binding_to_var[&BindingKey::Cell(CellKey::from(c))].clone(),
             })
             .collect();
 

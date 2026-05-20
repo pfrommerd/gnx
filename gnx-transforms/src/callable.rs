@@ -13,22 +13,10 @@ pub trait Callable<Input: Graph> {
 //
 // This is not always true. For instance (Vec<&u32>) -> u32 is not Jitable
 // as we cannot coerce a Vec<Arc<u32>> into a Vec<&u32>.
-pub trait Jitable<I: Graph>: Callable<I, Output=Self::OwnedOutput>
-{
-    type OwnedOutput: Graph<Owned=Self::OwnedOutput>;
+pub trait Jitable<I: Graph>: Callable<I, Output = Self::OwnedOutput> {
+    type OwnedOutput: Graph<Owned = Self::OwnedOutput>;
 
     fn invoke_owned(&self, input: I::Owned) -> Self::Output;
-}
-
-impl<I: Graph<Owned=I>, F: Callable<I>> Jitable<I> for F 
-where
-    F::Output: Graph<Owned=F::Output>,
-{
-    type OwnedOutput = F::Output;
-
-    fn invoke_owned(&self, input: I::Owned) -> Self::Output {
-        self.invoke(input)
-    }
 }
 
 pub mod as_fn {
@@ -93,3 +81,34 @@ impl_tuple_arg_fn!(A B C D E F G H I);
 impl_tuple_arg_fn!(A B C D E F G H I J);
 impl_tuple_arg_fn!(A B C D E F G H I J K);
 impl_tuple_arg_fn!(A B C D E F G H I J K L);
+
+macro_rules! impl_tuple_arg_jitable_fn {
+    ($($T:ty)*) => {
+        paste::paste! {
+            impl<$($T: Graph<Owned = $T>,)* FUNC, OUT: Graph<Owned = OUT>> Jitable<($($T,)*)> for FUNC
+            where
+                FUNC: Fn($($T,)*) -> OUT,
+            {
+                type OwnedOutput = OUT;
+
+                fn invoke_owned(&self, input: ($($T,)*)) -> Self::Output {
+                    let ($([<$T:lower>],)*) = input;
+                    self($([<$T:lower>],)*)
+                }
+            }
+        }
+    };
+}
+impl_tuple_arg_jitable_fn!();
+impl_tuple_arg_jitable_fn!(A);
+impl_tuple_arg_jitable_fn!(A B);
+impl_tuple_arg_jitable_fn!(A B C);
+impl_tuple_arg_jitable_fn!(A B C D);
+impl_tuple_arg_jitable_fn!(A B C D E);
+impl_tuple_arg_jitable_fn!(A B C D E F);
+impl_tuple_arg_jitable_fn!(A B C D E F G);
+impl_tuple_arg_jitable_fn!(A B C D E F G H);
+impl_tuple_arg_jitable_fn!(A B C D E F G H I);
+impl_tuple_arg_jitable_fn!(A B C D E F G H I J);
+impl_tuple_arg_jitable_fn!(A B C D E F G H I J K);
+impl_tuple_arg_jitable_fn!(A B C D E F G H I J K L);

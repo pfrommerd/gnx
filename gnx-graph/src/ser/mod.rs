@@ -1,5 +1,5 @@
+use crate::{Error, GraphId};
 use gnx_backend::Array;
-use crate::{GraphId, Error};
 
 use std::fmt::Display;
 

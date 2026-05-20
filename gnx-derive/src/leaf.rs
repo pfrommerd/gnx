@@ -1,10 +1,10 @@
 use proc_macro::TokenStream as ProcTokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{parse_macro_input, punctuated::Punctuated, token::Comma, DeriveInput, Type};
+use syn::{DeriveInput, Type, parse_macro_input, punctuated::Punctuated, token::Comma};
 
 use crate::lifetime_free::expand_lifetime_free_from_derive;
-use crate::paths::{graph_crate, require_graph_crate, cast};
+use crate::paths::{cast, graph_crate, require_graph_crate};
 
 pub fn expand_leaf(ty: &Type) -> TokenStream2 {
     let err = require_graph_crate();

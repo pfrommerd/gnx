@@ -5,10 +5,9 @@
 
 mod utils {
     use core::{
-        any::{type_name, TypeId},
+        any::{TypeId, type_name},
         marker::PhantomData,
-        mem,
-        ptr,
+        mem, ptr,
     };
 
     #[inline(always)]
@@ -62,8 +61,8 @@ mod utils {
 
 #[doc(hidden)]
 pub mod internal {
-    use super::utils::{transmute_unchecked, type_eq, type_eq_non_static};
     use super::LifetimeFree;
+    use super::utils::{transmute_unchecked, type_eq, type_eq_non_static};
     use core::marker::PhantomData;
 
     pub struct CastToken<T: ?Sized>(PhantomData<T>);
@@ -182,10 +181,7 @@ pub mod internal {
         }
     }
 
-    impl<'a, T: 'static, U: 'static> TryCastRef<'a, T, U>
-        for &(CastToken<&'a T>, CastToken<&'a U>)
-    {
-    }
+    impl<'a, T: 'static, U: 'static> TryCastRef<'a, T, U> for &(CastToken<&'a T>, CastToken<&'a U>) {}
 
     pub trait TryCastOwned<T: 'static, U: 'static> {
         #[inline(always)]
@@ -297,7 +293,8 @@ macro_rules! cast {
         let src_token = CastToken::of_val(&value);
         let dest_token = CastToken::<$T>::of();
 
-        let result: ::core::result::Result<$T, _> = (&&&&&&&(src_token, dest_token)).try_cast(value);
+        let result: ::core::result::Result<$T, _> =
+            (&&&&&&&(src_token, dest_token)).try_cast(value);
 
         result
     }};

@@ -1,8 +1,8 @@
 mod peek;
-mod text;
 mod scratch;
+mod text;
 mod trie;
 
 pub use peek::*;
-pub use text::*;
 pub use scratch::*;
+pub use text::*;

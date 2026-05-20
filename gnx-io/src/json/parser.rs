@@ -1,10 +1,10 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-use gnx_graph::{Deserializer, DataVisitor};
-use gnx_graph::{SeqAccess, MapAccess, EnumAccess, VariantAccess, DeserializeSeed};
+use gnx_graph::{DataVisitor, Deserializer};
+use gnx_graph::{DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess};
 
-use crate::util::{ScratchBuffer, TextSource};
 use super::*;
+use crate::util::{ScratchBuffer, TextSource};
 
 pub struct JsonParser<S> {
     source: S,
@@ -39,9 +39,11 @@ macro_rules! fn_deserialize_number {
 }
 macro_rules! test_ref {
     ($self:ident, $visitor:ident) => {
-        if $self.enable_tagged_refs && $self.source.peek_type()? == ValueType::String &&
-                $self.source.peek_chars(3)? == "\"${" { 
-            return $self.deserialize_shared($visitor)
+        if $self.enable_tagged_refs
+            && $self.source.peek_type()? == ValueType::String
+            && $self.source.peek_chars(3)? == "\"${"
+        {
+            return $self.deserialize_shared($visitor);
         }
     };
 }
@@ -100,16 +102,27 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
     fn deserialize_char<V: DataVisitor<'src>>(self, visitor: V) -> Result<V::Value> {
         self.deserialize_str(visitor)
     }
-    fn deserialize_str<V: DataVisitor<'src>>(self, visitor: V) -> std::result::Result<V::Value, Self::Error> {
+    fn deserialize_str<V: DataVisitor<'src>>(
+        self,
+        visitor: V,
+    ) -> std::result::Result<V::Value, Self::Error> {
         self.deserialize_string(visitor)
     }
     fn deserialize_string<V: DataVisitor<'src>>(self, visitor: V) -> Result<V::Value> {
-        self.source.consume_string(&mut self.scratch)?.visit(visitor)
+        self.source
+            .consume_string(&mut self.scratch)?
+            .visit(visitor)
     }
-    fn deserialize_bytes<V: DataVisitor<'src>>(self, visitor: V) -> std::result::Result<V::Value, Self::Error> {
+    fn deserialize_bytes<V: DataVisitor<'src>>(
+        self,
+        visitor: V,
+    ) -> std::result::Result<V::Value, Self::Error> {
         self.deserialize_byte_buf(visitor)
     }
-    fn deserialize_byte_buf<V: DataVisitor<'src>>(self, visitor: V) -> std::result::Result<V::Value, Self::Error> {
+    fn deserialize_byte_buf<V: DataVisitor<'src>>(
+        self,
+        visitor: V,
+    ) -> std::result::Result<V::Value, Self::Error> {
         // If we are in human-readable mode, we require that the bytes are encoded as a list
         // of numbers between 0 and 255. Otherwise, we assume that the bytes are encoded as a base64 string.
         let text = self.source.consume_string(&mut self.scratch)?;
@@ -126,21 +139,23 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
             ValueType::Null => {
                 self.source.consume_null()?;
                 visitor.visit_none()
-            },
-            _ => {
-                visitor.visit_some(self)
             }
+            _ => visitor.visit_some(self),
         }
     }
 
     fn deserialize_unit_struct<V: DataVisitor<'src>>(
-        self, _name: &str, visitor: V,
-    ) -> Result<V::Value>  {
+        self,
+        _name: &str,
+        visitor: V,
+    ) -> Result<V::Value> {
         self.deserialize_unit(visitor)
     }
 
     fn deserialize_newtype_struct<V: DataVisitor<'src>>(
-        self, _name: &str, visitor: V,
+        self,
+        _name: &str,
+        visitor: V,
     ) -> Result<V::Value> {
         visitor.visit_newtype_struct(self)
     }
@@ -163,7 +178,9 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
     // map/struct deserialization
     fn deserialize_identifier<V: DataVisitor<'src>>(self, visitor: V) -> Result<V::Value> {
         // consume an identifier string
-        self.source.consume_string(&mut self.scratch)?.visit(visitor)
+        self.source
+            .consume_string(&mut self.scratch)?
+            .visit(visitor)
     }
 
     // Deserialization of more complex types
@@ -171,7 +188,9 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
     fn deserialize_seq<V: DataVisitor<'src>>(self, visitor: V) -> Result<V::Value> {
         test_ref!(self, visitor);
 
-        struct ListSeqAccess<'a, S> { parser: &'a mut JsonParser<S> }
+        struct ListSeqAccess<'a, S> {
+            parser: &'a mut JsonParser<S>,
+        }
         impl<'src, S: TextSource<'src>> SeqAccess<'src> for ListSeqAccess<'_, S> {
             type Error = JsonError;
 
@@ -191,7 +210,7 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
                             if self.parser.source.is_array_end()? {
                                 return Err(JsonError::Unexpected(']'));
                             }
-                        },
+                        }
                         Some(c) => return Err(JsonError::Unexpected(c)),
                         None => return Err(JsonError::UnexpectedEOF),
                     }
@@ -205,11 +224,7 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
         Ok(value)
     }
 
-    fn deserialize_tuple<V: DataVisitor<'src>>(
-        self,
-        _len: usize,
-        visitor: V,
-    ) -> Result<V::Value> {
+    fn deserialize_tuple<V: DataVisitor<'src>>(self, _len: usize, visitor: V) -> Result<V::Value> {
         self.deserialize_seq(visitor)
     }
 
@@ -223,7 +238,9 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
     }
 
     fn deserialize_map<V: DataVisitor<'src>>(self, visitor: V) -> Result<V::Value> {
-        struct JsonMapAccess<'a, S> { parser: &'a mut JsonParser<S> }
+        struct JsonMapAccess<'a, S> {
+            parser: &'a mut JsonParser<S>,
+        }
         impl<'a, 'src, S: TextSource<'src>> MapAccess<'src> for JsonMapAccess<'a, S> {
             type Error = JsonError;
 
@@ -253,7 +270,7 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
                             if self.parser.source.is_object_end()? {
                                 return Err(JsonError::Unexpected('}'));
                             }
-                        },
+                        }
                         Some(c) => return Err(JsonError::Unexpected(c)),
                         None => return Err(JsonError::UnexpectedEOF),
                     }
@@ -281,7 +298,7 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
         match self.source.peek_type()? {
             ValueType::Object => self.deserialize_map(visitor),
             ValueType::Array => self.deserialize_seq(visitor),
-            _ => Err(JsonError::Unexpected(self.source.peek()?.unwrap()))
+            _ => Err(JsonError::Unexpected(self.source.peek()?.unwrap())),
         }
     }
 
@@ -291,9 +308,13 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
         _variants: &[&str],
         visitor: V,
     ) -> Result<V::Value> {
-        struct JsonEnumAccess<'a, S> { parser: &'a mut JsonParser<S> }
-        struct JsonVariantAccess<'a, S> { parser: &'a mut JsonParser<S> }
-        impl<'a,'src, S: TextSource<'src>> EnumAccess<'src> for JsonEnumAccess<'a, S> {
+        struct JsonEnumAccess<'a, S> {
+            parser: &'a mut JsonParser<S>,
+        }
+        struct JsonVariantAccess<'a, S> {
+            parser: &'a mut JsonParser<S>,
+        }
+        impl<'a, 'src, S: TextSource<'src>> EnumAccess<'src> for JsonEnumAccess<'a, S> {
             type Error = JsonError;
             type Variant = JsonVariantAccess<'a, S>;
 
@@ -303,11 +324,13 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
             ) -> Result<(VS::Value, Self::Variant)> {
                 // Parse the variant type information:
                 let enum_info = seed.deserialize(&mut *self.parser)?;
-                let variant_access = JsonVariantAccess { parser: &mut *self.parser };
+                let variant_access = JsonVariantAccess {
+                    parser: &mut *self.parser,
+                };
                 Ok((enum_info, variant_access))
             }
         }
-        impl<'a,'src, S: TextSource<'src>> VariantAccess<'src> for JsonVariantAccess<'a, S> {
+        impl<'a, 'src, S: TextSource<'src>> VariantAccess<'src> for JsonVariantAccess<'a, S> {
             type Error = JsonError;
 
             fn unit_variant(self) -> Result<()> {
@@ -317,12 +340,16 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
                 seed.deserialize(&mut *self.parser)
             }
             fn tuple_variant<V: DataVisitor<'src>>(
-                self, _len: usize, visitor: V
+                self,
+                _len: usize,
+                visitor: V,
             ) -> Result<V::Value> {
                 self.parser.deserialize_seq(visitor)
             }
             fn struct_variant<V: DataVisitor<'src>>(
-                self, fields: &[&str],  visitor: V
+                self,
+                fields: &[&str],
+                visitor: V,
             ) -> Result<V::Value> {
                 self.parser.deserialize_struct("", fields, visitor)
             }

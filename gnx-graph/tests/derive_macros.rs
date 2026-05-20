@@ -1,5 +1,5 @@
-use gnx_graph::util::{LifetimeFree, impl_lifetime_free, cast};
 use gnx_graph::Leaf;
+use gnx_graph::util::{LifetimeFree, cast, impl_lifetime_free};
 
 #[derive(LifetimeFree)]
 #[allow(dead_code)]

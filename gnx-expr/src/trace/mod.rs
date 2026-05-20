@@ -1,10 +1,10 @@
+mod capture;
 mod cell;
 mod context;
-mod capture;
 
+pub use capture::{Capture, TracerKey};
 pub use cell::{CellKey, TraceCell, TraceCellRef, TracerCell};
 pub use context::{CellUpdate, ContextID, TraceContext, TraceContextGuard};
-pub use capture::{Capture, TracerKey};
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -13,9 +13,7 @@ use std::sync::{Arc, OnceLock};
 use crate::Op;
 use crate::util::DgArc;
 
-pub use super::value::{
-    ConcreteValue, Generic, Traceable, Value, ValueInfo,
-};
+pub use super::value::{ConcreteValue, Generic, Traceable, Value, ValueInfo};
 
 /// Where a traced value is produced relative to an [`Invocation`].
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -69,11 +67,10 @@ pub struct TraceRef(pub(crate) Arc<Trace>);
 impl Debug for TraceRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0.inner {
-            TraceInner::Abstract(AbstractTrace::Placeholder) => {
-                f.debug_struct("Placeholder")
-                    .field("ctx", &self.0.context_id)
-                    .finish()
-            }
+            TraceInner::Abstract(AbstractTrace::Placeholder) => f
+                .debug_struct("Placeholder")
+                .field("ctx", &self.0.context_id)
+                .finish(),
             TraceInner::Abstract(AbstractTrace::Computed {
                 invocation,
                 position,
@@ -123,8 +120,13 @@ impl TraceRef {
         }))
     }
 
-    pub fn produced(abstract_: bool, invocation: Arc<Invocation>, position: Position,
-                    info: ValueInfo, context_id: ContextID) -> Self {
+    pub fn produced(
+        abstract_: bool,
+        invocation: Arc<Invocation>,
+        position: Position,
+        info: ValueInfo,
+        context_id: ContextID,
+    ) -> Self {
         if abstract_ {
             TraceRef(Arc::new(Trace {
                 inner: TraceInner::Abstract(AbstractTrace::Computed {
@@ -147,7 +149,9 @@ impl TraceRef {
         }
     }
 
-    pub fn context_id(&self) -> ContextID { self.0.context_id }
+    pub fn context_id(&self) -> ContextID {
+        self.0.context_id
+    }
 
     fn is_abstract(&self) -> bool {
         matches!(self.0.inner, TraceInner::Abstract(_))
@@ -159,10 +163,7 @@ impl TraceRef {
                 invocation,
                 position,
             }) => Some((invocation.clone(), *position)),
-            TraceInner::Updatable(u) => u
-                .invocation
-                .get()
-                .map(|inv| (inv, u.position)),
+            TraceInner::Updatable(u) => u.invocation.get().map(|inv| (inv, u.position)),
             TraceInner::Abstract(AbstractTrace::Placeholder) | TraceInner::Constant(_) => None,
         }
     }
@@ -350,7 +351,8 @@ impl Invocation {
                     info,
                     context_id,
                 ))
-            }).collect()
+            })
+            .collect()
     }
 }
 
@@ -369,7 +371,10 @@ impl From<&TraceRef> for &Tracer<Generic> {
 }
 impl From<TraceRef> for Tracer<Generic> {
     fn from(t: TraceRef) -> Self {
-        Tracer { trace: t, _phantom: PhantomData }
+        Tracer {
+            trace: t,
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -381,14 +386,9 @@ impl<T: Traceable> Tracer<T> {
         }
     }
 
-
-
     pub fn placeholder(info: T::Info) -> Self {
         let context_id = TraceContext::current_id();
-        Tracer::unchecked_new(TraceRef::placeholder(
-            ValueInfo::new(info),
-            context_id,
-        ))
+        Tracer::unchecked_new(TraceRef::placeholder(ValueInfo::new(info), context_id))
     }
 
     pub fn concrete(value: T::Concrete, info: T::Info) -> Self {
@@ -404,10 +404,18 @@ impl<T: Traceable> Tracer<T> {
         self.trace.info().downcast().unwrap()
     }
 
-    pub fn trace_ref(&self) -> &TraceRef { &self.trace }
-    pub fn into_trace_ref(self) -> TraceRef { self.trace }
-    pub fn is_abstract(&self) -> bool { self.trace.is_abstract() }
-    pub fn context_id(&self) -> ContextID { self.trace.context_id() }
+    pub fn trace_ref(&self) -> &TraceRef {
+        &self.trace
+    }
+    pub fn into_trace_ref(self) -> TraceRef {
+        self.trace
+    }
+    pub fn is_abstract(&self) -> bool {
+        self.trace.is_abstract()
+    }
+    pub fn context_id(&self) -> ContextID {
+        self.trace.context_id()
+    }
 
     pub unsafe fn cast_unchecked<U: Traceable>(self) -> Tracer<U> {
         Tracer::unchecked_new(self.trace)
@@ -443,11 +451,9 @@ impl<T: Traceable> Tracer<T> {
     }
 
     pub fn try_concrete(&self) -> Option<&T::Concrete> {
-        self.trace.try_concrete().map(|value| {
-            value
-                .downcast()
-                .expect("Tracer contained incorrect type")
-        })
+        self.trace
+            .try_concrete()
+            .map(|value| value.downcast().expect("Tracer contained incorrect type"))
     }
 }
 
@@ -462,6 +468,8 @@ impl<T: Traceable> Clone for Tracer<T> {
 
 impl<T: Traceable> Debug for Tracer<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Tracer").field("trace", &self.trace).finish()
+        f.debug_struct("Tracer")
+            .field("trace", &self.trace)
+            .finish()
     }
 }

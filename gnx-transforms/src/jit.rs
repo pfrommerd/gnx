@@ -1,9 +1,8 @@
 use crate::{Callable, Jitable};
 
-pub use gnx_derive::{jit, transform};
+pub use gnx_derive::{jit, jittable, transform};
 
 use gnx_graph::Graph;
-
 
 pub struct Jit<F> {
     func: F,

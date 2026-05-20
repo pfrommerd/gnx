@@ -1,4 +1,4 @@
-use crate::{Graph, Leaf, Filter};
+use crate::{Filter, Graph, Leaf};
 
 use super::dag::*;
 

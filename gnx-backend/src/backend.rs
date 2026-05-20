@@ -1,9 +1,9 @@
 use gnx_expr::{Expr, Value};
 
-use std::ops::Deref;
-use std::sync::{Arc, Mutex};
 use std::fmt::{Debug, Display};
 use std::hash::{Hash, Hasher};
+use std::ops::Deref;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub trait DeviceImpl: Debug + Display + Send + Sync {
@@ -43,9 +43,7 @@ impl Display for DeviceHandle {
     }
 }
 
-pub struct ExecOpts {
-
-}
+pub struct ExecOpts {}
 
 // Re-export the Device type from the device module.
 pub use crate::device::Device;
@@ -55,8 +53,12 @@ pub trait BackendImpl: Debug + Display + Send + Sync {
     fn name(&self) -> &str;
     fn devices(&self) -> Result<Vec<Device>, std::io::Error>;
 
-    async fn execute(&self, expr: Expr, args: Vec<Value>, opts: ExecOpts)
-        -> Result<Vec<Value>, std::io::Error>;
+    async fn execute(
+        &self,
+        expr: Expr,
+        args: Vec<Value>,
+        opts: ExecOpts,
+    ) -> Result<Vec<Value>, std::io::Error>;
 }
 
 pub type BackendHandle = Arc<dyn BackendImpl>;
@@ -112,7 +114,6 @@ impl Backend {
         self.0.execute(expr, args, opts).await
     }
 }
-
 
 static BACKENDS: Mutex<Vec<Backend>> = Mutex::new(Vec::new());
 

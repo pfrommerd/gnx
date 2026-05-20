@@ -10,7 +10,6 @@ impl Display for SampleInfo {
     }
 }
 
-
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SampleValue;
 

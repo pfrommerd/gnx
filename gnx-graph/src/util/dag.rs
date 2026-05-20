@@ -280,7 +280,7 @@ impl<L: Leaf, I: Leaf> Builder<L> for DagBuilder<I> {
                 source
                     .leaf(())?
                     .try_into_value()
-                    .map_err(|_| S::Error::invalid_leaf())?
+                    .map_err(|_| S::Error::invalid_leaf())?,
             ))),
             Static(v) => {
                 source.empty_leaf()?;

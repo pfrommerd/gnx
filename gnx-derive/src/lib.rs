@@ -1,6 +1,6 @@
 use proc_macro::TokenStream as ProcTokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{DeriveInput, parse_macro_input};
 
 mod leaf;
 mod lifetime_free;
@@ -20,6 +20,11 @@ pub fn impl_lifetime_free(input: ProcTokenStream) -> ProcTokenStream {
 #[proc_macro]
 pub fn jit(input: ProcTokenStream) -> ProcTokenStream {
     transforms::jit(input)
+}
+
+#[proc_macro]
+pub fn jittable(input: ProcTokenStream) -> ProcTokenStream {
+    transforms::jittable(input)
 }
 
 #[proc_macro_attribute]

@@ -3,8 +3,8 @@
 use super::*;
 
 mod containers;
-mod refs;
 mod expr;
+mod refs;
 
 impl_leaf!(());
 impl_leaf!(char);
@@ -77,9 +77,10 @@ where
         ctx: &mut GraphContext,
     ) -> Result<N, S::Error> {
         match self {
-            NodeBuilder::Leaf => Ok(
-                L::try_into_value::<N>(source.leaf(())?).map_err(|_| S::Error::invalid_leaf())?
-            ),
+            NodeBuilder::Leaf => {
+                Ok(L::try_into_value::<N>(source.leaf(())?)
+                    .map_err(|_| S::Error::invalid_leaf())?)
+            }
             NodeBuilder::Node(b) => b.build(source, ctx),
         }
     }

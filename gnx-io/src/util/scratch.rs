@@ -1,17 +1,17 @@
 use std::cell::{Ref, RefCell};
 use std::marker::PhantomData;
-use std::rc::Rc;
 use std::ops::Deref;
+use std::rc::Rc;
 
 // A scratch buffer is one that is "append-only"
 // in that it can be appended to "immutably."
 // T is the underlying data contained in the buffer
 // and the type of reference that can be taken, either u8 or str
-pub struct ScratchBuffer<T: ?Sized>  {
+pub struct ScratchBuffer<T: ?Sized> {
     data: RefCell<Vec<u8>>,
     // A token is used to track whether there are outstanding
     // Ranges referencing the existing data. If there are not,
-    // and start() is called, we can clear the data and reuse the 
+    // and start() is called, we can clear the data and reuse the
     // existing bufer capacity for new data
     token: Rc<()>,
     _marker: PhantomData<T>,
@@ -72,7 +72,6 @@ impl<'buf, T: ?Sized> ScratchRangeBuilder<'buf, T> {
     }
 }
 
-
 // A valid range of a ScratchBuffer.
 // Note that this does not actually borrow the buffer,
 // but merely references the range. This way the buffer
@@ -109,7 +108,7 @@ impl<'buf, T: ?Sized> ScratchRange<'buf, T> {
         // Consume our token on the buffer
         std::mem::drop(self.token);
         // If the only other person with a token is the buffer itself,
-        // borrow the buffer mutably and swap it for a new buffer 
+        // borrow the buffer mutably and swap it for a new buffer
         // so we don't have to copy the data.
         if self.start == 0 && Rc::strong_count(&self.buffer.token) == 1 {
             let mut buf = self.buffer.data.borrow_mut();
@@ -166,9 +165,10 @@ impl<'buf> Deref for ScratchSlice<'buf, str> {
     type Target = str;
     fn deref(&self) -> &Self::Target {
         let buf: &Vec<u8> = self.data.deref();
-        unsafe { std::str::from_utf8_unchecked(buf.get_unchecked(self.range.start..self.range.end)) }
+        unsafe {
+            std::str::from_utf8_unchecked(buf.get_unchecked(self.range.start..self.range.end))
+        }
     }
 }
 
-impl<'buf> ScratchSlice<'buf, str> {
-}
+impl<'buf> ScratchSlice<'buf, str> {}

@@ -1,27 +1,32 @@
 pub use gnx_derive::{Graph, Leaf, impl_leaf};
 use std::fmt::Display;
 
+mod context;
+mod filters;
 mod path;
 mod source;
-mod context;
-mod visitors;
 mod views;
-mod filters;
+mod visitors;
 
+pub use context::*;
+pub use filters::*;
 pub use path::*;
 pub use source::*;
-pub use context::*;
-pub use visitors::*;
 pub use views::*;
-pub use filters::*;
+pub use visitors::*;
 
-pub trait Error : Sized + std::error::Error {
+pub trait Error: Sized + std::error::Error {
     fn custom<T: Display>(msg: T) -> Self;
 
-
-    fn invalid_type(unexp_value: Option<impl Display>, unexp_type: impl Display, expected: impl Display) -> Self {
+    fn invalid_type(
+        unexp_value: Option<impl Display>,
+        unexp_type: impl Display,
+        expected: impl Display,
+    ) -> Self {
         let _ = unexp_value;
-        Self::custom(format!("Invalid type, got {unexp_type}, expected {expected}"))
+        Self::custom(format!(
+            "Invalid type, got {unexp_type}, expected {expected}"
+        ))
     }
     fn invalid_leaf() -> Self {
         Self::custom("Invalid leaf")
@@ -30,14 +35,28 @@ pub trait Error : Sized + std::error::Error {
         Self::custom(format!("Invalid ID: {id}"))
     }
 
-    fn missing_leaf() -> Self { Self::custom("Missing leaf") }
-    fn missing_static_leaf() -> Self { Self::custom("Missing static leaf") }
-    fn missing_node() -> Self { Self::custom("Missing node") }
-    fn missing_child(key: Key) -> Self { Self::custom(format!("Missing child {key}")) }
+    fn missing_leaf() -> Self {
+        Self::custom("Missing leaf")
+    }
+    fn missing_static_leaf() -> Self {
+        Self::custom("Missing static leaf")
+    }
+    fn missing_node() -> Self {
+        Self::custom("Missing node")
+    }
+    fn missing_child(key: Key) -> Self {
+        Self::custom(format!("Missing child {key}"))
+    }
 
-    fn expected_leaf() -> Self { Self::custom("Expected leaf") }
-    fn expected_static_leaf() -> Self { Self::custom("Expected static leaf") }
-    fn expected_node() -> Self { Self::custom("Expected node") }
+    fn expected_leaf() -> Self {
+        Self::custom("Expected leaf")
+    }
+    fn expected_static_leaf() -> Self {
+        Self::custom("Expected static leaf")
+    }
+    fn expected_node() -> Self {
+        Self::custom("Expected node")
+    }
 }
 
 pub trait Builder<L: Leaf>: Clone {
@@ -97,7 +116,6 @@ pub trait Node: Graph {
         C: ChildrenConsumer<Self, L>;
 }
 
-
 // A typed view of a graph.
 // All graph types get a blanket implementation for all leaf types.
 pub trait TypedGraph<L: Leaf>: Graph {
@@ -108,7 +126,7 @@ pub trait TypedGraph<L: Leaf>: Graph {
 
 impl<L: Leaf, G: Graph> TypedGraph<L> for G {}
 
-pub trait OwnedGraph: Graph<Owned=Self> + 'static {}
+pub trait OwnedGraph: Graph<Owned = Self> + 'static {}
 
 pub trait Leaf: OwnedGraph {
     type Ref<'l>: Copy;
@@ -119,7 +137,6 @@ pub trait Leaf: OwnedGraph {
 
     fn try_into_value<V: 'static>(self) -> Result<V, Self>;
 }
-
 
 pub enum LeafCow<'l, L: Leaf + 'l> {
     Borrowed(L::Ref<'l>),

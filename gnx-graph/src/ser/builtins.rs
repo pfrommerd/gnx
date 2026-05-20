@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use paste;
+use std::collections::HashMap;
 
 use super::{Serialize, Serializer};
 
@@ -24,7 +24,6 @@ impl Serialize for String {
         serializer.serialize_str(self)
     }
 }
-
 
 impl<T: Serialize> Serialize for Vec<T> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

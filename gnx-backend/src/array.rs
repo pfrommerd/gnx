@@ -1,6 +1,5 @@
-use std::fmt::{Debug, Display};
 use ordered_float::OrderedFloat;
-
+use std::fmt::{Debug, Display};
 
 use gnx_expr::{ConcreteValue, Traceable, Tracer, TracerCell, ValueInfo};
 
@@ -292,7 +291,6 @@ impl Traceable for Array {
     type Info = ArrayInfo;
 }
 
-
 impl Array {
     pub fn dtype(&self) -> DType {
         self.0.info().dtype
@@ -301,8 +299,12 @@ impl Array {
         &self.0.info().shape
     }
 
-    pub fn tracer(&self) -> &Tracer<Array> { &self.0 }
-    pub fn into_tracer(self) -> Tracer<Array> { self.0 }
+    pub fn tracer(&self) -> &Tracer<Array> {
+        &self.0
+    }
+    pub fn into_tracer(self) -> Tracer<Array> {
+        self.0
+    }
 }
 
 /// Mutable array traced via [`TracerCell`] (JAX-style ref).
@@ -334,8 +336,12 @@ impl ArrayRef {
         self.0.get().info().shape.clone()
     }
 
-    pub fn tracer(&self) -> &TracerCell<Array> { &self.0 }
-    pub fn into_tracer(self) -> TracerCell<Array> { self.0 }
+    pub fn tracer(&self) -> &TracerCell<Array> {
+        &self.0
+    }
+    pub fn into_tracer(self) -> TracerCell<Array> {
+        self.0
+    }
 }
 
 // SAFETY: ArrayRef and TracerCell<Array> have the same layout.

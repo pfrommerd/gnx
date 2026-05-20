@@ -1,5 +1,5 @@
-use crate::Expr;
 use super::value::ValueInfo;
+use crate::Expr;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -29,7 +29,7 @@ impl std::fmt::Display for Attr {
                     write!(f, "{}", attr)?;
                 }
                 write!(f, "]")
-            },
+            }
             Attr::Map(map) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in map.iter().enumerate() {
@@ -43,7 +43,6 @@ impl std::fmt::Display for Attr {
         }
     }
 }
-
 
 pub type AttrMap = BTreeMap<String, Attr>;
 pub type AttrList = Vec<Attr>;

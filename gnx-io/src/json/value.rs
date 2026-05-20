@@ -1,11 +1,10 @@
 use gnx_graph::{
-    Error, Serialize, Serializer, Expecting,
-    Deserialize, Deserializer, DataVisitor,
-    SeqAccess, MapAccess
+    DataVisitor, Deserialize, Deserializer, Error, Expecting, MapAccess, SeqAccess, Serialize,
+    Serializer,
 };
 
-use ordered_float::NotNan;
 use super::JsonError;
+use ordered_float::NotNan;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum N {
@@ -16,7 +15,7 @@ pub enum N {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Number {
-    pub kind: N
+    pub kind: N,
 }
 impl std::fmt::Debug for Number {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -30,7 +29,9 @@ impl std::fmt::Debug for Number {
 
 impl From<f64> for Number {
     fn from(value: f64) -> Self {
-        Number { kind: N::Float(NotNan::new(value).unwrap()) }
+        Number {
+            kind: N::Float(NotNan::new(value).unwrap()),
+        }
     }
 }
 
@@ -124,26 +125,19 @@ impl From<f64> for Value {
     }
 }
 
-
 impl Serialize for Value {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Value::Null => serializer.serialize_none(),
             Value::Bool(value) => serializer.serialize_bool(*value),
-            Value::Number(value) => {
-                match value.kind {
-                    N::Float(value) => serializer.serialize_f64(value.into_inner()),
-                    N::Pos(value) => serializer.serialize_u64(value),
-                    N::Neg(value) => serializer.serialize_i64(value),
-                }
+            Value::Number(value) => match value.kind {
+                N::Float(value) => serializer.serialize_f64(value.into_inner()),
+                N::Pos(value) => serializer.serialize_u64(value),
+                N::Neg(value) => serializer.serialize_i64(value),
             },
             Value::String(value) => serializer.serialize_str(value),
-            Value::Array(value) => {
-                serializer.collect_seq(value.iter())
-            },
-            Value::Object(value) => {
-                serializer.collect_map(value.iter())
-            },
+            Value::Array(value) => serializer.collect_seq(value.iter()),
+            Value::Object(value) => serializer.collect_map(value.iter()),
         }
     }
 }

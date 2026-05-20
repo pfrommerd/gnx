@@ -1,4 +1,7 @@
-use crate::{json::Number, util::{ScratchBuffer, Text, TextSource, BufferedSource}};
+use crate::{
+    json::Number,
+    util::{BufferedSource, ScratchBuffer, Text, TextSource},
+};
 
 use super::JsonError;
 
@@ -75,7 +78,7 @@ pub fn unescape(buffer: String) -> Result<String, JsonError> {
 fn skip_escaped<'src, S: TextSource<'src> + ?Sized>(source: &mut S) -> Result<(), JsonError> {
     let c = match source.next()? {
         None => return Err(JsonError::UnexpectedEOF),
-        Some(c) => c
+        Some(c) => c,
     };
     match c {
         '"' => Ok(()),
@@ -90,7 +93,7 @@ fn skip_escaped<'src, S: TextSource<'src> + ?Sized>(source: &mut S) -> Result<()
             for _ in 0..4 {
                 let c = match source.next()? {
                     Some(c) => c,
-                    None => return Err(JsonError::UnexpectedEOF)
+                    None => return Err(JsonError::UnexpectedEOF),
                 };
                 value = (value << 4) | hex_digit(c)?;
             }
@@ -103,7 +106,7 @@ fn skip_escaped<'src, S: TextSource<'src> + ?Sized>(source: &mut S) -> Result<()
                 for _ in 0..4 {
                     let c = match source.next()? {
                         Some(c) => c,
-                        None => return Err(JsonError::UnexpectedEOF)
+                        None => return Err(JsonError::UnexpectedEOF),
                     };
                     low = (low << 4) | hex_digit(c)?;
                 }
@@ -114,26 +117,34 @@ fn skip_escaped<'src, S: TextSource<'src> + ?Sized>(source: &mut S) -> Result<()
                 return Err(JsonError::InvalidEscape);
             }
             Ok(())
-        },
+        }
         _ => Err(JsonError::InvalidEscape),
     }
 }
 
 // Returns true if the number is fractional, false if it purely integer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NumberType { PureInt, SciInt, Float }
-
+pub enum NumberType {
+    PureInt,
+    SciInt,
+    Float,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ValueType {
-    String, Number, Bool, Null, Object, Array,
+    String,
+    Number,
+    Bool,
+    Null,
+    Object,
+    Array,
 }
 
 pub trait JsonSource<'src>: TextSource<'src> {
     fn peek_type(&mut self) -> Result<ValueType, JsonError> {
         let next = match self.peek()? {
             Some(c) => c,
-            None => return Err(JsonError::UnexpectedEOF)
+            None => return Err(JsonError::UnexpectedEOF),
         };
         match next {
             '"' => Ok(ValueType::String),
@@ -144,7 +155,7 @@ pub trait JsonSource<'src>: TextSource<'src> {
             'n' => Ok(ValueType::Null),
             '{' => Ok(ValueType::Object),
             '[' => Ok(ValueType::Array),
-            _ => return Err(JsonError::Unexpected(next))
+            _ => return Err(JsonError::Unexpected(next)),
         }
     }
 
@@ -152,20 +163,34 @@ pub trait JsonSource<'src>: TextSource<'src> {
     // This will verify that the value is valid JSON
     // Note that this does not recurse.
     fn skip(&mut self) -> Result<(), JsonError> {
-        let consume_item = |s: &mut Self| -> Result<Option<ValueType>, JsonError> { match s.peek_type()?{
-            ValueType::String => { s.skip_string()?; Ok(None) },
-            ValueType::Number => { s.skip_number()?; Ok(None) },
-            ValueType::Bool=> { s.skip_bool()?; Ok(None) },
-            ValueType::Null => { s.skip_null()?; Ok(None) },
-            ValueType::Object => {
-                s.consume_object_start()?;
-                Ok(Some(ValueType::Object))
-            },
-            ValueType::Array => {
-                s.consume_array_start()?;
-                Ok(Some(ValueType::Array))
-            },
-        }};
+        let consume_item = |s: &mut Self| -> Result<Option<ValueType>, JsonError> {
+            match s.peek_type()? {
+                ValueType::String => {
+                    s.skip_string()?;
+                    Ok(None)
+                }
+                ValueType::Number => {
+                    s.skip_number()?;
+                    Ok(None)
+                }
+                ValueType::Bool => {
+                    s.skip_bool()?;
+                    Ok(None)
+                }
+                ValueType::Null => {
+                    s.skip_null()?;
+                    Ok(None)
+                }
+                ValueType::Object => {
+                    s.consume_object_start()?;
+                    Ok(Some(ValueType::Object))
+                }
+                ValueType::Array => {
+                    s.consume_array_start()?;
+                    Ok(Some(ValueType::Array))
+                }
+            }
+        };
         let value_type = match consume_item(self)? {
             Some(value_type) => value_type,
             None => return Ok(()),
@@ -185,8 +210,8 @@ pub trait JsonSource<'src>: TextSource<'src> {
                                 Some(nested) => {
                                     stack.push(nested);
                                     break;
-                                },
-                                None => self.consume_delim_whitespace()?
+                                }
+                                None => self.consume_delim_whitespace()?,
                             }
                         } else {
                             self.consume_object_end()?;
@@ -197,22 +222,20 @@ pub trait JsonSource<'src>: TextSource<'src> {
                             }
                         }
                     }
-                },
-                ValueType::Array => {
-                    loop {
-                        if !self.is_array_end()? {
-                            match consume_item(self)? {
-                                Some(nested) => {
-                                    stack.push(nested);
-                                    break;
-                                },
-                                None => self.consume_delim_whitespace()?
+                }
+                ValueType::Array => loop {
+                    if !self.is_array_end()? {
+                        match consume_item(self)? {
+                            Some(nested) => {
+                                stack.push(nested);
+                                break;
                             }
-                        } else {
-                            self.consume_array_end()?;
-                            if !stack.is_empty() {
-                                self.consume_delim_whitespace()?;
-                            }
+                            None => self.consume_delim_whitespace()?,
+                        }
+                    } else {
+                        self.consume_array_end()?;
+                        if !stack.is_empty() {
+                            self.consume_delim_whitespace()?;
                         }
                     }
                 },
@@ -231,9 +254,11 @@ pub trait JsonSource<'src>: TextSource<'src> {
         loop {
             let done = self.peek_and(|c| match c {
                 Some(c) => (c.is_whitespace(), !c.is_whitespace()),
-                None => (true, true)
+                None => (true, true),
             })?;
-            if done { break; }
+            if done {
+                break;
+            }
         }
         Ok(())
     }
@@ -257,23 +282,23 @@ pub trait JsonSource<'src>: TextSource<'src> {
             Some('{') => {
                 self.consume_whitespace()?;
                 Ok(())
-            },
+            }
             Some(c) => Err(JsonError::Unexpected(c)),
-            None => Err(JsonError::UnexpectedEOF)
+            None => Err(JsonError::UnexpectedEOF),
         }
     }
     fn consume_object_end(&mut self) -> Result<(), JsonError> {
         match self.next()? {
             Some('}') => Ok(()),
             Some(c) => Err(JsonError::Unexpected(c)),
-            None => Err(JsonError::UnexpectedEOF)
+            None => Err(JsonError::UnexpectedEOF),
         }
     }
     fn is_object_end(&mut self) -> Result<bool, JsonError> {
         match self.peek()? {
             Some('}') => Ok(true),
             Some(_) => Ok(false),
-            None => Err(JsonError::UnexpectedEOF)
+            None => Err(JsonError::UnexpectedEOF),
         }
     }
     // Match "key" WHITESPACE ":" WHITESPACE
@@ -281,13 +306,13 @@ pub trait JsonSource<'src>: TextSource<'src> {
         match self.next()? {
             Some('"') => (),
             Some(c) => return Err(JsonError::Unexpected(c)),
-            None => return Err(JsonError::UnexpectedEOF)
+            None => return Err(JsonError::UnexpectedEOF),
         }
         self.consume_whitespace()?;
         match self.next()? {
             Some(':') => (),
             Some(c) => return Err(JsonError::Unexpected(c)),
-            None => return Err(JsonError::UnexpectedEOF)
+            None => return Err(JsonError::UnexpectedEOF),
         }
         self.consume_whitespace()?;
         Ok(())
@@ -297,7 +322,7 @@ pub trait JsonSource<'src>: TextSource<'src> {
         match self.next()? {
             Some(':') => (),
             Some(c) => return Err(JsonError::Unexpected(c)),
-            None => return Err(JsonError::UnexpectedEOF)
+            None => return Err(JsonError::UnexpectedEOF),
         }
         self.consume_whitespace()?;
         Ok(())
@@ -309,23 +334,23 @@ pub trait JsonSource<'src>: TextSource<'src> {
             Some('[') => {
                 self.consume_whitespace()?;
                 Ok(())
-            },
+            }
             Some(c) => Err(JsonError::Unexpected(c)),
-            None => Err(JsonError::UnexpectedEOF)
+            None => Err(JsonError::UnexpectedEOF),
         }
     }
     fn consume_array_end(&mut self) -> Result<(), JsonError> {
         match self.next()? {
             Some(']') => Ok(()),
             Some(c) => Err(JsonError::Unexpected(c)),
-            None => Err(JsonError::UnexpectedEOF)
+            None => Err(JsonError::UnexpectedEOF),
         }
     }
     fn is_array_end(&mut self) -> Result<bool, JsonError> {
         match self.peek()? {
             Some(']') => Ok(true),
             Some(_) => Ok(false),
-            None => Err(JsonError::UnexpectedEOF)
+            None => Err(JsonError::UnexpectedEOF),
         }
     }
 
@@ -336,43 +361,47 @@ pub trait JsonSource<'src>: TextSource<'src> {
         let number_type = buffered.skip_number()?;
         let text = buffered.into_buffer();
         let text = text.borrow();
-        let opt = || -> Result<Number, JsonError> { match number_type {
-            NumberType::PureInt => {
-                if text.starts_with('-') {
-                    text.parse::<i64>().map(Number::from)
-                        .map_err(JsonError::from)
-                } else {
-                    text.parse::<u64>().map(Number::from)
-                        .map_err(JsonError::from)
+        let opt = || -> Result<Number, JsonError> {
+            match number_type {
+                NumberType::PureInt => {
+                    if text.starts_with('-') {
+                        text.parse::<i64>()
+                            .map(Number::from)
+                            .map_err(JsonError::from)
+                    } else {
+                        text.parse::<u64>()
+                            .map(Number::from)
+                            .map_err(JsonError::from)
+                    }
                 }
-            },
-            NumberType::SciInt => {
-                let exp_offset = text.find('e').or_else(|| text.find('E')).unwrap();
-                // parse the exponent part
-                let exp: u32 = match text[exp_offset + 1..].parse() {
-                    Ok(exp) => exp,
-                    Err(_) => return Err(JsonError::InvalidNumber)
-                };
-                // parse the pre-exponent part
-                let mantisa = &text[..exp_offset];
-                if mantisa.starts_with('-') {
-                    let mantisa = mantisa.parse::<i64>()?;
-                    Ok(Number::from(mantisa * 10_i64.pow(exp)))
-                } else {
-                    let mantisa = mantisa.parse::<u64>()?;
-                    Ok(Number::from(mantisa * 10_u64.pow(exp)))
+                NumberType::SciInt => {
+                    let exp_offset = text.find('e').or_else(|| text.find('E')).unwrap();
+                    // parse the exponent part
+                    let exp: u32 = match text[exp_offset + 1..].parse() {
+                        Ok(exp) => exp,
+                        Err(_) => return Err(JsonError::InvalidNumber),
+                    };
+                    // parse the pre-exponent part
+                    let mantisa = &text[..exp_offset];
+                    if mantisa.starts_with('-') {
+                        let mantisa = mantisa.parse::<i64>()?;
+                        Ok(Number::from(mantisa * 10_i64.pow(exp)))
+                    } else {
+                        let mantisa = mantisa.parse::<u64>()?;
+                        Ok(Number::from(mantisa * 10_u64.pow(exp)))
+                    }
                 }
-            },
-            _ => Err(JsonError::InvalidNumber),
-        }}();
+                _ => Err(JsonError::InvalidNumber),
+            }
+        }();
         match opt {
             Ok(number) => Ok(number),
-            // We cannot parse as a number, so fallback 
+            // We cannot parse as a number, so fallback
             // to a floating point number
-            Err(_) => { 
-                text.parse::<f64>().map(Number::from)
-                    .map_err(JsonError::from)
-            }
+            Err(_) => text
+                .parse::<f64>()
+                .map(Number::from)
+                .map_err(JsonError::from),
         }
     }
 
@@ -383,9 +412,9 @@ pub trait JsonSource<'src>: TextSource<'src> {
         let first_digit = self.peek_and(|c| match c {
             Some(c @ '0'..='9') => (true, Ok(c as u8 - b'0')),
             Some(c) => (false, Err(JsonError::Unexpected(c))),
-            None => (false, Err(JsonError::UnexpectedEOF))
+            None => (false, Err(JsonError::UnexpectedEOF)),
         })??;
-        // Ensure that the first digit is 0, 
+        // Ensure that the first digit is 0,
         // we cannot have a number like 01 or 001.
         if first_digit == 0 && matches!(self.peek()?, Some('0'..='9')) {
             return Err(JsonError::InvalidNumber);
@@ -396,7 +425,9 @@ pub trait JsonSource<'src>: TextSource<'src> {
                 Some('0'..='9') => (true, true),
                 _ => (false, false),
             })?;
-            if !is_digit { break; }
+            if !is_digit {
+                break;
+            }
         }
         // check for a fractional part
         let mut has_fractional = self.peek_and(|c| match c {
@@ -408,14 +439,16 @@ pub trait JsonSource<'src>: TextSource<'src> {
             self.peek_and(|c| match c {
                 Some('0'..='9') => (true, Ok(())),
                 Some(c) => (false, Err(JsonError::Unexpected(c))),
-                None => (false, Err(JsonError::UnexpectedEOF))
+                None => (false, Err(JsonError::UnexpectedEOF)),
             })??;
             loop {
                 let is_digit = self.peek_and(|c| match c {
                     Some('0'..='9') => (true, true),
                     _ => (false, false),
                 })?;
-                if !is_digit { break; }
+                if !is_digit {
+                    break;
+                }
             }
         }
         // check for an exponent part
@@ -437,7 +470,7 @@ pub trait JsonSource<'src>: TextSource<'src> {
                 Some('0') => (true, Ok(false)),
                 Some('1'..='9') => (true, Ok(true)),
                 Some(c) => (false, Err(JsonError::Unexpected(c))),
-                None => (false, Err(JsonError::UnexpectedEOF))
+                None => (false, Err(JsonError::UnexpectedEOF)),
             })??;
             // If we have a negative exponent part,
             // we do not have a "scientific" integer.
@@ -449,7 +482,9 @@ pub trait JsonSource<'src>: TextSource<'src> {
                     Some('0'..='9') => (true, true),
                     _ => (false, false),
                 })?;
-                if !is_digit { break; }
+                if !is_digit {
+                    break;
+                }
             }
         }
         Ok(match (has_fractional, has_exponent) {
@@ -460,14 +495,18 @@ pub trait JsonSource<'src>: TextSource<'src> {
     }
 
     fn consume_bool(&mut self) -> Result<bool, JsonError> {
-        // check if the next 5 characters start with "true" 
+        // check if the next 5 characters start with "true"
         // or are exactly "false"
         let b = self.peek_chars_and(5, |s| {
             let maybe_true = s.len() >= 4 && &s[..4] == "true";
             let maybe_false = s == "false";
-            if maybe_true { (4, Ok(true)) }
-            else if maybe_false { (5, Ok(false)) }
-            else { (0, Err(JsonError::Unexpected(s.chars().next().unwrap()))) }
+            if maybe_true {
+                (4, Ok(true))
+            } else if maybe_false {
+                (5, Ok(false))
+            } else {
+                (0, Err(JsonError::Unexpected(s.chars().next().unwrap())))
+            }
         })??;
         Ok(b)
     }
@@ -480,8 +519,11 @@ pub trait JsonSource<'src>: TextSource<'src> {
     fn consume_null(&mut self) -> Result<(), JsonError> {
         // check if the next 4 characters are exactly "null"
         self.peek_chars_and(4, |s| {
-            if s == "null" { (4, Ok(())) }
-            else { (0, Err(JsonError::Unexpected(s.chars().next().unwrap()))) }
+            if s == "null" {
+                (4, Ok(()))
+            } else {
+                (0, Err(JsonError::Unexpected(s.chars().next().unwrap())))
+            }
         })??;
         Ok(())
     }
@@ -491,11 +533,20 @@ pub trait JsonSource<'src>: TextSource<'src> {
     }
 
     // Consume a string of escaped text, returning the unescaped version.
-    fn consume_string<'tmp>(&mut self, scratch: &'tmp ScratchBuffer<str>) -> Result<Text<'src, 'tmp>, JsonError>
-                        where Self: 'tmp {
+    fn consume_string<'tmp>(
+        &mut self,
+        scratch: &'tmp ScratchBuffer<str>,
+    ) -> Result<Text<'src, 'tmp>, JsonError>
+    where
+        Self: 'tmp,
+    {
         match self.next()? {
-            Some(c) => if c != '"' { return Err(JsonError::Unexpected(c)); },
-            None => return Err(JsonError::UnexpectedEOF)
+            Some(c) => {
+                if c != '"' {
+                    return Err(JsonError::Unexpected(c));
+                }
+            }
+            None => return Err(JsonError::UnexpectedEOF),
         }
         let (buffered, escaped) = {
             let mut buf = self.buffering(scratch);
@@ -504,7 +555,7 @@ pub trait JsonSource<'src>: TextSource<'src> {
             loop {
                 let c = match buf.next()? {
                     Some(c) => c,
-                    None => return Err(JsonError::UnexpectedEOF)
+                    None => return Err(JsonError::UnexpectedEOF),
                 };
                 if !escaping {
                     if c == '\\' {
@@ -525,7 +576,7 @@ pub trait JsonSource<'src>: TextSource<'src> {
         let (buffered, _) = buffered.pop();
         // If no escaping, return the buffered text as-is
         if !escaped {
-            return Ok(buffered)
+            return Ok(buffered);
         } else {
             // Convert the buffer into a String and consume the rest
             // using special escape handling rules.
@@ -536,17 +587,25 @@ pub trait JsonSource<'src>: TextSource<'src> {
     // Skip a string of escaped text, erroring if there is an issue with the escaping.
     fn skip_string(&mut self) -> Result<(), JsonError> {
         match self.next()? {
-            Some(c) => if c != '"' { return Err(JsonError::Unexpected(c)); },
-            None => return Err(JsonError::UnexpectedEOF)
+            Some(c) => {
+                if c != '"' {
+                    return Err(JsonError::Unexpected(c));
+                }
+            }
+            None => return Err(JsonError::UnexpectedEOF),
         }
         loop {
             let c = match self.next()? {
                 Some(c) => c,
-                None => return Err(JsonError::UnexpectedEOF)
+                None => return Err(JsonError::UnexpectedEOF),
             };
-            if c == '\\' { skip_escaped(self)?; }
-            else if c == '"' { break; }
-            else if c <= '\u{1f}' { return Err(JsonError::Unexpected(c)); }
+            if c == '\\' {
+                skip_escaped(self)?;
+            } else if c == '"' {
+                break;
+            } else if c <= '\u{1f}' {
+                return Err(JsonError::Unexpected(c));
+            }
         }
         Ok(())
     }

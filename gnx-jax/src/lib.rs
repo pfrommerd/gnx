@@ -1,16 +1,15 @@
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::{
-    collections::HashMap, sync::{Arc, Mutex, OnceLock, Weak as WeakArc}
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock, Weak as WeakArc},
 };
-use std::hash::{Hash, Hasher, DefaultHasher};
 
+use pyo3::prelude::*;
 use std::fmt::{Debug, Display};
 use uuid::Uuid;
-use pyo3::prelude::*;
 
+use gnx::backend::{Backend, BackendHandle, BackendImpl, Device, DeviceImpl, ExecOpts};
 use gnx::expr::{Expr, Value};
-use gnx::backend::{
-    Backend, BackendImpl, DeviceImpl, Device, BackendHandle, ExecOpts
-};
 
 #[derive(Debug)]
 pub struct JaxDevice {
@@ -24,10 +23,10 @@ pub struct JaxDevice {
 
 impl Display for JaxDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "JaxDevice(kind={}, id={}, jax_device={})",
-            self.hardware_kind,
-            self.hardware_id,
-            self.jax_device
+        write!(
+            f,
+            "JaxDevice(kind={}, id={}, jax_device={})",
+            self.hardware_kind, self.hardware_id, self.jax_device
         )
     }
 }
@@ -65,10 +64,18 @@ impl JaxDevice {
 }
 
 impl DeviceImpl for JaxDevice {
-    fn uuid(&self) -> &Uuid { &self.uuid }
-    fn platform(&self) -> &str { &self.platform }
-    fn hardware_id(&self) -> &str { &self.hardware_id }
-    fn hardware_kind(&self) -> &str { &self.hardware_kind }
+    fn uuid(&self) -> &Uuid {
+        &self.uuid
+    }
+    fn platform(&self) -> &str {
+        &self.platform
+    }
+    fn hardware_id(&self) -> &str {
+        &self.hardware_id
+    }
+    fn hardware_kind(&self) -> &str {
+        &self.hardware_kind
+    }
 
     fn backend(&self) -> &Backend {
         let backend: &BackendHandle = &self.backend;
@@ -145,8 +152,12 @@ impl BackendImpl for JaxBackend {
         Ok(devices)
     }
 
-    async fn execute(&self, _expr: Expr, _args: Vec<Value>, _opts: ExecOpts)
-            -> Result<Vec<Value>, std::io::Error> {
+    async fn execute(
+        &self,
+        _expr: Expr,
+        _args: Vec<Value>,
+        _opts: ExecOpts,
+    ) -> Result<Vec<Value>, std::io::Error> {
         todo!()
     }
 }

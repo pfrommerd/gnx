@@ -1,4 +1,4 @@
-use gnx_graph::util::{cast, LifetimeFree};
+use gnx_graph::util::{LifetimeFree, cast};
 
 #[test]
 fn cast_primitives() {

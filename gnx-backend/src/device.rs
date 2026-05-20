@@ -1,8 +1,8 @@
-use gnx_expr::{Traceable, Tracer, ValueInfo, ConcreteValue, Value, Expr};
 use crate::backend::{DeviceHandle, ExecOpts};
+use gnx_expr::{ConcreteValue, Expr, Traceable, Tracer, Value, ValueInfo};
 
-use std::hash::{Hash, Hasher};
 use std::fmt::Display;
+use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -34,10 +34,14 @@ impl Display for Device {
 }
 
 impl From<Device> for Tracer<Device> {
-    fn from(value: Device) -> Self { value.0 }
+    fn from(value: Device) -> Self {
+        value.0
+    }
 }
 impl From<Tracer<Device>> for Device {
-    fn from(value: Tracer<Device>) -> Self { Device(value) }
+    fn from(value: Tracer<Device>) -> Self {
+        Device(value)
+    }
 }
 
 // SAFETY: Device and Tracer<Device> have the same layout.

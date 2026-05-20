@@ -1,11 +1,10 @@
-use super::{Deserialize, Deserializer, Expecting, DataVisitor, SeqAccess, MapAccess};
+use super::{DataVisitor, Deserialize, Deserializer, Expecting, MapAccess, SeqAccess};
 
 use crate::Error;
 
-use std::marker::PhantomData;
-use std::hash::Hash;
 use std::collections::HashMap;
-
+use std::hash::Hash;
+use std::marker::PhantomData;
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Vec<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -35,10 +34,17 @@ impl<'de, K: Deserialize<'de> + Eq + Hash, V: Deserialize<'de>> Deserialize<'de>
         struct HashMapVisitor<K, V>(PhantomData<(K, V)>);
         impl<'de, K, V> Expecting for HashMapVisitor<K, V> {
             fn expected(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(fmt, "a map of {}s and {}s", std::any::type_name::<K>(), std::any::type_name::<V>())
+                write!(
+                    fmt,
+                    "a map of {}s and {}s",
+                    std::any::type_name::<K>(),
+                    std::any::type_name::<V>()
+                )
             }
         }
-        impl<'de, K: Deserialize<'de> + Eq + Hash, V: Deserialize<'de>> DataVisitor<'de> for HashMapVisitor<K, V> {
+        impl<'de, K: Deserialize<'de> + Eq + Hash, V: Deserialize<'de>> DataVisitor<'de>
+            for HashMapVisitor<K, V>
+        {
             type Value = HashMap<K, V>;
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
                 let mut h = HashMap::new();
@@ -51,7 +57,6 @@ impl<'de, K: Deserialize<'de> + Eq + Hash, V: Deserialize<'de>> Deserialize<'de>
         deserializer.deserialize_map(HashMapVisitor(PhantomData))
     }
 }
-
 
 impl<'de> Deserialize<'de> for String {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {

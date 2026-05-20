@@ -1,4 +1,4 @@
-use super::{GraphId, Error};
+use super::{Error, GraphId};
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 
@@ -40,7 +40,11 @@ impl GraphContext {
             Ok(None)
         }
     }
-    pub fn _finish<T: Clone + 'static, E: Error>(&mut self, id: GraphId, value: T) -> Result<(), E> {
+    pub fn _finish<T: Clone + 'static, E: Error>(
+        &mut self,
+        id: GraphId,
+        value: T,
+    ) -> Result<(), E> {
         let map = self
             .maps
             .entry(TypeId::of::<T>())

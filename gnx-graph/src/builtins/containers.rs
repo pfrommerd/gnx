@@ -98,7 +98,6 @@ impl<T: Graph> Node for Vec<T> {
     }
 }
 
-
 impl<'g, L: Leaf, B: Builder<L>> Builder<L> for Vec<B> {
     type Graph = Vec<B::Graph>;
 
@@ -122,8 +121,12 @@ impl<'g, L: Leaf, B: Builder<L>> Builder<L> for Vec<B> {
 // and lifetime-free (so that we can specialize at compile time).
 impl<A: OwnedGraph + LifetimeFree> Leaf for Vec<A> {
     type Ref<'l> = &'l Self;
-    fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
-    fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
+    fn as_ref<'l>(&'l self) -> Self::Ref<'l> {
+        self
+    }
+    fn clone_ref(v: Self::Ref<'_>) -> Self {
+        v.clone()
+    }
     fn try_from_value<V>(g: V) -> Result<Self, V> {
         cast!(g, Self)
     }

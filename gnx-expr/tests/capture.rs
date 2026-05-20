@@ -1,9 +1,9 @@
 use std::fmt::Display;
 
-use gnx_expr::{AttrMap, Capture, Effect, Op};
 use gnx_expr::trace::{
     Generic, Invocation, TraceCellRef, TraceContext, TraceObject, Tracer, ValueInfo,
 };
+use gnx_expr::{AttrMap, Capture, Effect, Op};
 use gnx_expr::{Dialect, Operation};
 
 pub struct SampleOperation {
@@ -77,32 +77,30 @@ fn capture_linear_chain() {
         vec![],
         vec![TraceObject::from(b.clone())],
         vec![sample_info()],
-    ).try_into().expect("expected exactly one output");
+    )
+    .try_into()
+    .expect("expected exactly one output");
     let [t2]: [Tracer<Generic>; 1] = Invocation::invoke(
         op("mul"),
         vec![],
-        vec![
-            TraceObject::from(t1),
-            TraceObject::from(b.clone()),
-        ],
+        vec![TraceObject::from(t1), TraceObject::from(b.clone())],
         vec![sample_info()],
-    ).try_into().expect("expected exactly one output");
+    )
+    .try_into()
+    .expect("expected exactly one output");
     let t3 = Invocation::invoke(
         op("add"),
         vec![],
-        vec![
-            TraceObject::from(a.clone()),
-            TraceObject::from(t2),
-        ],
+        vec![TraceObject::from(a.clone()), TraceObject::from(t2)],
         vec![sample_info()],
     );
 
-    let cap = Capture::from_context(ctx, &[
-        TraceObject::from(a.clone()),
-        TraceObject::from(b.clone()),
-    ], &[
-        TraceObject::from(t3[0].clone()),
-    ]).unwrap();
+    let cap = Capture::from_context(
+        ctx,
+        &[TraceObject::from(a.clone()), TraceObject::from(b.clone())],
+        &[TraceObject::from(t3[0].clone())],
+    )
+    .unwrap();
     let ex = cap.expr();
     assert_eq!(ex.closure().len(), 0);
     assert_eq!(ex.inputs().len(), 2);
@@ -125,24 +123,32 @@ fn capture_diamond_distinct_intermediate_vars() {
         vec![],
         vec![TraceObject::from(x.clone())],
         vec![sample_info()],
-    ).try_into().expect("expected exactly one output");
+    )
+    .try_into()
+    .expect("expected exactly one output");
     let [v] = Invocation::invoke(
         op("neg"),
         vec![],
         vec![TraceObject::from(x.clone())],
         vec![sample_info()],
-    ).try_into().expect("expected exactly one output");
+    )
+    .try_into()
+    .expect("expected exactly one output");
     let [w] = Invocation::invoke(
         op("add"),
         vec![],
-        vec![
-            TraceObject::from(u.clone()),
-            TraceObject::from(v.clone()),
-        ],
+        vec![TraceObject::from(u.clone()), TraceObject::from(v.clone())],
         vec![sample_info()],
-    ).try_into().expect("expected exactly one output");
+    )
+    .try_into()
+    .expect("expected exactly one output");
 
-    let cap = Capture::from_context(ctx, &[TraceObject::from(x.clone())], &[TraceObject::from(w.clone())]).unwrap();
+    let cap = Capture::from_context(
+        ctx,
+        &[TraceObject::from(x.clone())],
+        &[TraceObject::from(w.clone())],
+    )
+    .unwrap();
     assert_eq!(cap.expr().eqns().len(), 3);
     let add = cap.expr().eqns().last().unwrap();
     assert_eq!(add.inputs().len(), 2);
@@ -157,13 +163,17 @@ fn capture_reuses_var_when_same_tracer_used_twice() {
     let [w]: [Tracer<Generic>; 1] = Invocation::invoke(
         op("add"),
         vec![],
-        vec![
-            TraceObject::from(x.clone()),
-            TraceObject::from(x.clone()),
-        ],
+        vec![TraceObject::from(x.clone()), TraceObject::from(x.clone())],
         vec![sample_info()],
-    ).try_into().expect("expected exactly one output");
-    let cap = Capture::from_context(ctx, &[TraceObject::from(x.clone())], &[TraceObject::from(w.clone())]).unwrap();
+    )
+    .try_into()
+    .expect("expected exactly one output");
+    let cap = Capture::from_context(
+        ctx,
+        &[TraceObject::from(x.clone())],
+        &[TraceObject::from(w.clone())],
+    )
+    .unwrap();
     let add = cap.expr().eqns().last().unwrap();
     assert_eq!(add.inputs()[0].var(), add.inputs()[1].var());
 }
@@ -173,7 +183,12 @@ fn capture_placeholder_only() {
     let guard = TraceContext::enter();
     let ctx = guard.context();
     let x = Tracer::<Generic>::placeholder(sample_info());
-    let cap = Capture::from_context(ctx, &[TraceObject::from(x.clone())], &[TraceObject::from(x.clone())]).unwrap();
+    let cap = Capture::from_context(
+        ctx,
+        &[TraceObject::from(x.clone())],
+        &[TraceObject::from(x.clone())],
+    )
+    .unwrap();
     let ex = cap.expr();
     assert!(ex.eqns().is_empty());
     assert_eq!(ex.inputs().len(), 1);
@@ -194,14 +209,18 @@ fn capture_foreign_context_tracer_is_closure() {
     let [w]: [Tracer<Generic>; 1] = Invocation::invoke(
         op("add"),
         vec![],
-        vec![
-            TraceObject::from(a.clone()),
-            TraceObject::from(b.clone()),
-        ],
+        vec![TraceObject::from(a.clone()), TraceObject::from(b.clone())],
         vec![sample_info()],
-    ).try_into().expect("expected exactly one output");
+    )
+    .try_into()
+    .expect("expected exactly one output");
 
-    let cap = Capture::from_context(ctx, &[TraceObject::from(a.clone())], &[TraceObject::from(w.clone())]).unwrap();
+    let cap = Capture::from_context(
+        ctx,
+        &[TraceObject::from(a.clone())],
+        &[TraceObject::from(w.clone())],
+    )
+    .unwrap();
     assert_eq!(cap.expr().inputs().len(), 1);
     assert_eq!(cap.expr().closure().len(), 1);
     assert_eq!(cap.closure().len(), 1);
@@ -229,9 +248,7 @@ fn capture_trace_cell_cross_context_update_emits_gnx_update() {
 
     assert_eq!(inner_ctx.updates().len(), 1);
 
-    let cap = Capture::from_context(
-        inner_ctx, vec![], vec![],
-    ).unwrap();
+    let cap = Capture::from_context(inner_ctx, vec![], vec![]).unwrap();
     assert_eq!(cap.expr().eqns().len(), 1);
     let update_eqn = &cap.expr().eqns()[0];
     assert!(update_eqn.op().to_string().contains("update"));
