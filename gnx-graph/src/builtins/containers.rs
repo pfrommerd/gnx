@@ -122,13 +122,13 @@ impl<A: Graph<Owned=A> + LifetimeFree + 'static> Leaf for Vec<A> {
     fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
     fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
     fn try_from_value<V>(g: V) -> Result<Self, V> {
-        try_specialize!(g, Self)
+        cast!(g, Self)
     }
     fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-        try_specialize!(graph, &Self)
+        cast!(graph, &Self)
     }
     fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-        try_specialize!(self, V)
+        cast!(self, V)
     }
 }
 

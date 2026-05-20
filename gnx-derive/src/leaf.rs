@@ -4,12 +4,12 @@ use quote::quote;
 use syn::{parse_macro_input, punctuated::Punctuated, token::Comma, DeriveInput, Type};
 
 use crate::lifetime_free::expand_lifetime_free_from_derive;
-use crate::paths::{graph_crate, require_graph_crate, try_specialize};
+use crate::paths::{graph_crate, require_graph_crate, cast};
 
 pub fn expand_leaf(ty: &Type) -> TokenStream2 {
     let err = require_graph_crate();
     let g = graph_crate();
-    let try_specialize = try_specialize();
+    let cast = cast();
 
     quote! {
         #err
@@ -60,13 +60,13 @@ pub fn expand_leaf(ty: &Type) -> TokenStream2 {
             fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
             fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
             fn try_from_value<V>(g: V) -> Result<Self, V> {
-                #try_specialize!(g, Self)
+                #cast!(g, Self)
             }
             fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-                #try_specialize!(graph, Self::Ref<'v>)
+                #cast!(graph, Self::Ref<'v>)
             }
             fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-                #try_specialize!(self, V)
+                #cast!(self, V)
             }
         }
     }
@@ -81,7 +81,7 @@ pub fn impl_leaf(input: ProcTokenStream) -> ProcTokenStream {
 pub fn expand_leaf_from_derive(input: &DeriveInput) -> TokenStream2 {
     let err = require_graph_crate();
     let g = graph_crate();
-    let try_specialize = try_specialize();
+    let cast = cast();
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
@@ -134,13 +134,13 @@ pub fn expand_leaf_from_derive(input: &DeriveInput) -> TokenStream2 {
             fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
             fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
             fn try_from_value<V>(g: V) -> Result<Self, V> {
-                #try_specialize!(g, Self)
+                #cast!(g, Self)
             }
             fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-                #try_specialize!(graph, Self::Ref<'v>)
+                #cast!(graph, Self::Ref<'v>)
             }
             fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-                #try_specialize!(self, V)
+                #cast!(self, V)
             }
         }
     }

@@ -286,7 +286,7 @@ unsafe impl<T: LifetimeFree> LifetimeFree for std::sync::Arc<T> {}
 ///
 /// Vendored from castaway's [`cast!`](https://docs.rs/castaway/latest/castaway/macro.cast.html).
 #[macro_export]
-macro_rules! try_specialize {
+macro_rules! cast {
     ($value:expr, $T:ty) => {{
         #[allow(unused_imports)]
         use $crate::util::casting::internal::*;
@@ -301,6 +301,6 @@ macro_rules! try_specialize {
     }};
 
     ($value:expr) => {
-        $crate::try_specialize!($value, _)
+        $crate::cast!($value, _)
     };
 }

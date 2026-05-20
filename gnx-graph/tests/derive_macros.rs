@@ -1,4 +1,4 @@
-use gnx_graph::util::{LifetimeFree, impl_lifetime_free, try_specialize};
+use gnx_graph::util::{LifetimeFree, impl_lifetime_free, cast};
 use gnx_graph::Leaf;
 
 #[derive(LifetimeFree)]
@@ -25,7 +25,7 @@ impl_lifetime_free!(ContainerA<u32>, for<A> ContainerB<A>);
 #[test]
 fn derive_lifetime_free() {
     fn cast_newtype<T: 'static>(value: T) -> Result<LifetimeFreeNewtype, T> {
-        try_specialize!(value, LifetimeFreeNewtype)
+        cast!(value, LifetimeFreeNewtype)
     }
 
     assert!(cast_newtype(LifetimeFreeNewtype(1)).is_ok());
@@ -35,7 +35,7 @@ fn derive_lifetime_free() {
 #[test]
 fn derive_leaf_includes_lifetime_free() {
     fn cast_leaf<T: 'static>(value: T) -> Result<LeafNewtype, T> {
-        try_specialize!(value, LeafNewtype)
+        cast!(value, LeafNewtype)
     }
 
     assert!(cast_leaf(LeafNewtype(42)).is_ok());
@@ -45,7 +45,7 @@ fn derive_leaf_includes_lifetime_free() {
 #[test]
 fn derive_lifetime_free_static_ref_field() {
     fn cast<T: 'static>(value: T) -> Result<StaticRefField, T> {
-        try_specialize!(value, StaticRefField)
+        cast!(value, StaticRefField)
     }
 
     assert!(cast(StaticRefField(&42u8)).is_ok());
@@ -55,7 +55,7 @@ fn derive_lifetime_free_static_ref_field() {
 #[test]
 fn derive_lifetime_free_generic_bounds() {
     fn cast_pair<T: 'static>(value: T) -> Result<GenericPair<u32, u32>, T> {
-        try_specialize!(value, GenericPair<u32, u32>)
+        cast!(value, GenericPair<u32, u32>)
     }
 
     assert!(cast_pair(GenericPair(1u32, 2u32)).is_ok());
@@ -65,10 +65,10 @@ fn derive_lifetime_free_generic_bounds() {
 #[test]
 fn impl_lifetime_free_concrete() {
     fn cast_container_a<T: 'static>(value: T) -> Result<ContainerA<u32>, T> {
-        try_specialize!(value, ContainerA<u32>)
+        cast!(value, ContainerA<u32>)
     }
     fn cast_container_b<T: 'static, V: LifetimeFree>(value: T) -> Result<ContainerB<V>, T> {
-        try_specialize!(value, ContainerB<V>)
+        cast!(value, ContainerB<V>)
     }
 
     assert!(cast_container_a(ContainerA(1u32)).is_ok());
@@ -83,7 +83,7 @@ fn impl_lifetime_free_for_syntax() {
     impl_lifetime_free!(for<A, B> Pair<A, B>);
 
     fn cast_pair<T: 'static>(value: T) -> Result<Pair<u32, u32>, T> {
-        try_specialize!(value, Pair<u32, u32>)
+        cast!(value, Pair<u32, u32>)
     }
 
     assert!(cast_pair(Pair(1u32, 2u32)).is_ok());

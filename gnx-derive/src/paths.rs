@@ -25,13 +25,13 @@ pub fn graph_util_mod() -> Path {
     }
 }
 
-pub fn try_specialize() -> TokenStream2 {
+pub fn cast() -> TokenStream2 {
     match crate_name("gnx-graph") {
-        Ok(FoundCrate::Itself) => quote!(crate::try_specialize),
-        Ok(FoundCrate::Name(_)) => quote!(::gnx_graph::try_specialize),
+        Ok(FoundCrate::Itself) => quote!(crate::cast),
+        Ok(FoundCrate::Name(_)) => quote!(::gnx_graph::cast),
         Err(_) => match crate_name("gnx") {
-            Ok(FoundCrate::Itself) | Ok(FoundCrate::Name(_)) => quote!(::gnx::util::try_specialize),
-            Err(_) => quote!(::gnx_graph::try_specialize),
+            Ok(FoundCrate::Itself) | Ok(FoundCrate::Name(_)) => quote!(::gnx::util::cast),
+            Err(_) => quote!(::gnx_graph::cast),
         },
     }
 }

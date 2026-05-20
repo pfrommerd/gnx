@@ -79,12 +79,12 @@ impl Leaf for Array {
     fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
     fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
     fn try_from_value<V>(g: V) -> Result<Self, V> {
-        try_specialize!(g, Self).or_else(|g| {
-            if let Ok(r) = try_specialize!(&g, &TraceRef) {
+        cast!(g, Self).or_else(|g| {
+            if let Ok(r) = cast!(&g, &TraceRef) {
                 let r: &Tracer<Generic> = r.into();
                 if r.try_cast::<Array>().is_ok() {
                     // We know that g is a Array, so we can do an unchecked cast to Array.
-                    let r: Tracer<Generic> = try_specialize!(g, TraceRef).ok().unwrap().into();
+                    let r: Tracer<Generic> = cast!(g, TraceRef).ok().unwrap().into();
                     return Ok(Array::from(r.unchecked_cast_into()))
                 }
             }
@@ -92,8 +92,8 @@ impl Leaf for Array {
         })
     }
     fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-        try_specialize!(graph, &Self).or_else(|graph| {
-            match try_specialize!(graph, &TraceRef) {
+        cast!(graph, &Self).or_else(|graph| {
+            match cast!(graph, &TraceRef) {
                 Ok(r) => {
                     let r: &Tracer<Generic> = r.into();
                     match r.try_cast::<Array>() {
@@ -106,7 +106,7 @@ impl Leaf for Array {
         })
     }
     fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-        try_specialize!(self, V)
+        cast!(self, V)
     }
 }
 
@@ -165,11 +165,11 @@ impl Leaf for Device {
     fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
     fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
     fn try_from_value<V>(g: V) -> Result<Self, V> {
-        try_specialize!(g, Self).or_else(|g| {
-            if let Ok(r) = try_specialize!(&g, &TraceRef) {
+        cast!(g, Self).or_else(|g| {
+            if let Ok(r) = cast!(&g, &TraceRef) {
                 let r: &Tracer<Generic> = r.into();
                 if r.try_cast::<Device>().is_ok() {
-                    let r: Tracer<Generic> = try_specialize!(g, TraceRef).ok().unwrap().into();
+                    let r: Tracer<Generic> = cast!(g, TraceRef).ok().unwrap().into();
                     return Ok(Device::from(r.unchecked_cast_into()))
                 }
             }
@@ -177,8 +177,8 @@ impl Leaf for Device {
         })
     }
     fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-        try_specialize!(graph, &Self).or_else(|graph| {
-            match try_specialize!(graph, &TraceRef) {
+        cast!(graph, &Self).or_else(|graph| {
+            match cast!(graph, &TraceRef) {
                 Ok(r) => {
                     let r: &Tracer<Generic> = r.into();
                     match r.try_cast::<Device>() {
@@ -191,7 +191,7 @@ impl Leaf for Device {
         })
     }
     fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-        try_specialize!(self, V)
+        cast!(self, V)
     }
 }
 
@@ -250,11 +250,11 @@ impl Leaf for ArrayRef {
     fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
     fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
     fn try_from_value<V>(g: V) -> Result<Self, V> {
-        try_specialize!(g, Self).or_else(|g| {
-            if let Ok(r) = try_specialize!(&g, &TraceCellRef) {
+        cast!(g, Self).or_else(|g| {
+            if let Ok(r) = cast!(&g, &TraceCellRef) {
                 let r: &TracerCell<Generic> = r.into();
                 if r.try_cast::<Array>().is_ok() {
-                    let r: TracerCell<Generic> = try_specialize!(g, TraceCellRef).ok().unwrap().into();
+                    let r: TracerCell<Generic> = cast!(g, TraceCellRef).ok().unwrap().into();
                     return Ok(ArrayRef::from(r.try_cast_into::<Array>().ok().unwrap()))
                 }
             }
@@ -262,8 +262,8 @@ impl Leaf for ArrayRef {
         })
     }
     fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-        try_specialize!(graph, &Self).or_else(|graph| {
-            match try_specialize!(graph, &TraceCellRef) {
+        cast!(graph, &Self).or_else(|graph| {
+            match cast!(graph, &TraceCellRef) {
                 Ok(r) => {
                     let r: &TracerCell<Generic> = r.into();
                     match r.try_cast::<Array>() {
@@ -276,6 +276,6 @@ impl Leaf for ArrayRef {
         })
     }
     fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-        try_specialize!(self, V)
+        cast!(self, V)
     }
 }
