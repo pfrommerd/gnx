@@ -51,7 +51,7 @@ impl From<&Tracer<Device>> for &Device {
 
 impl ConcreteValue for DeviceHandle {
     fn to_info(&self) -> ValueInfo {
-        ValueInfo::Device(DeviceInfo)
+        ValueInfo::new(DeviceInfo)
     }
 }
 

@@ -155,14 +155,14 @@ impl<T: Traceable> TracerCell<T> {
     }
 
     pub fn try_cast_into<U: Traceable>(self) -> Result<TracerCell<U>, ()> {
-        match self.shared.type_info().downcast_ref::<U::Info>() {
+        match self.shared.type_info().downcast::<U::Info>() {
             Ok(_) => Ok(TracerCell { shared: self.shared, _phantom: PhantomData }),
             Err(_) => Err(()),
         }
     }
 
     pub fn try_cast<U: Traceable>(&self) -> Result<&TracerCell<U>, &Self> {
-        match self.shared.type_info().downcast_ref::<U::Info>() {
+        match self.shared.type_info().downcast::<U::Info>() {
             Ok(_) => Ok(unsafe { std::mem::transmute(self) }),
             Err(_) => Err(self),
         }

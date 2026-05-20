@@ -243,7 +243,7 @@ pub type DataHandle = Box<dyn DataImpl>;
 
 impl ConcreteValue for DataHandle {
     fn to_info(&self) -> ValueInfo {
-        ValueInfo::Array(self.info().clone())
+        ValueInfo::new(self.info().clone())
     }
 }
 

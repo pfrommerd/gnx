@@ -36,7 +36,7 @@ impl Operation for SampleOperation {
 }
 
 fn f32x4_info() -> ValueInfo {
-    ValueInfo::Array(ArrayInfo::new(Shape::fixed([4]), DType::F32))
+    ValueInfo::new(ArrayInfo::new(Shape::fixed([4]), DType::F32))
 }
 
 fn op(name: &'static str) -> Op {

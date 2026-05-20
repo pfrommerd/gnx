@@ -401,7 +401,7 @@ impl<T: Traceable> Tracer<T> {
     }
 
     pub fn info(&self) -> &T::Info {
-        self.trace.info().downcast_ref().unwrap()
+        self.trace.info().downcast().unwrap()
     }
 
     pub fn trace_ref(&self) -> &TraceRef { &self.trace }
@@ -427,14 +427,14 @@ impl<T: Traceable> Tracer<T> {
     }
 
     pub fn try_cast<U: Traceable>(&self) -> Result<&Tracer<U>, &Self> {
-        match self.trace.info().downcast_ref::<U::Info>() {
+        match self.trace.info().downcast::<U::Info>() {
             Ok(_) => Ok(self.unchecked_cast()),
             Err(_) => Err(self),
         }
     }
 
     pub fn try_cast_into<U: Traceable>(self) -> Result<Tracer<U>, Self> {
-        match self.trace.info().downcast_ref::<U::Info>() {
+        match self.trace.info().downcast::<U::Info>() {
             Ok(_) => Ok(Tracer::unchecked_new(self.trace)),
             Err(_) => Err(self),
         }
@@ -443,7 +443,7 @@ impl<T: Traceable> Tracer<T> {
     pub fn try_concrete(&self) -> Option<&T::Concrete> {
         self.trace.try_concrete().map(|value| {
             value
-                .downcast_ref()
+                .downcast()
                 .expect("Tracer contained incorrect type")
         })
     }

@@ -1,7 +1,3 @@
-use crate::array::{ArrayInfo, DataHandle};
-use crate::backend::DeviceHandle;
-use crate::device::DeviceInfo;
-
 use super::trace::Tracer;
 use std::any::Any;
 use std::fmt::{Debug, Display};
@@ -12,157 +8,56 @@ pub trait ConcreteValue: Any + Send + Sync + Debug + Display {
 }
 
 #[derive(Debug)]
-pub enum Value {
-    Array(DataHandle),
-    Device(DeviceHandle),
-    Other(Box<dyn ConcreteValue>),
-}
+pub struct Value(Box<dyn ConcreteValue>);
+
+unsafe impl castaway::LifetimeFree for Value {}
 
 impl ConcreteValue for Value {
-    fn to_info(&self) -> ValueInfo {
-        match self {
-            Value::Array(data) => data.to_info(),
-            Value::Device(device) => device.to_info(),
-            Value::Other(value) => value.to_info(),
-        }
-    }
+    fn to_info(&self) -> ValueInfo { self.0.to_info() }
 }
 
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Value::Array(data) => Display::fmt(data, f),
-            Value::Device(device) => Display::fmt(device, f),
-            Value::Other(value) => Display::fmt(value, f),
-        }
+        Display::fmt(self.0.as_ref(), f)
     }
 }
 
 impl Value {
     pub fn new<T: ConcreteValue>(value: T) -> Self {
-        let value = match castaway::cast!(value, Self) {
+        match castaway::cast!(value, Self) {
             Ok(value) => return value,
-            Err(value) => value,
-        };
-        let value = match castaway::cast!(value, DataHandle) {
-            Ok(value) => return Value::Array(value),
-            Err(value) => value,
-        };
-        let value = match castaway::cast!(value, DeviceHandle) {
-            Ok(value) => return Value::Device(value),
-            Err(value) => value,
-        };
-        Value::Other(Box::new(value))
-    }
-    pub fn downcast<T: ConcreteValue>(self) -> Result<T, Self> {
-        match self {
-            Value::Array(data) => castaway::cast!(data, T).map_err(Value::Array),
-            Value::Device(device) => castaway::cast!(device, T).map_err(Value::Device),
-            Value::Other(value) => {
-                let v: &dyn Any = &value;
-                if v.is::<T>() {
-                    let value: Box<dyn Any> = value;
-                    Ok(*value.downcast::<T>().unwrap())
-                } else {
-                    Err(Value::Other(value))
-                }
-            }
+            Err(value) => Value(Box::new(value)),
         }
     }
-    pub fn downcast_ref<T: 'static>(&self) -> Result<&T, ()> {
-        match self {
-            Value::Array(data) => castaway::cast!(data, &T).ok(),
-            Value::Device(device) => castaway::cast!(device, &T).ok(),
-            Value::Other(value) => {
-                let v: &dyn Any = value;
-                v.downcast_ref()
-            }
-        }
-        .ok_or(())
+    pub fn downcast_into<T: ConcreteValue>(self) -> Result<T, Self> {
+        castaway::cast!(self.0, T).map_err(|_value| Value(_value))
     }
-    pub fn downcast_mut<T: 'static>(&mut self) -> Result<&mut T, ()> {
-        match self {
-            Value::Array(data) => castaway::cast!(data, &mut T).ok(),
-            Value::Device(device) => castaway::cast!(device, &mut T).ok(),
-            Value::Other(value) => {
-                let v: &mut dyn Any = value;
-                v.downcast_mut()
-            }
-        }
-        .ok_or(())
+    pub fn downcast<T: 'static>(&self) -> Result<&T, ()> {
+        castaway::cast!(&self.0, &T).ok().ok_or(())
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub enum ValueInfo {
-    Array(ArrayInfo),
-    Device(DeviceInfo),
-    Other(Box<dyn AnyInfo>),
-}
+pub struct ValueInfo(Box<dyn AnyInfo>);
 
 impl ValueInfo {
     pub fn new<T: AnyInfo>(value: T) -> Self {
-        let value = match castaway::cast!(value, Self) {
+        match castaway::cast!(value, Self) {
             Ok(value) => return value,
-            Err(value) => value,
-        };
-        let value = match castaway::cast!(value, ArrayInfo) {
-            Ok(value) => return ValueInfo::Array(value),
-            Err(value) => value,
-        };
-        let value = match castaway::cast!(value, DeviceInfo) {
-            Ok(value) => return ValueInfo::Device(value),
-            Err(value) => value,
-        };
-        ValueInfo::Other(Box::new(value))
+            Err(value) => ValueInfo(Box::new(value)),
+        }
     }
 
-    pub fn downcast<T: AnyInfo>(self) -> Result<T, Self> {
-        match self {
-            ValueInfo::Array(info) => castaway::cast!(info, T).map_err(ValueInfo::Array),
-            ValueInfo::Device(info) => castaway::cast!(info, T).map_err(ValueInfo::Device),
-            ValueInfo::Other(info) => {
-                let v: &dyn Any = &info;
-                if v.is::<T>() {
-                    let info: Box<dyn Any> = info;
-                    Ok(*info.downcast::<T>().unwrap())
-                } else {
-                    Err(ValueInfo::Other(info))
-                }
-            }
-        }
+    pub fn downcast_into<T: AnyInfo>(self) -> Result<T, Self> {
+        castaway::cast!(self.0, T).map_err(|_value| ValueInfo(_value))
     }
-    pub fn downcast_ref<T: AnyInfo>(&self) -> Result<&T, ()> {
-        match self {
-            ValueInfo::Array(info) => castaway::cast!(info, &T).ok(),
-            ValueInfo::Device(info) => castaway::cast!(info, &T).ok(),
-            ValueInfo::Other(info) => {
-                let v: &dyn Any = info;
-                v.downcast_ref()
-            }
-        }
-        .ok_or(())
-    }
-    pub fn downcast_mut<T: AnyInfo>(&mut self) -> Result<&mut T, ()> {
-        match self {
-            ValueInfo::Array(info) => castaway::cast!(info, &mut T).ok(),
-            ValueInfo::Device(info) => castaway::cast!(info, &mut T).ok(),
-            ValueInfo::Other(info) => {
-                let v: &mut dyn Any = info;
-                v.downcast_mut()
-            }
-        }
-        .ok_or(())
+    pub fn downcast<T: AnyInfo>(&self) -> Result<&T, ()> {
+        castaway::cast!(&self.0, &T).ok().ok_or(())
     }
 }
 
 impl Display for ValueInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ValueInfo::Array(info) => Display::fmt(info, f),
-            ValueInfo::Device(info) => Display::fmt(info, f),
-            ValueInfo::Other(info) => Display::fmt(info, f),
-        }
+        Display::fmt(self.0.as_ref(), f)
     }
 }
 
@@ -190,6 +85,8 @@ impl Traceable for Generic {
     type Info = ValueInfo;
 }
 
+// Any type which implements Send + Sync + Debug + Display
+// can be used as a ValueInfo.
 pub trait AnyInfo: Any + Send + Sync + Debug + Display {
     fn dyn_hash(&self, state: &mut dyn std::hash::Hasher);
     fn dyn_eq(&self, other: &dyn AnyInfo) -> bool;
@@ -216,20 +113,26 @@ where
     }
 }
 
-impl Clone for Box<dyn AnyInfo> {
+impl Debug for ValueInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self.0.as_ref(), f)
+    }
+}
+
+impl Clone for ValueInfo {
     fn clone(&self) -> Self {
-        self.dyn_clone()
+        ValueInfo(self.0.dyn_clone())
     }
 }
-impl Hash for Box<dyn AnyInfo> {
+impl Hash for ValueInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.type_id().hash(state);
-        self.dyn_hash(state);
+        self.0.type_id().hash(state);
+        self.0.dyn_hash(state);
     }
 }
-impl PartialEq for Box<dyn AnyInfo> {
+impl PartialEq for ValueInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.dyn_eq(other.as_ref())
+        self.0.dyn_eq(other.0.as_ref())
     }
 }
-impl Eq for Box<dyn AnyInfo> {}
+impl Eq for ValueInfo {}
