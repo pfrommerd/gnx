@@ -335,6 +335,14 @@ impl ArrayRef {
     }
 
     pub fn tracer(&self) -> &TracerCell<Array> { &self.0 }
+    pub fn into_tracer(self) -> TracerCell<Array> { self.0 }
+}
+
+// SAFETY: ArrayRef and TracerCell<Array> have the same layout.
+impl From<&TracerCell<Array>> for &ArrayRef {
+    fn from(value: &TracerCell<Array>) -> Self {
+        unsafe { std::mem::transmute(value) }
+    }
 }
 
 impl From<TracerCell<Array>> for ArrayRef {

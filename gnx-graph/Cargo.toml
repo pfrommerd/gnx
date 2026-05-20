@@ -8,3 +8,6 @@ gnx-derive = { version = "0.1.0", path = "../gnx-derive" }
 gnx-expr = { version = "0.1.0", path = "../gnx-expr" }
 ordered-float = "5.1.0"
 paste = "1.0.15"
+
+[dev-dependencies]
+gnx-expr = { version = "0.1.0", path = "../gnx-expr" }

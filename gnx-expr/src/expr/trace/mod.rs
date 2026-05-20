@@ -4,11 +4,10 @@ mod capture;
 
 pub use cell::{CellKey, TraceCell, TraceCellRef, TracerCell};
 pub use context::{CellUpdate, ContextID, TraceContext, TraceContextGuard};
-pub use capture::Capture;
+pub use capture::{Capture, TracerKey};
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::sync::{Arc, OnceLock};
 
 use crate::expr::Op;

@@ -42,6 +42,13 @@ impl From<Tracer<Device>> for Device {
     fn from(value: Tracer<Device>) -> Self { Device(value) }
 }
 
+// SAFETY: Device and Tracer<Device> have the same layout.
+impl From<&Tracer<Device>> for &Device {
+    fn from(value: &Tracer<Device>) -> Self {
+        unsafe { std::mem::transmute(value) }
+    }
+}
+
 impl ConcreteValue for DeviceHandle {
     fn to_info(&self) -> ValueInfo {
         ValueInfo::Device(DeviceInfo)
@@ -62,6 +69,9 @@ impl Device {
     pub fn platform(&self) -> &str { self.concrete().platform() }
     pub fn hardware_kind(&self) -> &str { self.concrete().hardware_kind() }
     pub fn hardware_id(&self) -> &str { self.concrete().hardware_id() }
+
+    pub fn tracer(&self) -> &Tracer<Device> { &self.0 }
+    pub fn into_tracer(self) -> Tracer<Device> { self.0 }
 
     pub async fn execute(&self, expr: Expr, args: Vec<Value>, opts: ExecOpts) -> Result<Vec<Value>, std::io::Error> {
         let handle: &DeviceHandle = self.0.try_concrete().ok_or_else(

@@ -28,7 +28,7 @@ pub struct TraceCell {
 /// Shared handle to a mutable [`TraceCell`].
 #[repr(transparent)]
 #[derive(Clone)]
-pub struct TraceCellRef(pub(crate) Arc<TraceCell>);
+pub struct TraceCellRef(Arc<TraceCell>);
 
 impl TraceCellRef {
     pub fn new(base: TraceRef) -> Self {
@@ -154,11 +154,25 @@ impl<T: Traceable> TracerCell<T> {
         self.shared.set(value.trace_ref().clone());
     }
 
-    pub fn cast<U: Traceable>(self) -> Result<TracerCell<U>, ()> {
+    pub fn try_cast_into<U: Traceable>(self) -> Result<TracerCell<U>, ()> {
         match self.shared.type_info().downcast_ref::<U::Info>() {
             Ok(_) => Ok(TracerCell { shared: self.shared, _phantom: PhantomData }),
             Err(_) => Err(()),
         }
+    }
+
+    pub fn try_cast<U: Traceable>(&self) -> Result<&TracerCell<U>, &Self> {
+        match self.shared.type_info().downcast_ref::<U::Info>() {
+            Ok(_) => Ok(unsafe { std::mem::transmute(self) }),
+            Err(_) => Err(self),
+        }
+    }
+}
+
+// SAFETY: TracerCell<Generic> and TraceCellRef share the same address (TraceCellRef is field 0).
+impl From<&TraceCellRef> for &TracerCell<Generic> {
+    fn from(r: &TraceCellRef) -> Self {
+        unsafe { std::mem::transmute(r) }
     }
 }
 
