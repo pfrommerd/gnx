@@ -81,10 +81,12 @@ impl Leaf for Array {
         cast!(g, Self).or_else(|g| {
             if let Ok(r) = cast!(&g, &TraceRef) {
                 let r: &Tracer<Generic> = r.into();
-                if r.try_cast::<Array>().is_ok() {
+                if r.try_cast_ref::<Array>().is_ok() {
                     // We know that g is a Array, so we can do an unchecked cast to Array.
                     let r: Tracer<Generic> = cast!(g, TraceRef).ok().unwrap().into();
-                    return Ok(Array::from(r.unchecked_cast_into()))
+                    // SAFETY: We know that it is safe to cast to Array since
+                    // we just checked that the info matches.
+                    return Ok(Array::from(unsafe { r.cast_unchecked() }))
                 }
             }
             Err(g)
@@ -95,7 +97,7 @@ impl Leaf for Array {
             match cast!(graph, &TraceRef) {
                 Ok(r) => {
                     let r: &Tracer<Generic> = r.into();
-                    match r.try_cast::<Array>() {
+                    match r.try_cast_ref::<Array>() {
                         Ok(r) => Ok(r.into()),
                         Err(_) => Err(graph),
                     }
@@ -167,9 +169,11 @@ impl Leaf for Device {
         cast!(g, Self).or_else(|g| {
             if let Ok(r) = cast!(&g, &TraceRef) {
                 let r: &Tracer<Generic> = r.into();
-                if r.try_cast::<Device>().is_ok() {
+                if r.try_cast_ref::<Device>().is_ok() {
                     let r: Tracer<Generic> = cast!(g, TraceRef).ok().unwrap().into();
-                    return Ok(Device::from(r.unchecked_cast_into()))
+                    // SAFETY: We know that it is safe to cast to Device since
+                    // we just checked that the info matches.
+                    return Ok(Device::from(unsafe { r.cast_unchecked() }))
                 }
             }
             Err(g)
@@ -180,7 +184,7 @@ impl Leaf for Device {
             match cast!(graph, &TraceRef) {
                 Ok(r) => {
                     let r: &Tracer<Generic> = r.into();
-                    match r.try_cast::<Device>() {
+                    match r.try_cast_ref::<Device>() {
                         Ok(r) => Ok(r.into()),
                         Err(_) => Err(graph),
                     }
@@ -252,9 +256,9 @@ impl Leaf for ArrayRef {
         cast!(g, Self).or_else(|g| {
             if let Ok(r) = cast!(&g, &TraceCellRef) {
                 let r: &TracerCell<Generic> = r.into();
-                if r.try_cast::<Array>().is_ok() {
+                if r.try_cast_ref::<Array>().is_ok() {
                     let r: TracerCell<Generic> = cast!(g, TraceCellRef).ok().unwrap().into();
-                    return Ok(ArrayRef::from(r.try_cast_into::<Array>().ok().unwrap()))
+                    return Ok(ArrayRef::from(r.try_cast::<Array>().ok().unwrap()))
                 }
             }
             Err(g)
@@ -265,7 +269,7 @@ impl Leaf for ArrayRef {
             match cast!(graph, &TraceCellRef) {
                 Ok(r) => {
                     let r: &TracerCell<Generic> = r.into();
-                    match r.try_cast::<Array>() {
+                    match r.try_cast_ref::<Array>() {
                         Ok(r) => Ok(r.into()),
                         Err(_) => Err(graph),
                     }

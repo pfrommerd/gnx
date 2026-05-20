@@ -409,31 +409,33 @@ impl<T: Traceable> Tracer<T> {
     pub fn is_abstract(&self) -> bool { self.trace.is_abstract() }
     pub fn context_id(&self) -> ContextID { self.trace.context_id() }
 
-    pub fn unchecked_cast_into<U: Traceable>(self) -> Tracer<U> {
+    pub unsafe fn cast_unchecked<U: Traceable>(self) -> Tracer<U> {
         Tracer::unchecked_new(self.trace)
     }
 
-    pub fn unchecked_cast<U: Traceable>(&self) -> &Tracer<U> {
+    pub unsafe fn cast_ref_unchecked<U: Traceable>(&self) -> &Tracer<U> {
         // SAFETY: The Tracer<U> and Tracer<T> have the same layout.
         unsafe { std::mem::transmute(self) }
     }
 
-    // Always safe to cast to Generic.
     pub fn into_generic(self) -> Tracer<Generic> {
-        self.unchecked_cast_into()
+        // SAFETY: It is safe to cast to Generic.
+        unsafe { self.cast_unchecked() }
     }
     pub fn generic(&self) -> &Tracer<Generic> {
-        self.unchecked_cast()
+        // SAFETY: It is safe to cast to Generic.
+        unsafe { self.cast_ref_unchecked() }
     }
 
-    pub fn try_cast<U: Traceable>(&self) -> Result<&Tracer<U>, &Self> {
+    pub fn try_cast_ref<U: Traceable>(&self) -> Result<&Tracer<U>, &Self> {
         match self.trace.info().downcast::<U::Info>() {
-            Ok(_) => Ok(self.unchecked_cast()),
+            // SAFETY: It is safe to cast to U since we just checked that the info matches.
+            Ok(_) => Ok(unsafe { self.cast_ref_unchecked() }),
             Err(_) => Err(self),
         }
     }
 
-    pub fn try_cast_into<U: Traceable>(self) -> Result<Tracer<U>, Self> {
+    pub fn try_cast<U: Traceable>(self) -> Result<Tracer<U>, Self> {
         match self.trace.info().downcast::<U::Info>() {
             Ok(_) => Ok(Tracer::unchecked_new(self.trace)),
             Err(_) => Err(self),
