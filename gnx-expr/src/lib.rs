@@ -1,10 +1,12 @@
 mod attr;
 pub mod builtins;
+mod dialects;
 pub mod trace;
 pub mod util;
 pub mod value;
 
 pub use attr::*;
+pub use dialects::*;
 pub use trace::*;
 
 use std::cmp::{Eq, PartialEq};
@@ -14,14 +16,19 @@ use std::fmt;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
-pub trait Operation: Sync {
-    fn name(&self) -> &'static str;
-    fn dialect(&self) -> &'static dyn Dialect;
+#[doc(hidden)]
+pub mod __private {
+    pub use inventory;
 }
 
 pub trait Dialect: Sync {
     fn name(&self) -> &'static str;
     fn create(&self, name: &'static str) -> Option<&'static dyn Operation>;
+}
+
+pub trait Operation: Sync {
+    fn name(&self) -> &'static str;
+    fn dialect(&self) -> &'static dyn Dialect;
 }
 
 // An Op is an Operation combined with an attribute set.

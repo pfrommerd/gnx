@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 castaway = "0.2.4"
+inventory = "0.3"
