@@ -239,6 +239,22 @@ macro_rules! impl_tuple_graph {
                     Ok(($([<$T:lower>],)*))
                 }
             }
+            // A (T, ...) can be treated as a leaf if each element is 'static (so the tuple is
+            // 'static) and lifetime-free (so that we can specialize at compile time).
+            impl<$($T: Graph<Owned = $T> + LifetimeFree + 'static,)*> Leaf for ($($T,)*) {
+                type Ref<'l> = &'l Self;
+                fn as_ref<'l>(&'l self) -> Self::Ref<'l> { self }
+                fn clone_ref(v: Self::Ref<'_>) -> Self { v.clone() }
+                fn try_from_value<V>(g: V) -> Result<Self, V> {
+                    cast!(g, Self)
+                }
+                fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
+                    cast!(graph, &Self)
+                }
+                fn try_into_value<V: 'static>(self) -> Result<V, Self> {
+                    cast!(self, V)
+                }
+            }
         }
     };
 }
