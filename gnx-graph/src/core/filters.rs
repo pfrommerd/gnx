@@ -165,3 +165,49 @@ impl<L: Leaf, F: Filter<L>> Filter<()> for Invert<L, F> {
         Invert(self.0.child(key), PhantomData)
     }
 }
+
+/// Try `Filter::matches_ref` on each graph expression in order; return the first `Ok`.
+///
+/// ```ignore
+/// filter_matches_ref_any!(filter, value.bar, value.foo)
+/// // ~> match filter.matches_ref(value.bar) { Ok(r) => Ok(r), Err(_) => ... }
+/// ```
+#[macro_export]
+macro_rules! filter_matches_ref_any {
+    ($filter:expr, $($case:expr),+ $(,)?) => {
+        $crate::filter_matches_ref_any!(@match $filter, $($case),+)
+    };
+    (@match $filter:expr, $case:expr) => {
+        $filter.matches_ref($case)
+    };
+    (@match $filter:expr, $first:expr, $($rest:expr),+) => {
+        match $filter.matches_ref($first) {
+            Ok(r) => Ok(r),
+            Err(_) => $crate::filter_matches_ref_any!(@match $filter, $($rest),+),
+        }
+    };
+}
+
+/// Try `Filter::matches_value` on each graph expression in order; return the first `Ok`.
+#[macro_export]
+macro_rules! filter_matches_value_seq {
+    ($filter:expr, $binder:ident, $($case:expr),+ $(,)?) => {
+        $crate::filter_matches_bound_value_seq!(@match $filter, $binder, $binder, $($case),+)
+    };
+}
+
+#[macro_export]
+macro_rules! filter_matches_bound_value_seq {
+    ($filter:expr, $binder:ident, $($case:expr),+ $(,)?) => {
+        $crate::filter_matches_bound_value_seq!(@match $filter, $binder, $($case),+)
+    };
+    (@match $filter:expr, $binder:ident, $case:expr) => {
+        $filter.matches_value($case)
+    };
+    (@match $filter:expr, $binder:ident, $first:expr, $($rest:expr),+) => {
+        match $filter.matches_value($first) {
+            Ok(r) => Ok(r),
+            Err($binder) => {$crate::filter_matches_bound_value_seq!(@match $filter, $binder, $($rest),+)},
+        }
+    };
+}

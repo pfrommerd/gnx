@@ -266,7 +266,15 @@ impl Display for ArrayInfo {
 }
 
 #[derive(Clone)]
+#[repr(transparent)]
 pub struct Array(Tracer<Array>);
+
+// SAFETY: The Array and Tracer<Array> have the same layout.
+impl From<&Tracer<Array>> for &Array {
+    fn from(value: &Tracer<Array>) -> Self {
+        unsafe { std::mem::transmute(value) }
+    }
+}
 
 impl From<Array> for Tracer<Array> {
     fn from(value: Array) -> Self {
@@ -294,9 +302,11 @@ impl Array {
     }
 
     pub fn tracer(&self) -> &Tracer<Array> { &self.0 }
+    pub fn into_tracer(self) -> Tracer<Array> { self.0 }
 }
 
 /// Mutable array traced via [`TracerCell`] (JAX-style ref).
+#[derive(Clone)]
 pub struct ArrayRef(TracerCell<Array>);
 
 impl ArrayRef {

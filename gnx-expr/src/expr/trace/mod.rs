@@ -233,7 +233,7 @@ impl TraceObject {
 
 impl<T: Traceable> From<Tracer<T>> for TraceObject {
     fn from(t: Tracer<T>) -> Self {
-        TraceObject::Ref(t.into())
+        TraceObject::Ref(t.into_trace_ref())
     }
 }
 
@@ -356,9 +356,22 @@ impl Invocation {
 }
 
 /// Tracing handle referencing a [`Trace`].
+#[repr(transparent)]
 pub struct Tracer<T: Traceable> {
     trace: TraceRef,
     _phantom: PhantomData<T>,
+}
+
+impl From<&TraceRef> for &Tracer<Generic> {
+    fn from(r: &TraceRef) -> Self {
+        // SAFETY: The Tracer<Generic> and TraceRef have the same layout.
+        unsafe { std::mem::transmute(r) }
+    }
+}
+impl From<TraceRef> for Tracer<Generic> {
+    fn from(t: TraceRef) -> Self {
+        Tracer { trace: t, _phantom: PhantomData }
+    }
 }
 
 impl<T: Traceable> Tracer<T> {
@@ -368,6 +381,8 @@ impl<T: Traceable> Tracer<T> {
             _phantom: PhantomData,
         }
     }
+
+
 
     pub fn placeholder(info: T::Info) -> Self {
         let context_id = TraceContext::current_id();
@@ -386,37 +401,43 @@ impl<T: Traceable> Tracer<T> {
         ))
     }
 
-    pub fn trace_ref(&self) -> &TraceRef {
-        &self.trace
-    }
-
-    pub fn is_abstract(&self) -> bool {
-        self.trace.is_abstract()
-    }
-
-    pub fn context_id(&self) -> ContextID {
-        self.trace.context_id()
-    }
-
     pub fn info(&self) -> &T::Info {
         self.trace.info().downcast_ref().unwrap()
     }
 
-    pub fn generic(self) -> Tracer<Generic> {
-        Tracer {
-            trace: self.trace,
-            _phantom: PhantomData,
-        }
-    }
+    pub fn trace_ref(&self) -> &TraceRef { &self.trace }
+    pub fn into_trace_ref(self) -> TraceRef { self.trace }
+    pub fn is_abstract(&self) -> bool { self.trace.is_abstract() }
+    pub fn context_id(&self) -> ContextID { self.trace.context_id() }
 
-    pub fn unchecked_cast<U: Traceable>(self) -> Tracer<U> {
+    pub fn unchecked_cast_into<U: Traceable>(self) -> Tracer<U> {
         Tracer::unchecked_new(self.trace)
     }
 
-    pub fn cast<U: Traceable>(self) -> Result<Tracer<U>, ()> {
+    pub fn unchecked_cast<U: Traceable>(&self) -> &Tracer<U> {
+        // SAFETY: The Tracer<U> and Tracer<T> have the same layout.
+        unsafe { std::mem::transmute(self) }
+    }
+
+    // Always safe to cast to Generic.
+    pub fn into_generic(self) -> Tracer<Generic> {
+        self.unchecked_cast_into()
+    }
+    pub fn generic(&self) -> &Tracer<Generic> {
+        self.unchecked_cast()
+    }
+
+    pub fn try_cast<U: Traceable>(&self) -> Result<&Tracer<U>, &Self> {
+        match self.trace.info().downcast_ref::<U::Info>() {
+            Ok(_) => Ok(self.unchecked_cast()),
+            Err(_) => Err(self),
+        }
+    }
+
+    pub fn try_cast_into<U: Traceable>(self) -> Result<Tracer<U>, Self> {
         match self.trace.info().downcast_ref::<U::Info>() {
             Ok(_) => Ok(Tracer::unchecked_new(self.trace)),
-            Err(_) => Err(()),
+            Err(_) => Err(self),
         }
     }
 
@@ -426,22 +447,6 @@ impl<T: Traceable> Tracer<T> {
                 .downcast_ref()
                 .expect("Tracer contained incorrect type")
         })
-    }
-}
-
-impl<T: Traceable> AsRef<TraceRef> for Tracer<T> {
-    fn as_ref(&self) -> &TraceRef {
-        &self.trace
-    }
-}
-
-impl<T: Traceable> From<Tracer<T>> for TraceRef {
-    fn from(t: Tracer<T>) -> Self { t.trace }
-}
-
-impl From<TraceRef> for Tracer<Generic> {
-    fn from(t: TraceRef) -> Self {
-        Tracer { trace: t, _phantom: PhantomData }
     }
 }
 
