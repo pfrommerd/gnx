@@ -135,8 +135,6 @@ impl Graph for PyLeaf {
     }
 }
 
-impl OwnedGraph for PyLeaf {}
-
 #[rustfmt::skip]
 impl Leaf for PyLeaf {
     type Ref<'l> = PyLeafRef<'l> where Self: 'l;

@@ -127,6 +127,7 @@ pub trait TypedGraph<L: Leaf>: Graph {
 impl<L: Leaf, G: Graph> TypedGraph<L> for G {}
 
 pub trait OwnedGraph: Graph<Owned = Self> + 'static {}
+impl<G: Graph<Owned = Self> + 'static> OwnedGraph for G {}
 
 pub trait Leaf: OwnedGraph {
     type Ref<'l>: Copy;

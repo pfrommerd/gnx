@@ -72,8 +72,6 @@ impl<T: Graph> Graph for Vec<T> {
     }
 }
 
-impl<T: OwnedGraph> OwnedGraph for Vec<T> {}
-
 impl<T: Graph> Node for Vec<T> {
     fn visit_children<'g, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Self, L>>(
         &'g self,
@@ -201,7 +199,6 @@ macro_rules! impl_tuple_graph {
                     }
                 }
             }
-            impl<$($T: OwnedGraph,)*> OwnedGraph for ($($T,)*) {}
 
             impl<$($T: Graph,)*> Node for ($($T,)*) {
                 #[allow(unused_variables, unused_mut)]

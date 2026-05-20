@@ -43,7 +43,6 @@ macro_rules! impl_rc {
                 consumer.consume_shared(id, View::new(self.as_ref(), filter))
             }
         }
-        impl<T: OwnedGraph> OwnedGraph for $W<T> {}
 
         impl<L: Leaf, B: Builder<L>> Builder<L> for $W<B> {
             type Graph = $W<B::Graph>;

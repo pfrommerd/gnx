@@ -1,4 +1,4 @@
-use gnx::Callable;
+use gnx_transforms::Callable;
 
 fn f(input: u8) -> u8 {
     input + 1

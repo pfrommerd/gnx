@@ -1,6 +1,8 @@
-use gnx::jit;
-use gnx::jittable;
-use gnx::transform;
+use gnx_graph::OwnedGraph;
+use gnx_transforms::Jitable;
+use gnx_transforms::jit;
+use gnx_transforms::jittable;
+use gnx_transforms::transform;
 use std::sync::Arc;
 
 #[transform(jit)]
@@ -19,10 +21,9 @@ fn f_ref(x: &u32) -> u32 {
     *x + 1
 }
 
-fn g_ref(x: u32) -> u32 {
-    let z = 2 * x;
-    let jitted = jit!(|y: &_| *y + x);
-    jitted(&z)
+fn g_ref<T: OwnedGraph>(x: T) -> T {
+    let jitted = jit!(|_: &_| x.duplicate());
+    jitted(&x)
 }
 
 #[test]
@@ -38,14 +39,11 @@ fn test_jit() {
 fn test_jit_refs() {
     let _: fn(&u32) -> u32 = f_ref;
     assert_eq!(f_ref(&1), 2);
-    assert_eq!(g_ref(2), 6);
+    assert_eq!(g_ref(2), 2);
 }
 
 #[test]
 fn test_jittable_invoke_owned() {
     let callable = jittable!(fn(&u32) -> u32, |x: &u32| *x + 1);
-    assert_eq!(
-        gnx::transforms::Jitable::invoke_owned(&callable, (Arc::new(1),)),
-        2
-    );
+    assert_eq!(Jitable::invoke_owned(&callable, (Arc::new(1),)), 2);
 }
