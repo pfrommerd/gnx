@@ -4,8 +4,7 @@ use crate::util::impl_lifetime_free;
 use gnx_expr::trace::{
     TraceCellRef, TraceRef, Tracer, TracerCell, Traceable, Generic,
 };
-use gnx_expr::array::{Array, ArrayRef, ArrayInfo};
-use gnx_expr::device::{Device, DeviceInfo};
+use gnx_backend::{Device, DeviceInfo, Array, ArrayRef, ArrayInfo};
 
 impl_lifetime_free!(TraceRef, TraceCellRef, Array, ArrayRef, Device, ArrayInfo, DeviceInfo);
 impl_lifetime_free!(for<T: Traceable> Tracer<T>);

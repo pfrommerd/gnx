@@ -10,7 +10,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock};
 
-use crate::expr::Op;
+use crate::Op;
 use crate::util::DgArc;
 
 pub use super::value::{

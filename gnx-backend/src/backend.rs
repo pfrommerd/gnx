@@ -1,6 +1,6 @@
-use crate::expr::Expr;
-use crate::expr::value::Value;
+use gnx_expr::{Expr, Value};
 
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::fmt::{Debug, Display};
 use std::hash::{Hash, Hasher};
@@ -15,8 +15,27 @@ pub trait DeviceImpl: Debug + Display + Send + Sync {
     fn backend(&self) -> &Backend;
 }
 
-pub type DeviceHandle = Arc<dyn DeviceImpl + Send + Sync>;
+#[derive(Clone)]
+pub struct DeviceHandle(Arc<dyn DeviceImpl + Send + Sync>);
 
+impl Debug for DeviceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(self.0.as_ref(), f)
+    }
+}
+
+impl Deref for DeviceHandle {
+    type Target = Arc<dyn DeviceImpl + Send + Sync>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Display for DeviceHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DeviceHandle({})", self.0)
+    }
+}
 
 pub struct ExecOpts {
 

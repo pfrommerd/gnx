@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
-use crate::expr::{Generic, ValueInfo};
+use crate::{Generic, ValueInfo};
 
 use super::context::{CellUpdate, ContextID, TraceContext};
 use super::{TraceRef, Traceable, Tracer};

@@ -6,6 +6,7 @@ use gnx_graph::{
     GraphId, Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
     SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
+use gnx_backend::Array;
 
 use super::{JsonError, Result};
 
@@ -133,7 +134,7 @@ impl<'a, W: Write> Serializer for &'a mut JsonWriter<W> {
         Ok(())
     }
 
-    fn serialize_array(self, value: gnx_expr::array::Array) -> Result<()> {
+    fn serialize_array(self, value: Array) -> Result<()> {
         self.writer.write_all(b"{")?;
         self.write_string("$array")?;
         self.writer.write_all(b":{")?;
@@ -545,7 +546,7 @@ impl<W: Write> Serializer for MapKeySerializer<'_, W> {
         self.unsupported()
     }
 
-    fn serialize_array(self, _value: gnx_expr::array::Array) -> Result<()> {
+    fn serialize_array(self, _value: Array) -> Result<()> {
         self.unsupported()
     }
 

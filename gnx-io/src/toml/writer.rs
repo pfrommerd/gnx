@@ -5,7 +5,7 @@ use gnx_graph::{
     GraphId, Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
     SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
-
+use gnx_backend::Array;
 use super::{Result, TomlError, Value};
 
 pub struct TomlWriter<W> {
@@ -163,7 +163,7 @@ impl<'a, W: Write> Serializer for &'a mut TomlWriter<W> {
         }
     }
 
-    fn serialize_array(self, value: gnx_expr::array::Array) -> Result<()> {
+    fn serialize_array(self, value: Array) -> Result<()> {
         if self.depth == 0 {
             return Err(TomlError::RootMustBeTable);
         }
@@ -631,7 +631,7 @@ impl<W: Write> Serializer for MapKeySerializer<'_, W> {
         self.unsupported()
     }
 
-    fn serialize_array(self, _value: gnx_expr::array::Array) -> Result<()> {
+    fn serialize_array(self, _value: Array) -> Result<()> {
         self.unsupported()
     }
 

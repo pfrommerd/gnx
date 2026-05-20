@@ -1,5 +1,5 @@
-use crate::expr::builtins::update_op;
-use crate::expr::{Effect, Eqn, Expr, Input, Effects, Var, VarScope};
+use crate::builtins::update_op;
+use crate::{Effect, Eqn, Expr, Input, Effects, Var, VarScope};
 use crate::trace::{
     CellKey, ContextID, Generic, Invocation, TraceContext, TraceObject,
     TraceRef, Tracer,

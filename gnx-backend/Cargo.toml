@@ -1,0 +1,11 @@
+[package]
+name = "gnx-backend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gnx-expr = { path = "../gnx-expr" }
+async-trait = "0.1.89"
+smallvec = "1.15.1"
+uuid = "1.19.0"
+ordered-float = "5.3.0"

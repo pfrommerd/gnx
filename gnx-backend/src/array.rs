@@ -1,8 +1,8 @@
 use std::fmt::{Debug, Display};
-
 use ordered_float::OrderedFloat;
 
-use crate::expr::trace::{ConcreteValue, Traceable, Tracer, TracerCell, ValueInfo};
+
+use gnx_expr::{ConcreteValue, Traceable, Tracer, TracerCell, ValueInfo};
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Dim {

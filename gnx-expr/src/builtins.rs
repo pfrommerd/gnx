@@ -1,6 +1,6 @@
-use crate::expr::trace::{Generic, Invocation, TraceObject, Tracer};
-use crate::expr::value::ValueInfo;
-use crate::expr::{Attr, AttrMap, Dialect, Expr, Op, Operation};
+use crate::trace::{Generic, Invocation, TraceObject, Tracer};
+use crate::value::ValueInfo;
+use crate::{Attr, AttrMap, Dialect, Expr, Op, Operation};
 
 /// Built-in `gnx` dialect operations.
 pub struct GnxDialect;

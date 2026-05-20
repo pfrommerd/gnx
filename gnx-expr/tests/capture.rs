@@ -1,9 +1,10 @@
-use gnx_expr::array::{ArrayInfo, DType, Shape};
-use gnx_expr::expr::{AttrMap, Capture, Effect, Op};
+use std::fmt::Display;
+
+use gnx_expr::{AttrMap, Capture, Effect, Op};
 use gnx_expr::trace::{
     Generic, Invocation, TraceCellRef, TraceContext, TraceObject, Tracer, ValueInfo,
 };
-use gnx_expr::expr::{Dialect, Operation};
+use gnx_expr::{Dialect, Operation};
 
 pub struct SampleOperation {
     name: &'static str,
@@ -35,8 +36,17 @@ impl Operation for SampleOperation {
     }
 }
 
-fn f32x4_info() -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed([4]), DType::F32))
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct InfoType;
+
+impl Display for InfoType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "InfoType")
+    }
+}
+
+fn sample_info() -> ValueInfo {
+    ValueInfo::new(InfoType)
 }
 
 fn op(name: &'static str) -> Op {
@@ -60,13 +70,13 @@ fn op(name: &'static str) -> Op {
 fn capture_linear_chain() {
     let guard = TraceContext::enter();
     let ctx = guard.context();
-    let a = Tracer::<Generic>::placeholder(f32x4_info());
-    let b = Tracer::<Generic>::placeholder(f32x4_info());
+    let a = Tracer::<Generic>::placeholder(sample_info());
+    let b = Tracer::<Generic>::placeholder(sample_info());
     let [t1]: [Tracer<Generic>; 1] = Invocation::invoke(
         op("sin"),
         vec![],
         vec![TraceObject::from(b.clone())],
-        vec![f32x4_info()],
+        vec![sample_info()],
     ).try_into().expect("expected exactly one output");
     let [t2]: [Tracer<Generic>; 1] = Invocation::invoke(
         op("mul"),
@@ -75,7 +85,7 @@ fn capture_linear_chain() {
             TraceObject::from(t1),
             TraceObject::from(b.clone()),
         ],
-        vec![f32x4_info()],
+        vec![sample_info()],
     ).try_into().expect("expected exactly one output");
     let t3 = Invocation::invoke(
         op("add"),
@@ -84,7 +94,7 @@ fn capture_linear_chain() {
             TraceObject::from(a.clone()),
             TraceObject::from(t2),
         ],
-        vec![f32x4_info()],
+        vec![sample_info()],
     );
 
     let cap = Capture::from_context(ctx, &[
@@ -109,18 +119,18 @@ fn capture_linear_chain() {
 fn capture_diamond_distinct_intermediate_vars() {
     let guard = TraceContext::enter();
     let ctx = guard.context();
-    let x = Tracer::<Generic>::placeholder(f32x4_info());
+    let x = Tracer::<Generic>::placeholder(sample_info());
     let [u] = Invocation::invoke(
         op("abs"),
         vec![],
         vec![TraceObject::from(x.clone())],
-        vec![f32x4_info()],
+        vec![sample_info()],
     ).try_into().expect("expected exactly one output");
     let [v] = Invocation::invoke(
         op("neg"),
         vec![],
         vec![TraceObject::from(x.clone())],
-        vec![f32x4_info()],
+        vec![sample_info()],
     ).try_into().expect("expected exactly one output");
     let [w] = Invocation::invoke(
         op("add"),
@@ -129,7 +139,7 @@ fn capture_diamond_distinct_intermediate_vars() {
             TraceObject::from(u.clone()),
             TraceObject::from(v.clone()),
         ],
-        vec![f32x4_info()],
+        vec![sample_info()],
     ).try_into().expect("expected exactly one output");
 
     let cap = Capture::from_context(ctx, &[TraceObject::from(x.clone())], &[TraceObject::from(w.clone())]).unwrap();
@@ -143,7 +153,7 @@ fn capture_diamond_distinct_intermediate_vars() {
 fn capture_reuses_var_when_same_tracer_used_twice() {
     let guard = TraceContext::enter();
     let ctx = guard.context();
-    let x = Tracer::<Generic>::placeholder(f32x4_info());
+    let x = Tracer::<Generic>::placeholder(sample_info());
     let [w]: [Tracer<Generic>; 1] = Invocation::invoke(
         op("add"),
         vec![],
@@ -151,7 +161,7 @@ fn capture_reuses_var_when_same_tracer_used_twice() {
             TraceObject::from(x.clone()),
             TraceObject::from(x.clone()),
         ],
-        vec![f32x4_info()],
+        vec![sample_info()],
     ).try_into().expect("expected exactly one output");
     let cap = Capture::from_context(ctx, &[TraceObject::from(x.clone())], &[TraceObject::from(w.clone())]).unwrap();
     let add = cap.expr().eqns().last().unwrap();
@@ -162,7 +172,7 @@ fn capture_reuses_var_when_same_tracer_used_twice() {
 fn capture_placeholder_only() {
     let guard = TraceContext::enter();
     let ctx = guard.context();
-    let x = Tracer::<Generic>::placeholder(f32x4_info());
+    let x = Tracer::<Generic>::placeholder(sample_info());
     let cap = Capture::from_context(ctx, &[TraceObject::from(x.clone())], &[TraceObject::from(x.clone())]).unwrap();
     let ex = cap.expr();
     assert!(ex.eqns().is_empty());
@@ -176,11 +186,11 @@ fn capture_placeholder_only() {
 #[test]
 fn capture_foreign_context_tracer_is_closure() {
     let outer = TraceContext::enter();
-    let b = Tracer::<Generic>::placeholder(f32x4_info());
+    let b = Tracer::<Generic>::placeholder(sample_info());
 
     let inner = TraceContext::enter();
     let ctx = inner.context();
-    let a = Tracer::<Generic>::placeholder(f32x4_info());
+    let a = Tracer::<Generic>::placeholder(sample_info());
     let [w]: [Tracer<Generic>; 1] = Invocation::invoke(
         op("add"),
         vec![],
@@ -188,7 +198,7 @@ fn capture_foreign_context_tracer_is_closure() {
             TraceObject::from(a.clone()),
             TraceObject::from(b.clone()),
         ],
-        vec![f32x4_info()],
+        vec![sample_info()],
     ).try_into().expect("expected exactly one output");
 
     let cap = Capture::from_context(ctx, &[TraceObject::from(a.clone())], &[TraceObject::from(w.clone())]).unwrap();
@@ -209,12 +219,12 @@ fn capture_foreign_context_tracer_is_closure() {
 fn capture_trace_cell_cross_context_update_emits_gnx_update() {
     let outer = TraceContext::enter();
     let _outer_ctx = outer.context();
-    let value = Tracer::<Generic>::placeholder(f32x4_info());
+    let value = Tracer::<Generic>::placeholder(sample_info());
     let cell = TraceCellRef::new(value.trace_ref().clone());
 
     let inner = TraceContext::enter();
     let inner_ctx = inner.context();
-    let new_val = Tracer::<Generic>::placeholder(f32x4_info());
+    let new_val = Tracer::<Generic>::placeholder(sample_info());
     cell.set(new_val.trace_ref().clone());
 
     assert_eq!(inner_ctx.updates().len(), 1);
@@ -236,9 +246,9 @@ fn capture_trace_cell_cross_context_update_emits_gnx_update() {
 fn capture_trace_cell_in_context_override_no_update_eqn() {
     let guard = TraceContext::enter();
     let ctx = guard.context();
-    let base = Tracer::<Generic>::placeholder(f32x4_info());
+    let base = Tracer::<Generic>::placeholder(sample_info());
     let cell = TraceCellRef::new(base.trace_ref().clone());
-    let replacement = Tracer::<Generic>::placeholder(f32x4_info());
+    let replacement = Tracer::<Generic>::placeholder(sample_info());
     cell.set(replacement.trace_ref().clone());
 
     assert!(ctx.updates().is_empty());

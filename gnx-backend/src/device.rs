@@ -1,6 +1,4 @@
-use crate::expr::trace::{Traceable, Tracer, ValueInfo};
-use crate::expr::value::{ConcreteValue, Value};
-use crate::expr::Expr;
+use gnx_expr::{Traceable, Tracer, ValueInfo, ConcreteValue, Value, Expr};
 use crate::backend::{DeviceHandle, ExecOpts};
 
 use std::hash::{Hash, Hasher};
