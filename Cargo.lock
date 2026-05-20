@@ -215,6 +215,7 @@ name = "gnx"
 version = "0.1.0"
 dependencies = [
  "castaway",
+ "gnx-backend",
  "gnx-expr",
  "gnx-graph",
  "gnx-io",

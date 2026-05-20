@@ -136,7 +136,9 @@ impl BackendImpl for JaxBackend {
             }).collect()
         })?;
         let (mut jax_devices, devices): (Vec<WeakArc<JaxDevice>>, Vec<Device>) = jax_devices.into_iter().map(|x| {
-            (Arc::downgrade(&x), Device::new(x))
+            let weak = Arc::downgrade(&x);
+            let handle: Arc<dyn DeviceImpl + Send + Sync> = x;
+            (weak, Device::new(handle.into()))
         }).unzip();
         // Update the devices list.
         std::mem::swap(&mut *old_devices, &mut jax_devices);

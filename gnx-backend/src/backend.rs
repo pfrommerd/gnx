@@ -18,6 +18,12 @@ pub trait DeviceImpl: Debug + Display + Send + Sync {
 #[derive(Clone)]
 pub struct DeviceHandle(Arc<dyn DeviceImpl + Send + Sync>);
 
+impl From<Arc<dyn DeviceImpl + Send + Sync>> for DeviceHandle {
+    fn from(value: Arc<dyn DeviceImpl + Send + Sync>) -> Self {
+        DeviceHandle(value)
+    }
+}
+
 impl Debug for DeviceHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(self.0.as_ref(), f)

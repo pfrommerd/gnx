@@ -8,5 +8,6 @@ castaway = "0.2.4"
 gnx-transforms = { version = "0.1.0", path = "../gnx-transforms" }
 gnx-graph = { version = "0.1.0", path = "../gnx-graph" }
 gnx-expr = { version = "0.1.0", path = "../gnx-expr" }
+gnx-backend = { version = "0.1.0", path = "../gnx-backend" }
 gnx-io = { version = "0.1.0", path = "../gnx-io" }
 ordered-float = "5.1.0"
