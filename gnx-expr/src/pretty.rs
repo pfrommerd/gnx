@@ -79,16 +79,6 @@ impl PrettyVarScope {
             write!(f, " = ")?;
         }
         self.fmt_eqn_op(eqn, f, printer, indent_level)?;
-        if !eqn.closure().is_empty() {
-            write!(f, " [")?;
-            for (i, input) in eqn.closure().iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                self.fmt_input(input, f)?;
-            }
-            write!(f, "]")?;
-        }
         if !eqn.inputs().is_empty() {
             write!(f, " ")?;
             for (i, input) in eqn.inputs().iter().enumerate() {

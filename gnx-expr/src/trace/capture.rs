@@ -296,7 +296,12 @@ fn collect_invocations(
             continue;
         }
         invs.insert(k, inv.clone());
-        for op in inv.closure().iter().chain(inv.inputs().iter()) {
+        // Go through all the inputs and subexpression closure variables.
+        for op in inv.inputs().iter().chain(
+            inv.subexprs()
+                .iter()
+                .flat_map(|(_, closure)| closure.iter()),
+        ) {
             let trace = op.resolve();
             if trace.context_id() != target {
                 continue;
@@ -330,7 +335,11 @@ fn topo_sort_invocations(
 
     for inv in invs.values() {
         let kid = InvKey::from(inv);
-        for op in inv.closure().iter().chain(inv.inputs().iter()) {
+        for op in inv.inputs().iter().chain(
+            inv.subexprs()
+                .iter()
+                .flat_map(|(_, closure)| closure.iter()),
+        ) {
             let inp = op.resolve();
             if inp.context_id() != target {
                 continue;

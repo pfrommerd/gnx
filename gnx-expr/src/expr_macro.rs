@@ -67,7 +67,6 @@ impl ExprBuilder {
         dialect: &'static str,
         op: &'static str,
         attrs: AttrMap,
-        closure: Vec<Input>,
         inputs: Vec<Input>,
         subexprs: Option<Vec<Expr>>,
     ) {
@@ -77,9 +76,8 @@ impl ExprBuilder {
             .into_iter()
             .map(|expr| SubExpr::new(Arc::new(expr), Vec::new()))
             .collect();
-        self.eqns.push(Eqn::new_with_subexprs(
-            op, subexprs, closure, inputs, outputs,
-        ));
+        self.eqns
+            .push(Eqn::new_with_subexprs(op, subexprs, inputs, outputs));
     }
 
     pub fn finish(self, outputs: Vec<Var>) -> Expr {
@@ -263,7 +261,6 @@ macro_rules! __expr_eqns {
             stringify!($dialect),
             stringify!($op),
             $crate::AttrMap::default(),
-            Vec::new(),
             __inputs,
             None,
         );

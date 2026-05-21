@@ -62,7 +62,6 @@ fn pretty_expr_uses_alphabetic_names() {
         vec![Input::new(x, Effect::Read), Input::new(y, Effect::Read)],
         vec![Eqn::new(
             Op::new(&ADD, AttrMap::default()),
-            vec![],
             vec![Input::new(x, Effect::Read), Input::new(y, Effect::Read)],
             vec![z],
         )],
@@ -87,7 +86,6 @@ fn nested_expr_closure_names_match_outer_names() {
         vec![Input::new(inner_input, Effect::Read)],
         vec![Eqn::new(
             Op::new(&ADD, AttrMap::default()),
-            vec![],
             vec![
                 Input::new(inner_closure, Effect::Read),
                 Input::new(inner_input, Effect::Read),
@@ -108,7 +106,6 @@ fn nested_expr_closure_names_match_outer_names() {
         vec![Eqn::new_with_subexprs(
             Op::new(&CALL, AttrMap::default()),
             vec![SubExpr::new(Arc::new(inner), vec![outer_closure])],
-            vec![],
             vec![Input::new(outer_input, Effect::Read)],
             vec![outer_output],
         )],
@@ -156,7 +153,6 @@ fn hinted_var_names_are_disambiguated() {
         vec![Input::new(x1, Effect::Read), Input::new(x2, Effect::Read)],
         vec![Eqn::new(
             Op::new(&ADD, AttrMap::default()),
-            vec![],
             vec![Input::new(x1, Effect::Read), Input::new(x2, Effect::Read)],
             vec![x3],
         )],
@@ -180,7 +176,6 @@ fn large_subexprs_can_be_deferred_with_hinted_names() {
         vec![Input::new(inner_input, Effect::Read)],
         vec![Eqn::new(
             Op::new(&SIN, AttrMap::default()),
-            vec![],
             vec![Input::new(inner_input, Effect::Read)],
             vec![inner_output],
         )],
@@ -198,7 +193,6 @@ fn large_subexprs_can_be_deferred_with_hinted_names() {
         vec![Eqn::new_with_subexprs(
             Op::new(&CALL, AttrMap::default()),
             vec![SubExpr::new(Arc::new(inner), vec![])],
-            vec![],
             vec![Input::new(outer_input, Effect::Read)],
             vec![outer_output],
         )],
@@ -222,7 +216,6 @@ fn inline_subexpr_indentation_is_configurable() {
         vec![Input::new(inner_input, Effect::Read)],
         vec![Eqn::new(
             Op::new(&SIN, AttrMap::default()),
-            vec![],
             vec![Input::new(inner_input, Effect::Read)],
             vec![inner_output],
         )],
@@ -239,7 +232,6 @@ fn inline_subexpr_indentation_is_configurable() {
         vec![Eqn::new_with_subexprs(
             Op::new(&CALL, AttrMap::default()),
             vec![SubExpr::new(Arc::new(inner), vec![])],
-            vec![],
             vec![Input::new(outer_input, Effect::Read)],
             vec![outer_output],
         )],
@@ -264,9 +256,8 @@ fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
             vec![Input::new(inner_input, Effect::Read)],
             vec![Eqn::new(
                 Op::new(&SIN, AttrMap::default()),
-                vec![],
                 vec![Input::new(inner_input, Effect::Read)],
-                vec![inner_output],
+                vec![],
             )],
             vec![inner_output],
             inner_vars,
@@ -286,13 +277,11 @@ fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
                 Op::new(&CALL, AttrMap::default()),
                 vec![SubExpr::new(Arc::clone(&inner), vec![])],
                 vec![],
-                vec![Input::new(input, Effect::Read)],
                 vec![first],
             ),
             Eqn::new_with_subexprs(
                 Op::new(&CALL, AttrMap::default()),
                 vec![SubExpr::new(Arc::clone(&inner), vec![])],
-                vec![],
                 vec![Input::new(input, Effect::Read)],
                 vec![second],
             ),
