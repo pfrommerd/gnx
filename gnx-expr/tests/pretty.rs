@@ -257,7 +257,7 @@ fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
             vec![Eqn::new(
                 Op::new(&SIN, AttrMap::default()),
                 vec![Input::new(inner_input, Effect::Read)],
-                vec![],
+                vec![inner_output],
             )],
             vec![inner_output],
             inner_vars,
@@ -276,7 +276,7 @@ fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
             Eqn::new_with_subexprs(
                 Op::new(&CALL, AttrMap::default()),
                 vec![SubExpr::new(Arc::clone(&inner), vec![])],
-                vec![],
+                vec![Input::new(input, Effect::Read)],
                 vec![first],
             ),
             Eqn::new_with_subexprs(
