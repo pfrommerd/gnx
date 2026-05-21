@@ -1,20 +1,18 @@
 use crate::dialects::dialects;
-use crate::{Attr, AttrList, AttrMap, Effect, Eqn, Expr, Input, Op, ValueInfo, Var, VarScope};
+use crate::{
+    Attr, AttrList, AttrMap, Effect, Eqn, Expr, Input, Op, SubExpr, ValueInfo, Var, VarScope,
+};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-pub fn op_by_name(
-    dialect_name: &'static str,
-    op_name: &'static str,
-    attrs: AttrMap,
-    subexprs: Option<Vec<Expr>>,
-) -> Op {
+pub fn op_by_name(dialect_name: &'static str, op_name: &'static str, attrs: AttrMap) -> Op {
     let dialect = dialects()
         .get(dialect_name)
         .unwrap_or_else(|| panic!("unknown dialect `{dialect_name}`"));
     let operation = dialect
         .create(op_name)
         .unwrap_or_else(|| panic!("unknown operation `{dialect_name}::{op_name}`"));
-    Op::new(operation, attrs, subexprs)
+    Op::new(operation, attrs)
 }
 
 #[doc(hidden)]
@@ -73,11 +71,14 @@ impl ExprBuilder {
         inputs: Vec<Input>,
         subexprs: Option<Vec<Expr>>,
     ) {
-        self.eqns.push(Eqn::new(
-            op_by_name(dialect, op, attrs, subexprs),
-            closure,
-            inputs,
-            outputs,
+        let op = op_by_name(dialect, op, attrs);
+        let subexprs = subexprs
+            .unwrap_or_default()
+            .into_iter()
+            .map(|expr| SubExpr::new(Arc::new(expr), Vec::new()))
+            .collect();
+        self.eqns.push(Eqn::new_with_subexprs(
+            op, subexprs, closure, inputs, outputs,
         ));
     }
 

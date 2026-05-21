@@ -2,7 +2,7 @@ use crate::builtins::update_op;
 use crate::trace::{
     CellKey, ContextID, Generic, Invocation, TraceContext, TraceObject, TraceRef, Tracer,
 };
-use crate::{Effect, Effects, Eqn, Expr, Input, Var, VarScope};
+use crate::{Effect, Effects, Eqn, Expr, Input, SubExpr, Var, VarScope};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -86,17 +86,24 @@ impl Capture {
         let mut eqns = Vec::with_capacity(ordered_invs.len() + ctx.updates().len());
 
         for inv in &ordered_invs {
-            let closure: Vec<Input> = inv
-                .closure()
+            let subexprs: Vec<SubExpr> = inv
+                .subexprs()
                 .iter()
-                .map(|op| {
-                    alloc_operand(
-                        op,
-                        &mut binding_to_var,
-                        &mut closure_vars,
-                        &mut closure_values,
-                        &mut var_scope,
-                    )
+                .map(|(expr, closure)| {
+                    let closure = closure
+                        .iter()
+                        .map(|op| {
+                            *alloc_operand(
+                                op,
+                                &mut binding_to_var,
+                                &mut closure_vars,
+                                &mut closure_values,
+                                &mut var_scope,
+                            )
+                            .var()
+                        })
+                        .collect();
+                    SubExpr::new(Arc::clone(expr), closure)
                 })
                 .collect();
             let inputs: Vec<Input> = inv
@@ -126,7 +133,12 @@ impl Capture {
                     None => out_vars.push(Var::hole()),
                 }
             }
-            eqns.push(Eqn::new(inv.op().clone(), closure, inputs, out_vars));
+            eqns.push(Eqn::new_with_subexprs(
+                inv.op().clone(),
+                subexprs,
+                inputs,
+                out_vars,
+            ));
         }
 
         for update in ctx.updates() {
@@ -153,15 +165,13 @@ impl Capture {
                 binding_to_var.insert(value_key, v.clone());
                 v
             };
-            let out_var = var_scope.create_var();
             eqns.push(Eqn::new(
                 update_op(),
-                vec![],
                 vec![
                     Input::new(cell_var, Effect::Write),
                     Input::new(value_var, Effect::Read),
                 ],
-                vec![out_var],
+                vec![],
             ));
         }
 

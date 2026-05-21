@@ -1,6 +1,7 @@
 use crate::trace::{Generic, Invocation, TraceObject, Tracer};
 use crate::value::ValueInfo;
 use crate::{AttrMap, Dialect, Expr, Op, Operation};
+use std::sync::Arc;
 
 /// Built-in `builtins` dialect operations.
 pub struct BuiltinsDialect;
@@ -50,12 +51,12 @@ impl Operation for CallOperation {
 
 /// An [`Op`] for `gnx.update`.
 pub fn update_op() -> Op {
-    Op::new(&UPDATE_OP, AttrMap::default(), None)
+    Op::new(&UPDATE_OP, AttrMap::default())
 }
 
-/// An [`Op`] for `gnx.call` with the given subroutine [`Expr`].
-pub fn call_op(expr: Expr) -> Op {
-    Op::new(&CALL_OP, AttrMap::default(), Some(vec![expr]))
+/// An [`Op`] for `gnx.call`.
+pub fn call_op() -> Op {
+    Op::new(&CALL_OP, AttrMap::default())
 }
 
 /// Invoke `gnx.call` with `expr` as an attribute and the given closure/input trace objects.
@@ -71,9 +72,11 @@ where
     I: IntoIterator,
     I::Item: Into<TraceObject>,
 {
-    Invocation::invoke(
-        call_op(expr),
-        closure.into_iter().map(Into::into).collect(),
+    let closure: Vec<TraceObject> = closure.into_iter().map(Into::into).collect();
+    Invocation::invoke_with_subexprs(
+        call_op(),
+        vec![(Arc::new(expr), closure.clone())],
+        closure,
         inputs.into_iter().map(Into::into).collect(),
         outputs,
     )

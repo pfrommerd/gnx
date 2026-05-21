@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 // The inventory crate is used to statically register all dialects.
 #[doc(hidden)]
@@ -39,8 +40,6 @@ pub trait Operation: Sync {
 pub struct Op {
     impl_: &'static dyn Operation,
     attrs: AttrMap,
-    // Closure variables are captured in order.
-    subexprs: Option<Vec<Expr>>,
 }
 
 impl Debug for Op {
@@ -88,20 +87,12 @@ impl fmt::Display for Op {
 }
 
 impl Op {
-    pub fn new(impl_: &'static dyn Operation, attrs: AttrMap, subexprs: Option<Vec<Expr>>) -> Self {
-        Op {
-            impl_,
-            attrs,
-            subexprs,
-        }
+    pub fn new(impl_: &'static dyn Operation, attrs: AttrMap) -> Self {
+        Op { impl_, attrs }
     }
 
     pub fn attrs(&self) -> &AttrMap {
         &self.attrs
-    }
-
-    pub fn subexprs(&self) -> Option<&[Expr]> {
-        self.subexprs.as_deref()
     }
 }
 
@@ -277,20 +268,55 @@ impl fmt::Display for Input {
     }
 }
 
+/// A subexpression argument to an equation, together with its closure variables.
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+pub struct SubExpr {
+    expr: Arc<Expr>,
+    closure: Vec<Var>,
+}
+
+impl SubExpr {
+    pub fn new(expr: Arc<Expr>, closure: Vec<Var>) -> Self {
+        Self { expr, closure }
+    }
+
+    pub fn expr(&self) -> &Arc<Expr> {
+        &self.expr
+    }
+
+    pub fn closure(&self) -> &[Var] {
+        &self.closure
+    }
+}
+
 /// One equation: `let outs... = op [attrs] closure... ins...` in ANF (see [jaxpr](https://docs.jax.dev/en/latest/jaxpr.html)).
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct Eqn {
     op: Op,
-    closure: Vec<Input>,
+    subexprs: Vec<SubExpr>,
     inputs: Vec<Input>,
     outputs: Vec<Var>,
 }
 
 impl Eqn {
-    pub fn new(op: Op, closure: Vec<Input>, inputs: Vec<Input>, outputs: Vec<Var>) -> Self {
+    pub fn new(op: Op, inputs: Vec<Input>, outputs: Vec<Var>) -> Self {
         Eqn {
             op,
-            closure,
+            subexprs: Vec::new(),
+            inputs,
+            outputs,
+        }
+    }
+
+    pub fn new_with_subexprs(
+        op: Op,
+        subexprs: Vec<SubExpr>,
+        inputs: Vec<Input>,
+        outputs: Vec<Var>,
+    ) -> Self {
+        Eqn {
+            op,
+            subexprs,
             inputs,
             outputs,
         }
@@ -300,8 +326,8 @@ impl Eqn {
         &self.op
     }
 
-    pub fn closure(&self) -> &[Input] {
-        &self.closure
+    pub fn subexprs(&self) -> &[SubExpr] {
+        &self.subexprs
     }
 
     pub fn inputs(&self) -> &[Input] {
@@ -318,8 +344,8 @@ impl Eqn {
         for input in self.inputs.iter().filter(|i| i.effect() != Effect::Unused) {
             effects.insert(input.var().clone(), input.effect());
         }
-        for closure in self.closure.iter().filter(|c| c.effect() != Effect::Unused) {
-            effects.insert(closure.var().clone(), closure.effect());
+        for var in self.subexprs.iter().flat_map(|subexpr| subexpr.closure()) {
+            effects.insert(var.clone(), Effect::Read);
         }
         let mut output_effects = Effects::new();
         let mut max_effect = Effect::Unused;

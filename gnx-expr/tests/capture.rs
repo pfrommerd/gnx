@@ -63,7 +63,7 @@ fn op(name: &'static str) -> Op {
         "neg" => &NEG,
         _ => panic!("unknown op"),
     };
-    Op::new(impl_, AttrMap::default(), None)
+    Op::new(impl_, AttrMap::default())
 }
 
 #[test]

@@ -10,8 +10,8 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock};
 
-use crate::Op;
 use crate::util::DgArc;
+use crate::{Expr, Op};
 
 pub use super::value::{ConcreteValue, Generic, Traceable, Value, ValueInfo};
 
@@ -257,8 +257,9 @@ impl From<TraceCellRef> for TraceObject {
 
 pub struct Invocation {
     op: Op,
+    // Subexpressions and the associated closure variables.
+    subexprs: Vec<(Arc<Expr>, Vec<TraceObject>)>,
     context_id: ContextID,
-    closure: Vec<TraceObject>,
     inputs: Vec<TraceObject>,
     outputs: usize,
 }
@@ -282,8 +283,8 @@ impl Invocation {
         self.context_id
     }
 
-    pub fn closure(&self) -> &[TraceObject] {
-        &self.closure
+    pub fn subexprs(&self) -> &[(Arc<Expr>, Vec<TraceObject>)] {
+        &self.subexprs
     }
 
     pub fn inputs(&self) -> &[TraceObject] {
@@ -300,6 +301,16 @@ impl Invocation {
         inputs: Vec<TraceObject>,
         outputs: Vec<ValueInfo>,
     ) -> Vec<Tracer<Generic>> {
+        Self::invoke_with_subexprs(op, Vec::new(), closure, inputs, outputs)
+    }
+
+    pub fn invoke_with_subexprs(
+        op: Op,
+        subexprs: Vec<(Arc<Expr>, Vec<TraceObject>)>,
+        closure: Vec<TraceObject>,
+        inputs: Vec<TraceObject>,
+        outputs: Vec<ValueInfo>,
+    ) -> Vec<Tracer<Generic>> {
         let abstract_ = closure.iter().chain(inputs.iter()).any(|op| match op {
             TraceObject::Ref(r) => r.is_abstract(),
             TraceObject::Cell(c) => c.get().is_abstract(),
@@ -307,8 +318,8 @@ impl Invocation {
         let context_id = TraceContext::current_id();
         let invocation = Arc::new(Invocation {
             op,
+            subexprs,
             context_id,
-            closure: closure.clone(),
             inputs: inputs.clone(),
             outputs: outputs.len(),
         });

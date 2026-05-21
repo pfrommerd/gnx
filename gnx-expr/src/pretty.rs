@@ -1,7 +1,8 @@
-use crate::{Effect, Eqn, Expr, Input, Var};
+use crate::{Effect, Eqn, Expr, Input, SubExpr, Var};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct PrettyVarScope {
@@ -57,6 +58,17 @@ impl PrettyVarScope {
     }
 
     pub fn fmt_eqn(&self, eqn: &Eqn, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut printer = PrettyPrinter::new(PrettyConfig::new());
+        self.fmt_eqn_with_printer(eqn, f, &mut printer, 0)
+    }
+
+    fn fmt_eqn_with_printer(
+        &self,
+        eqn: &Eqn,
+        f: &mut fmt::Formatter<'_>,
+        printer: &mut PrettyPrinter,
+        indent_level: usize,
+    ) -> fmt::Result {
         for (i, output) in eqn.outputs().iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
@@ -66,7 +78,7 @@ impl PrettyVarScope {
         if !eqn.outputs().is_empty() {
             write!(f, " = ")?;
         }
-        self.fmt_eqn_op(eqn, f, None)?;
+        self.fmt_eqn_op(eqn, f, printer, indent_level)?;
         if !eqn.closure().is_empty() {
             write!(f, " [")?;
             for (i, input) in eqn.closure().iter().enumerate() {
@@ -90,14 +102,16 @@ impl PrettyVarScope {
     }
 
     pub fn fmt_expr(&self, expr: &Expr, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_expr_with_printer(expr, f, None)
+        let mut printer = PrettyPrinter::new(PrettyConfig::new());
+        self.fmt_expr_with_printer(expr, f, &mut printer, 0)
     }
 
     fn fmt_expr_with_printer(
         &self,
         expr: &Expr,
         f: &mut fmt::Formatter<'_>,
-        printer: Option<&PrettyPrinter>,
+        printer: &mut PrettyPrinter,
+        indent_level: usize,
     ) -> fmt::Result {
         write!(f, "{{ lambda ")?;
         for (i, input) in expr.closure().iter().enumerate() {
@@ -117,11 +131,12 @@ impl PrettyVarScope {
         }
         writeln!(f, " .")?;
         for eqn in expr.eqns() {
-            write!(f, "  ")?;
-            self.fmt_eqn_with_printer(eqn, f, printer)?;
+            printer.write_indent(f, indent_level + 1)?;
+            self.fmt_eqn_with_printer(eqn, f, printer, indent_level)?;
             writeln!(f)?;
         }
-        write!(f, "  in (")?;
+        printer.write_indent(f, indent_level + 1)?;
+        write!(f, "in (")?;
         for (i, output) in expr.outputs().iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
@@ -131,49 +146,12 @@ impl PrettyVarScope {
         write!(f, ") }}")
     }
 
-    fn fmt_eqn_with_printer(
-        &self,
-        eqn: &Eqn,
-        f: &mut fmt::Formatter<'_>,
-        printer: Option<&PrettyPrinter>,
-    ) -> fmt::Result {
-        for (i, output) in eqn.outputs().iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{}", self.name_for(output))?;
-        }
-        if !eqn.outputs().is_empty() {
-            write!(f, " = ")?;
-        }
-        self.fmt_eqn_op(eqn, f, printer)?;
-        if !eqn.closure().is_empty() {
-            write!(f, " [")?;
-            for (i, input) in eqn.closure().iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                self.fmt_input(input, f)?;
-            }
-            write!(f, "]")?;
-        }
-        if !eqn.inputs().is_empty() {
-            write!(f, " ")?;
-            for (i, input) in eqn.inputs().iter().enumerate() {
-                if i > 0 {
-                    write!(f, " ")?;
-                }
-                self.fmt_input(input, f)?;
-            }
-        }
-        Ok(())
-    }
-
     fn fmt_eqn_op(
         &self,
         eqn: &Eqn,
         f: &mut fmt::Formatter<'_>,
-        printer: Option<&PrettyPrinter>,
+        printer: &mut PrettyPrinter,
+        indent_level: usize,
     ) -> fmt::Result {
         let op = eqn.op();
         write!(f, "{}::{}", op.impl_.dialect().name(), op.impl_.name())?;
@@ -187,20 +165,32 @@ impl PrettyVarScope {
             }
             write!(f, ">")?;
         }
-        if let Some(subexprs) = op.subexprs() {
-            for subexpr in subexprs {
-                write!(f, " ")?;
-                if let Some(printer) = printer
-                    && printer.should_defer(subexpr)
-                {
-                    write!(f, "@{}", printer.defer(subexpr, eqn, self))?;
-                    continue;
-                }
+        for subexpr in eqn.subexprs() {
+            let expr = subexpr.expr().as_ref();
+            write!(f, " ")?;
+            if printer.should_defer(expr) {
+                write!(f, "@{}", printer.defer(subexpr, self))?;
+            } else {
                 let child = PrettyVarScope::new();
-                for (sub_input, outer_input) in subexpr.closure().iter().zip(eqn.closure()) {
-                    child.alias(sub_input.var(), self.name_for(outer_input.var()));
+                for (sub_input, outer_var) in expr.closure().iter().zip(subexpr.closure()) {
+                    child.alias(sub_input.var(), self.name_for(outer_var));
                 }
-                child.fmt_expr_with_printer(subexpr, f, printer)?;
+                child.fmt_expr_with_printer(
+                    expr,
+                    f,
+                    printer,
+                    indent_level + printer.config.inline_subexpr_indent,
+                )?;
+            }
+            if !subexpr.closure().is_empty() {
+                write!(f, " [")?;
+                for (i, var) in subexpr.closure().iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", self.name_for(var))?;
+                }
+                write!(f, "]")?;
             }
         }
         Ok(())
@@ -258,17 +248,35 @@ impl Default for PrettyVarScope {
 #[derive(Clone, Debug)]
 pub struct PrettyConfig {
     max_inline_eqns: Option<usize>,
+    indent: String,
+    inline_subexpr_indent: usize,
 }
 
 impl PrettyConfig {
     pub fn new() -> Self {
         Self {
             max_inline_eqns: None,
+            indent: "  ".to_string(),
+            inline_subexpr_indent: 1,
         }
     }
 
     pub fn max_inline_eqns(mut self, max_inline_eqns: usize) -> Self {
         self.max_inline_eqns = Some(max_inline_eqns);
+        self
+    }
+
+    pub fn indent(mut self, indent: impl Into<String>) -> Self {
+        self.indent = indent.into();
+        self
+    }
+
+    pub fn indent_width(self, spaces: usize) -> Self {
+        self.indent(" ".repeat(spaces))
+    }
+
+    pub fn inline_subexpr_indent(mut self, indent_level: usize) -> Self {
+        self.inline_subexpr_indent = indent_level;
         self
     }
 }
@@ -302,23 +310,41 @@ impl<'a> PrettyExpr<'a> {
         self
     }
 
+    pub fn indent(mut self, indent: impl Into<String>) -> Self {
+        self.config = self.config.indent(indent);
+        self
+    }
+
+    pub fn indent_width(mut self, spaces: usize) -> Self {
+        self.config = self.config.indent_width(spaces);
+        self
+    }
+
+    pub fn inline_subexpr_indent(mut self, indent_level: usize) -> Self {
+        self.config = self.config.inline_subexpr_indent(indent_level);
+        self
+    }
+
     pub fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let printer = PrettyPrinter::new(self.config.clone());
+        let mut printer = PrettyPrinter::new(self.config.clone());
         let scope = PrettyVarScope::new();
-        scope.fmt_expr_with_printer(self.expr, f, Some(&printer))?;
+        scope.fmt_expr_with_printer(self.expr, f, &mut printer, 0)?;
         printer.fmt_deferred(f)
     }
 }
 
+type EqnKey = usize;
+
 struct PrettyPrinter {
     config: PrettyConfig,
-    deferred: RefCell<Vec<DeferredExpr>>,
-    used_expr_names: RefCell<BTreeSet<String>>,
+    deferred: Vec<DeferredExpr>,
+    deferred_names: BTreeMap<EqnKey, String>,
+    used_expr_names: BTreeSet<String>,
 }
 
 struct DeferredExpr {
     name: String,
-    expr: Expr,
+    expr: Arc<Expr>,
     aliases: Vec<(Var, String)>,
 }
 
@@ -326,9 +352,17 @@ impl PrettyPrinter {
     fn new(config: PrettyConfig) -> Self {
         Self {
             config,
-            deferred: RefCell::new(Vec::new()),
-            used_expr_names: RefCell::new(BTreeSet::new()),
+            deferred: Vec::new(),
+            deferred_names: BTreeMap::new(),
+            used_expr_names: BTreeSet::new(),
         }
+    }
+
+    fn write_indent(&self, f: &mut fmt::Formatter<'_>, level: usize) -> fmt::Result {
+        for _ in 0..level {
+            write!(f, "{}", self.config.indent)?;
+        }
+        Ok(())
     }
 
     fn should_defer(&self, expr: &Expr) -> bool {
@@ -337,28 +371,31 @@ impl PrettyPrinter {
             .is_some_and(|max_inline_eqns| expr.eqns().len() > max_inline_eqns)
     }
 
-    fn defer(&self, expr: &Expr, eqn: &Eqn, outer_scope: &PrettyVarScope) -> String {
+    fn defer(&mut self, subexpr: &SubExpr, outer_scope: &PrettyVarScope) -> String {
+        let expr = subexpr.expr();
+        let key = Arc::as_ptr(expr) as EqnKey;
+        if let Some(name) = self.deferred_names.get(&key).cloned() {
+            return name;
+        }
         let name = self.unique_expr_name(expr.name_hint().unwrap_or("expr"));
         let aliases = expr
             .closure()
             .iter()
-            .zip(eqn.closure())
-            .map(|(sub_input, outer_input)| {
-                (
-                    sub_input.var().clone(),
-                    outer_scope.name_for(outer_input.var()),
-                )
+            .zip(subexpr.closure())
+            .map(|(sub_input, outer_var)| {
+                (sub_input.var().clone(), outer_scope.name_for(outer_var))
             })
             .collect();
-        self.deferred.borrow_mut().push(DeferredExpr {
+        self.deferred.push(DeferredExpr {
             name: name.clone(),
-            expr: expr.clone(),
+            expr: Arc::clone(expr),
             aliases,
         });
+        self.deferred_names.insert(key, name.clone());
         name
     }
 
-    fn unique_expr_name(&self, hint: &str) -> String {
+    fn unique_expr_name(&mut self, hint: &str) -> String {
         let base = if hint.is_empty() { "expr" } else { hint };
         let mut suffix = 1;
         loop {
@@ -367,23 +404,20 @@ impl PrettyPrinter {
             } else {
                 format!("{base}-{suffix}")
             };
-            if self.used_expr_names.borrow_mut().insert(candidate.clone()) {
+            if self.used_expr_names.insert(candidate.clone()) {
                 return candidate;
             }
             suffix += 1;
         }
     }
 
-    fn fmt_deferred(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt_deferred(&mut self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut index = 0;
-        while index < self.deferred.borrow().len() {
-            let deferred = {
-                let deferred = self.deferred.borrow();
-                DeferredExpr {
-                    name: deferred[index].name.clone(),
-                    expr: deferred[index].expr.clone(),
-                    aliases: deferred[index].aliases.clone(),
-                }
+        while index < self.deferred.len() {
+            let deferred = DeferredExpr {
+                name: self.deferred[index].name.clone(),
+                expr: self.deferred[index].expr.clone(),
+                aliases: self.deferred[index].aliases.clone(),
             };
             if index == 0 {
                 writeln!(f)?;
@@ -394,9 +428,9 @@ impl PrettyPrinter {
             for (var, name) in &deferred.aliases {
                 scope.alias(var, name.clone());
             }
-            scope.fmt_expr_with_printer(&deferred.expr, f, Some(self))?;
+            scope.fmt_expr_with_printer(&deferred.expr, f, self, 0)?;
             index += 1;
-            if index < self.deferred.borrow().len() {
+            if index < self.deferred.len() {
                 writeln!(f)?;
             }
         }

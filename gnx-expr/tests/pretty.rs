@@ -1,8 +1,9 @@
 use gnx_expr::{
-    Attr, AttrMap, Dialect, Effect, Eqn, Expr, Input, Op, Operation, VarScope, attr, expr,
+    Attr, AttrMap, Dialect, Effect, Eqn, Expr, Input, Op, Operation, SubExpr, VarScope, attr, expr,
     register_dialect,
 };
 use std::fmt::Display;
+use std::sync::Arc;
 
 struct TestDialect;
 struct TestOperation {
@@ -60,7 +61,7 @@ fn pretty_expr_uses_alphabetic_names() {
         vec![],
         vec![Input::new(x, Effect::Read), Input::new(y, Effect::Read)],
         vec![Eqn::new(
-            Op::new(&ADD, AttrMap::default(), None),
+            Op::new(&ADD, AttrMap::default()),
             vec![],
             vec![Input::new(x, Effect::Read), Input::new(y, Effect::Read)],
             vec![z],
@@ -85,7 +86,7 @@ fn nested_expr_closure_names_match_outer_names() {
         vec![Input::new(inner_closure, Effect::Read)],
         vec![Input::new(inner_input, Effect::Read)],
         vec![Eqn::new(
-            Op::new(&ADD, AttrMap::default(), None),
+            Op::new(&ADD, AttrMap::default()),
             vec![],
             vec![
                 Input::new(inner_closure, Effect::Read),
@@ -104,9 +105,10 @@ fn nested_expr_closure_names_match_outer_names() {
     let outer = Expr::new(
         vec![Input::new(outer_closure, Effect::Read)],
         vec![Input::new(outer_input, Effect::Read)],
-        vec![Eqn::new(
-            Op::new(&CALL, AttrMap::default(), Some(vec![inner])),
-            vec![Input::new(outer_closure, Effect::Read)],
+        vec![Eqn::new_with_subexprs(
+            Op::new(&CALL, AttrMap::default()),
+            vec![SubExpr::new(Arc::new(inner), vec![outer_closure])],
+            vec![],
             vec![Input::new(outer_input, Effect::Read)],
             vec![outer_output],
         )],
@@ -115,7 +117,6 @@ fn nested_expr_closure_names_match_outer_names() {
     );
 
     let printed = outer.to_string();
-    println!("{}", printed);
     assert!(printed.contains("{ lambda a ; b ."));
     assert!(printed.contains("test::call { lambda a ; b ."));
 }
@@ -154,7 +155,7 @@ fn hinted_var_names_are_disambiguated() {
         vec![],
         vec![Input::new(x1, Effect::Read), Input::new(x2, Effect::Read)],
         vec![Eqn::new(
-            Op::new(&ADD, AttrMap::default(), None),
+            Op::new(&ADD, AttrMap::default()),
             vec![],
             vec![Input::new(x1, Effect::Read), Input::new(x2, Effect::Read)],
             vec![x3],
@@ -178,7 +179,7 @@ fn large_subexprs_can_be_deferred_with_hinted_names() {
         vec![],
         vec![Input::new(inner_input, Effect::Read)],
         vec![Eqn::new(
-            Op::new(&SIN, AttrMap::default(), None),
+            Op::new(&SIN, AttrMap::default()),
             vec![],
             vec![Input::new(inner_input, Effect::Read)],
             vec![inner_output],
@@ -194,8 +195,9 @@ fn large_subexprs_can_be_deferred_with_hinted_names() {
     let outer = Expr::new(
         vec![],
         vec![Input::new(outer_input, Effect::Read)],
-        vec![Eqn::new(
-            Op::new(&CALL, AttrMap::default(), Some(vec![inner])),
+        vec![Eqn::new_with_subexprs(
+            Op::new(&CALL, AttrMap::default()),
+            vec![SubExpr::new(Arc::new(inner), vec![])],
             vec![],
             vec![Input::new(outer_input, Effect::Read)],
             vec![outer_output],
@@ -207,5 +209,100 @@ fn large_subexprs_can_be_deferred_with_hinted_names() {
     assert_eq!(
         outer.pretty().max_inline_eqns(0).to_string(),
         "{ lambda  ; b .\n  c = test::call @foo b\n  in (c) }\nwhere\n@foo = { lambda  ; b .\n  c = test::sin b\n  in (c) }"
+    );
+}
+
+#[test]
+fn inline_subexpr_indentation_is_configurable() {
+    let mut inner_vars = VarScope::new();
+    let inner_input = inner_vars.create_var_with_hint("b");
+    let inner_output = inner_vars.create_var_with_hint("c");
+    let inner = Expr::new(
+        vec![],
+        vec![Input::new(inner_input, Effect::Read)],
+        vec![Eqn::new(
+            Op::new(&SIN, AttrMap::default()),
+            vec![],
+            vec![Input::new(inner_input, Effect::Read)],
+            vec![inner_output],
+        )],
+        vec![inner_output],
+        inner_vars,
+    );
+
+    let mut outer_vars = VarScope::new();
+    let outer_input = outer_vars.create_var_with_hint("b");
+    let outer_output = outer_vars.create_var_with_hint("c");
+    let outer = Expr::new(
+        vec![],
+        vec![Input::new(outer_input, Effect::Read)],
+        vec![Eqn::new_with_subexprs(
+            Op::new(&CALL, AttrMap::default()),
+            vec![SubExpr::new(Arc::new(inner), vec![])],
+            vec![],
+            vec![Input::new(outer_input, Effect::Read)],
+            vec![outer_output],
+        )],
+        vec![outer_output],
+        outer_vars,
+    );
+
+    assert_eq!(
+        outer.pretty().indent_width(4).to_string(),
+        "{ lambda  ; b .\n    c = test::call { lambda  ; b .\n        c = test::sin b\n        in (c) } b\n    in (c) }"
+    );
+}
+
+#[test]
+fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
+    let mut inner_vars = VarScope::new();
+    let inner_input = inner_vars.create_var_with_hint("b");
+    let inner_output = inner_vars.create_var_with_hint("c");
+    let inner = Arc::new(
+        Expr::new(
+            vec![],
+            vec![Input::new(inner_input, Effect::Read)],
+            vec![Eqn::new(
+                Op::new(&SIN, AttrMap::default()),
+                vec![],
+                vec![Input::new(inner_input, Effect::Read)],
+                vec![inner_output],
+            )],
+            vec![inner_output],
+            inner_vars,
+        )
+        .with_name_hint("foo"),
+    );
+
+    let mut outer_vars = VarScope::new();
+    let input = outer_vars.create_var_with_hint("b");
+    let first = outer_vars.create_var_with_hint("c");
+    let second = outer_vars.create_var_with_hint("d");
+    let outer = Expr::new(
+        vec![],
+        vec![Input::new(input, Effect::Read)],
+        vec![
+            Eqn::new_with_subexprs(
+                Op::new(&CALL, AttrMap::default()),
+                vec![SubExpr::new(Arc::clone(&inner), vec![])],
+                vec![],
+                vec![Input::new(input, Effect::Read)],
+                vec![first],
+            ),
+            Eqn::new_with_subexprs(
+                Op::new(&CALL, AttrMap::default()),
+                vec![SubExpr::new(Arc::clone(&inner), vec![])],
+                vec![],
+                vec![Input::new(input, Effect::Read)],
+                vec![second],
+            ),
+        ],
+        vec![first, second],
+        outer_vars,
+    );
+
+    assert_eq!(
+        outer.pretty().max_inline_eqns(0).to_string(),
+        "{ lambda  ; b .\n  c = test::call @foo b\n  d = test::call @foo b\n  in (c, d) }\nwhere\n@foo = { lambda  ; b .\n  c = test::sin b\n  in (c) }"
     );
 }
