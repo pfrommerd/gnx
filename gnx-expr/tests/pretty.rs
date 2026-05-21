@@ -115,6 +115,7 @@ fn nested_expr_closure_names_match_outer_names() {
     );
 
     let printed = outer.to_string();
+    println!("{}", printed);
     assert!(printed.contains("{ lambda a ; b ."));
     assert!(printed.contains("test::call { lambda a ; b ."));
 }
@@ -139,6 +140,72 @@ fn expr_macro_builds_printed_structure() {
     });
     assert_eq!(
         expr.to_string(),
-        "{ lambda  ; a, b .\n  c = test::add a b\n  in (c) }"
+        "{ lambda  ; x, y .\n  z = test::add x y\n  in (z) }"
+    );
+}
+
+#[test]
+fn hinted_var_names_are_disambiguated() {
+    let mut vars = VarScope::new();
+    let x1 = vars.create_var_with_hint("x");
+    let x2 = vars.create_var_with_hint("x");
+    let x3 = vars.create_var_with_hint("x");
+    let expr = Expr::new(
+        vec![],
+        vec![Input::new(x1, Effect::Read), Input::new(x2, Effect::Read)],
+        vec![Eqn::new(
+            Op::new(&ADD, AttrMap::default(), None),
+            vec![],
+            vec![Input::new(x1, Effect::Read), Input::new(x2, Effect::Read)],
+            vec![x3],
+        )],
+        vec![x3],
+        vars,
+    );
+
+    assert_eq!(
+        expr.to_string(),
+        "{ lambda  ; x, x_2 .\n  x_3 = test::add x x_2\n  in (x_3) }"
+    );
+}
+
+#[test]
+fn large_subexprs_can_be_deferred_with_hinted_names() {
+    let mut inner_vars = VarScope::new();
+    let inner_input = inner_vars.create_var_with_hint("b");
+    let inner_output = inner_vars.create_var_with_hint("c");
+    let inner = Expr::new(
+        vec![],
+        vec![Input::new(inner_input, Effect::Read)],
+        vec![Eqn::new(
+            Op::new(&SIN, AttrMap::default(), None),
+            vec![],
+            vec![Input::new(inner_input, Effect::Read)],
+            vec![inner_output],
+        )],
+        vec![inner_output],
+        inner_vars,
+    )
+    .with_name_hint("foo");
+
+    let mut outer_vars = VarScope::new();
+    let outer_input = outer_vars.create_var_with_hint("b");
+    let outer_output = outer_vars.create_var_with_hint("c");
+    let outer = Expr::new(
+        vec![],
+        vec![Input::new(outer_input, Effect::Read)],
+        vec![Eqn::new(
+            Op::new(&CALL, AttrMap::default(), Some(vec![inner])),
+            vec![],
+            vec![Input::new(outer_input, Effect::Read)],
+            vec![outer_output],
+        )],
+        vec![outer_output],
+        outer_vars,
+    );
+
+    assert_eq!(
+        outer.pretty().max_inline_eqns(0).to_string(),
+        "{ lambda  ; b .\n  c = test::call @foo b\n  in (c) }\nwhere\n@foo = { lambda  ; b .\n  c = test::sin b\n  in (c) }"
     );
 }

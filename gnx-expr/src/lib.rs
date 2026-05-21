@@ -1,6 +1,7 @@
 mod attr;
 pub mod builtins;
 mod dialects;
+pub mod expr_macro;
 pub mod pretty;
 pub mod trace;
 pub mod util;
@@ -17,6 +18,7 @@ use std::fmt;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
+// The inventory crate is used to statically register all dialects.
 #[doc(hidden)]
 pub mod __private {
     pub use inventory;
@@ -118,21 +120,41 @@ impl VarScope {
         self.next_id += 1;
         v
     }
+
+    pub fn create_var_with_hint(&mut self, name_hint: &'static str) -> Var {
+        let v = Var::bind_with_hint(self.next_id, name_hint);
+        self.next_id += 1;
+        v
+    }
 }
 
 /// A jaxpr-style variable: bound to an index or 0 for a hole.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug)]
 pub struct Var {
     id: usize,
+    name_hint: Option<&'static str>,
 }
 
 impl Var {
     pub fn hole() -> Self {
-        Var { id: 0 }
+        Var {
+            id: 0,
+            name_hint: None,
+        }
     }
 
     pub fn bind(id: usize) -> Self {
-        Var { id: id + 1 } // 0 is reserved for holes
+        Var {
+            id: id + 1,
+            name_hint: None,
+        } // 0 is reserved for holes
+    }
+
+    pub fn bind_with_hint(id: usize, name_hint: &'static str) -> Self {
+        Var {
+            id: id + 1,
+            name_hint: Some(name_hint),
+        }
     }
 
     pub fn id(&self) -> Option<usize> {
@@ -140,6 +162,36 @@ impl Var {
             0 => None,
             i => Some(i - 1),
         }
+    }
+
+    pub fn name_hint(&self) -> Option<&str> {
+        self.name_hint
+    }
+}
+
+impl Hash for Var {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl PartialEq for Var {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Var {}
+
+impl PartialOrd for Var {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Var {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
     }
 }
 
@@ -296,13 +348,14 @@ impl fmt::Display for Eqn {
 }
 
 /// Functional ANF expression: `lambda closure* ; explicit* . let eqns* in outputs*`.
-#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+#[derive(Clone, Debug)]
 pub struct Expr {
     closure: Vec<Input>,
     inputs: Vec<Input>,
     eqns: Vec<Eqn>,
     outputs: Vec<Var>,
     var_scope: VarScope,
+    name_hint: Option<String>,
 }
 
 impl Expr {
@@ -319,7 +372,31 @@ impl Expr {
             eqns,
             outputs,
             var_scope,
+            name_hint: None,
         }
+    }
+
+    pub fn new_with_hint(
+        closure: Vec<Input>,
+        inputs: Vec<Input>,
+        eqns: Vec<Eqn>,
+        outputs: Vec<Var>,
+        var_scope: VarScope,
+        name_hint: impl Into<String>,
+    ) -> Self {
+        Expr {
+            closure,
+            inputs,
+            eqns,
+            outputs,
+            var_scope,
+            name_hint: Some(name_hint.into()),
+        }
+    }
+
+    pub fn with_name_hint(mut self, name_hint: impl Into<String>) -> Self {
+        self.name_hint = Some(name_hint.into());
+        self
     }
 
     pub fn closure(&self) -> &[Input] {
@@ -335,6 +412,42 @@ impl Expr {
 
     pub fn outputs(&self) -> &[Var] {
         &self.outputs
+    }
+
+    pub fn name_hint(&self) -> Option<&str> {
+        self.name_hint.as_deref()
+    }
+
+    pub fn pretty(&self) -> pretty::PrettyExpr<'_> {
+        pretty::PrettyExpr::new(self)
+    }
+}
+
+impl Hash for Expr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.closure.hash(state);
+        self.inputs.hash(state);
+        self.eqns.hash(state);
+        self.outputs.hash(state);
+        self.var_scope.hash(state);
+    }
+}
+
+impl PartialEq for Expr {
+    fn eq(&self, other: &Self) -> bool {
+        self.closure == other.closure
+            && self.inputs == other.inputs
+            && self.eqns == other.eqns
+            && self.outputs == other.outputs
+            && self.var_scope == other.var_scope
+    }
+}
+
+impl Eq for Expr {}
+
+impl fmt::Display for pretty::PrettyExpr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt(f)
     }
 }
 
