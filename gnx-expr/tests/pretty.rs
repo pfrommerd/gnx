@@ -71,7 +71,7 @@ fn pretty_expr_uses_alphabetic_names() {
 
     assert_eq!(
         expr.to_string(),
-        "{ lambda  ; a, b .\n  c = test.add a b\n  in (c) }"
+        "{ lambda  ; a, b .\n  c = test::add a b\n  in (c) }"
     );
 }
 
@@ -116,7 +116,7 @@ fn nested_expr_closure_names_match_outer_names() {
 
     let printed = outer.to_string();
     assert!(printed.contains("{ lambda a ; b ."));
-    assert!(printed.contains("test.call { lambda a ; b ."));
+    assert!(printed.contains("test::call { lambda a ; b ."));
 }
 
 #[test]
