@@ -1,6 +1,6 @@
 use crate::trace::{Generic, Invocation, TraceObject, Tracer};
 use crate::value::ValueInfo;
-use crate::{Attr, AttrMap, Dialect, Expr, Op, Operation};
+use crate::{AttrMap, Dialect, Expr, Op, Operation};
 
 /// Built-in `builtins` dialect operations.
 pub struct BuiltinsDialect;
@@ -50,14 +50,12 @@ impl Operation for CallOperation {
 
 /// An [`Op`] for `gnx.update`.
 pub fn update_op() -> Op {
-    Op::new(&UPDATE_OP, AttrMap::default())
+    Op::new(&UPDATE_OP, AttrMap::default(), None)
 }
 
 /// An [`Op`] for `gnx.call` with the given subroutine [`Expr`].
 pub fn call_op(expr: Expr) -> Op {
-    let mut attrs = AttrMap::default();
-    attrs.insert("expr".to_string(), Attr::Expr(expr));
-    Op::new(&CALL_OP, attrs)
+    Op::new(&CALL_OP, AttrMap::default(), Some(vec![expr]))
 }
 
 /// Invoke `gnx.call` with `expr` as an attribute and the given closure/input trace objects.

@@ -1,6 +1,7 @@
 mod attr;
 pub mod builtins;
 mod dialects;
+pub mod pretty;
 pub mod trace;
 pub mod util;
 pub mod value;
@@ -36,6 +37,8 @@ pub trait Operation: Sync {
 pub struct Op {
     impl_: &'static dyn Operation,
     attrs: AttrMap,
+    // Closure variables are captured in order.
+    subexprs: Option<Vec<Expr>>,
 }
 
 impl Debug for Op {
@@ -83,8 +86,20 @@ impl fmt::Display for Op {
 }
 
 impl Op {
-    pub fn new(impl_: &'static dyn Operation, attrs: AttrMap) -> Self {
-        Op { impl_, attrs }
+    pub fn new(impl_: &'static dyn Operation, attrs: AttrMap, subexprs: Option<Vec<Expr>>) -> Self {
+        Op {
+            impl_,
+            attrs,
+            subexprs,
+        }
+    }
+
+    pub fn attrs(&self) -> &AttrMap {
+        &self.attrs
+    }
+
+    pub fn subexprs(&self) -> Option<&[Expr]> {
+        self.subexprs.as_deref()
     }
 }
 
@@ -130,10 +145,7 @@ impl Var {
 
 impl fmt::Display for Var {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.id() {
-            Some(i) => write!(f, "v{}", i),
-            None => write!(f, "?"),
-        }
+        pretty::PrettyVarScope::new().fmt_var(self, f)
     }
 }
 
@@ -209,12 +221,7 @@ impl Input {
 
 impl fmt::Display for Input {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.var)?;
-        match self.effect {
-            Effect::Unused | Effect::Read => (),
-            Effect::Write | Effect::ReadWrite => write!(f, "[:]")?,
-        }
-        Ok(())
+        pretty::PrettyVarScope::new().fmt_input(self, f)
     }
 }
 
@@ -284,34 +291,7 @@ impl Eqn {
 
 impl fmt::Display for Eqn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, o) in self.outputs.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{o}")?;
-        }
-        if !self.outputs.is_empty() {
-            write!(f, " = ")?;
-        }
-        write!(f, "{}", self.op)?;
-        if !self.closure.is_empty() {
-            write!(f, " [")?;
-            for (i, c) in self.closure.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{c}")?;
-            }
-            write!(f, "]")?;
-        }
-        write!(f, " ")?;
-        for (i, inp) in self.inputs.iter().enumerate() {
-            if i > 0 {
-                write!(f, " ")?;
-            }
-            write!(f, "{inp}")?;
-        }
-        Ok(())
+        pretty::PrettyVarScope::new().fmt_eqn(self, f)
     }
 }
 
@@ -360,31 +340,6 @@ impl Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{{ lambda ")?;
-        for (i, c) in self.closure.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{c}")?;
-        }
-        write!(f, " ; ")?;
-        for (i, x) in self.inputs.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{x}")?;
-        }
-        writeln!(f, " .")?;
-        for eq in &self.eqns {
-            writeln!(f, "    {eq}")?;
-        }
-        write!(f, "  in (")?;
-        for (i, o) in self.outputs.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{o}")?;
-        }
-        write!(f, ") }}")
+        pretty::PrettyVarScope::new().fmt_expr(self, f)
     }
 }

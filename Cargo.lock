@@ -215,23 +215,12 @@ name = "gnx"
 version = "0.1.0"
 dependencies = [
  "castaway",
- "gnx-backend",
  "gnx-expr",
  "gnx-graph",
  "gnx-io",
+ "gnx-math",
  "gnx-transforms",
  "ordered-float",
-]
-
-[[package]]
-name = "gnx-backend"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "gnx-expr",
- "ordered-float",
- "smallvec",
- "uuid",
 ]
 
 [[package]]
@@ -256,9 +245,9 @@ dependencies = [
 name = "gnx-graph"
 version = "0.1.0"
 dependencies = [
- "gnx-backend",
  "gnx-derive",
  "gnx-expr",
+ "gnx-math",
  "ordered-float",
  "paste",
 ]
@@ -268,9 +257,9 @@ name = "gnx-io"
 version = "0.1.0"
 dependencies = [
  "base64",
- "gnx-backend",
  "gnx-expr",
  "gnx-graph",
+ "gnx-math",
  "object_store",
  "ordered-float",
  "paste",
@@ -283,6 +272,17 @@ dependencies = [
  "async-trait",
  "gnx",
  "pyo3",
+ "uuid",
+]
+
+[[package]]
+name = "gnx-math"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "gnx-expr",
+ "ordered-float",
+ "smallvec",
  "uuid",
 ]
 
