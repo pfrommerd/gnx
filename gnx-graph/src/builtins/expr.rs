@@ -1,8 +1,8 @@
 use crate::util::impl_lifetime_free;
 use crate::*;
 
-use gnx_backend::{Array, ArrayInfo, ArrayRef, Device, DeviceInfo};
 use gnx_expr::trace::{Generic, TraceCellRef, TraceRef, Traceable, Tracer, TracerCell};
+use gnx_math::{Array, ArrayInfo, ArrayRef, Device, DeviceInfo};
 
 impl_lifetime_free!(
     TraceRef,

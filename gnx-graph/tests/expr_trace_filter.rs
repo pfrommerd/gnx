@@ -1,4 +1,4 @@
-use gnx_backend::{Array, ArrayInfo, ArrayRef, DType, Shape};
+use gnx_math::{Array, ArrayInfo, ArrayRef, DType, Shape};
 use gnx_expr::trace::{CellKey, TraceCellRef, TraceContext, TraceRef, Tracer, TracerKey};
 use gnx_graph::{Filter, Graph, GraphContext, GraphSource, Of, TypedGraph};
 

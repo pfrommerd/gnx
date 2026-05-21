@@ -6,7 +6,7 @@ pub use gnx_transforms::callable;
 pub use gnx_expr as expr;
 pub use gnx_graph as graph;
 
-pub use gnx_backend::{array, backend, device};
+pub use gnx_math::{array, backend, device};
 
 // Include all util modules from gnx-graph and gnx-io
 pub mod util {
@@ -17,9 +17,9 @@ pub mod util {
 // for convenience, re-export a handful of top-level namespace items
 // - Array, Shape, Device, and devices() from gnx-expr
 // - Graph and GraphId from gnx-graph
-pub use gnx_backend::array::{Array, Shape};
-pub use gnx_backend::backend::devices;
-pub use gnx_backend::device::Device;
+pub use gnx_math::array::{Array, Shape};
+pub use gnx_math::backend::devices;
+pub use gnx_math::device::Device;
 pub use gnx_graph::{Graph, GraphId};
 
 pub use gnx_transforms::{Callable, jit, jittable, transform};
