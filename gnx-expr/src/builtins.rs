@@ -62,15 +62,16 @@ pub fn call_op() -> Op {
 /// Invoke `gnx.call` with `expr` as an attribute and the given closure/input trace objects.
 pub fn call<C, I>(
     expr: Expr,
+    // The closure arguments for the expression.
     closure: C,
     inputs: I,
     outputs: Vec<ValueInfo>,
-) -> Vec<Tracer<Generic>>
+) -> Vec<TraceObject>
 where
     C: IntoIterator,
-    C::Item: Into<TraceObject>,
+    C::Item: Into<TraceInput>,
     I: IntoIterator,
-    I::Item: Into<TraceObject>,
+    I::Item: Into<TraceInput>,
 {
     let closure: Vec<TraceObject> = closure.into_iter().map(Into::into).collect();
     Invocation::invoke_with_subexprs(

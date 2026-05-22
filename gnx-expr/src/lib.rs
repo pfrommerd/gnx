@@ -1,8 +1,8 @@
 mod attr;
 pub mod builtins;
 mod dialects;
-pub mod expr_macro;
-pub mod pretty;
+// pub mod expr_macro;
+// pub mod pretty;
 pub mod trace;
 pub mod util;
 pub mod value;
@@ -186,12 +186,6 @@ impl Ord for Var {
     }
 }
 
-impl fmt::Display for Var {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        pretty::PrettyVarScope::new().fmt_var(self, f)
-    }
-}
-
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Effect {
     Unused,
@@ -262,21 +256,15 @@ impl Input {
     }
 }
 
-impl fmt::Display for Input {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        pretty::PrettyVarScope::new().fmt_input(self, f)
-    }
-}
-
 /// A subexpression argument to an equation, together with its closure variables.
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub struct SubExpr {
     expr: Arc<Expr>,
-    closure: Vec<Var>,
+    closure: Vec<Input>,
 }
 
 impl SubExpr {
-    pub fn new(expr: Arc<Expr>, closure: Vec<Var>) -> Self {
+    pub fn new(expr: Arc<Expr>, closure: Vec<Input>) -> Self {
         Self { expr, closure }
     }
 
@@ -284,9 +272,19 @@ impl SubExpr {
         &self.expr
     }
 
-    pub fn closure(&self) -> &[Var] {
+    pub fn closure(&self) -> &[Input] {
         &self.closure
     }
+}
+
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+pub enum Output {
+    // This is a "fresh" variable that does
+    // not exist in the scope currently.
+    New(Var),
+    // The output is an alias
+    // of an input or closure variable.
+    Aliased(Var),
 }
 
 /// One equation: `let outs... = op [attrs] closure... ins...` in ANF (see [jaxpr](https://docs.jax.dev/en/latest/jaxpr.html)).
@@ -295,11 +293,11 @@ pub struct Eqn {
     op: Op,
     subexprs: Vec<SubExpr>,
     inputs: Vec<Input>,
-    outputs: Vec<Var>,
+    outputs: Vec<Output>,
 }
 
 impl Eqn {
-    pub fn new(op: Op, inputs: Vec<Input>, outputs: Vec<Var>) -> Self {
+    pub fn new(op: Op, inputs: Vec<Input>, outputs: Vec<Output>) -> Self {
         Eqn {
             op,
             subexprs: Vec::new(),
@@ -312,7 +310,7 @@ impl Eqn {
         op: Op,
         subexprs: Vec<SubExpr>,
         inputs: Vec<Input>,
-        outputs: Vec<Var>,
+        outputs: Vec<Output>,
     ) -> Self {
         Eqn {
             op,
@@ -334,7 +332,7 @@ impl Eqn {
         &self.inputs
     }
 
-    pub fn outputs(&self) -> &[Var] {
+    pub fn outputs(&self) -> &[Output] {
         &self.outputs
     }
 
@@ -344,8 +342,8 @@ impl Eqn {
         for input in self.inputs.iter().filter(|i| i.effect() != Effect::Unused) {
             effects.insert(input.var().clone(), input.effect());
         }
-        for var in self.subexprs.iter().flat_map(|subexpr| subexpr.closure()) {
-            effects.insert(var.clone(), Effect::Read);
+        for input in self.subexprs.iter().flat_map(|subexpr| subexpr.closure()) {
+            effects.insert(input.var().clone(), input.effect());
         }
         let mut output_effects = Effects::new();
         let mut max_effect = Effect::Unused;
@@ -444,9 +442,9 @@ impl Expr {
         self.name_hint.as_deref()
     }
 
-    pub fn pretty(&self) -> pretty::PrettyExpr<'_> {
-        pretty::PrettyExpr::new(self)
-    }
+    // pub fn pretty(&self) -> pretty::PrettyExpr<'_> {
+    //     pretty::PrettyExpr::new(self)
+    // }
 }
 
 impl Hash for Expr {

@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::{Generic, ValueInfo};
 
-use super::context::{CellUpdate, ContextID, TraceContext};
+use super::context::{ContextID, TraceContext};
 use super::{TraceRef, Traceable, Tracer};
 
 /// Stable identity for a [`TraceCell`].
@@ -32,9 +32,8 @@ pub struct TraceCellRef(Arc<TraceCell>);
 
 impl TraceCellRef {
     pub fn new(base: TraceRef) -> Self {
-        let context_id = TraceContext::current_id();
         TraceCellRef(Arc::new(TraceCell {
-            context_id,
+            context_id: TraceContext::current_id(),
             type_info: base.info().clone(),
             cell: RwLock::new(base),
         }))
@@ -93,34 +92,28 @@ impl Debug for TraceCell {
 }
 
 impl TraceCell {
-    pub fn context_id(&self) -> ContextID {
-        self.context_id
+    pub fn context_id(&self) -> &ContextID {
+        &self.context_id
     }
 
     fn get(&self, cell_ref: &TraceCellRef) -> TraceRef {
-        if self.context_id == TraceContext::current_id() {
+        if self.context_id.is_current() {
             return self.cell.read().unwrap().clone();
         }
-        TraceContext::active()
-            .cell_override(CellKey::from(cell_ref))
-            .unwrap_or_else(|| self.cell.read().unwrap().clone())
+        assert!(self.context_id.is_alive(), "Accessing a leaked TraceCell!");
+        let ctx = TraceContext::current().unwrap();
+        ctx.cell_override(CellKey::from(cell_ref))
+            .unwrap_or_else(|| TraceRef::captured_cell_state(cell_ref.clone()))
     }
 
     fn set(&self, cell_ref: &TraceCellRef, value: TraceRef) {
-        if self.context_id == TraceContext::current_id() {
+        if self.context_id.is_current() {
             *self.cell.write().unwrap() = value;
             return;
         }
-        let ctx = TraceContext::active();
-        let effective = self.get(cell_ref);
-        if value.context_id() == effective.context_id() {
-            ctx.override_cell(CellKey::from(cell_ref), value);
-        } else {
-            ctx.register_update(CellUpdate {
-                cell: cell_ref.clone(),
-                value,
-            });
-        }
+        assert!(self.context_id.is_alive(), "Accessing a leaked TraceCell!");
+        let ctx = TraceContext::current().unwrap();
+        ctx.override_cell(CellKey::from(cell_ref), value);
     }
 }
 
@@ -142,12 +135,12 @@ impl<T: Traceable> TracerCell<T> {
         &self.shared
     }
 
-    pub fn context_id(&self) -> ContextID {
+    pub fn context_id(&self) -> &ContextID {
         self.shared.context_id()
     }
 
     pub fn get(&self) -> Tracer<T> {
-        Tracer::unchecked_new(self.shared.get())
+        unsafe { Tracer::unchecked_new(self.shared.get()) }
     }
 
     pub fn set(&self, value: Tracer<T>) {

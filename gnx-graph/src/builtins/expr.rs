@@ -1,7 +1,9 @@
 use crate::util::impl_lifetime_free;
 use crate::*;
 
-use gnx_expr::trace::{Generic, TraceCellRef, TraceRef, Traceable, Tracer, TracerCell};
+use gnx_expr::trace::{
+    Generic, TraceCellRef, TraceObject, TraceRef, Traceable, Tracer, TracerCell,
+};
 use gnx_math::{Array, ArrayInfo, ArrayRef, Device, DeviceInfo};
 
 impl_lifetime_free!(
@@ -21,6 +23,45 @@ impl_leaf!(TraceRef);
 impl_leaf!(TraceCellRef);
 impl_leaf!(ArrayInfo);
 impl_leaf!(DeviceInfo);
+
+// A TraceObject is also a leaf, and can act as either a TraceRef or a TraceCellRef.
+// impl Graph for TraceObject {
+//     type Owned = Self;
+//     type Builder<L: Leaf> = LeafBuilder<Self>;
+
+//     fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+//         &'g self,
+//         filter: F,
+//         source: S,
+//         _ctx: &mut GraphContext,
+//     ) -> Result<Self::Owned, S::Error> {
+//         todo!()
+//     }
+
+//     fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
+//         &'g self,
+//         filter: F,
+//         _ctx: &mut GraphContext,
+//     ) -> Result<Self::Builder<L>, E> {
+//         todo!()
+//     }
+
+//     fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+//         &'g self,
+//         filter: F,
+//         visitor: V,
+//     ) -> V::Output {
+//         todo!()
+//     }
+
+//     fn visit_into<'g, L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+//         self,
+//         filter: F,
+//         consumer: C,
+//     ) -> C::Output {
+//         todo!()
+//     }
+// }
 
 // Note Tracer<> and TracerCell<> types are intentionally not implemented as leaves.
 // TraceRef and TraceCellRef are only leaves so that we can filter all Traceable types.
@@ -130,7 +171,15 @@ impl Leaf for Array {
         })
     }
     fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-        cast!(self, V)
+        cast!(self, V).or_else(|value| {
+            if let Ok(_) = cast!(value.tracer(), &V) {
+                return Ok(cast!(value.into_tracer(), V).ok().unwrap());
+            }
+            if let Ok(_) = cast!(value.tracer().trace_ref(), &V) {
+                return Ok(cast!(value.into_tracer().into_trace_ref(), V).ok().unwrap());
+            }
+            Err(value)
+        })
     }
 }
 
@@ -234,7 +283,15 @@ impl Leaf for Device {
         })
     }
     fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-        cast!(self, V)
+        cast!(self, V).or_else(|value| {
+            if let Ok(_) = cast!(value.tracer(), &V) {
+                return Ok(cast!(value.into_tracer(), V).ok().unwrap());
+            }
+            if let Ok(_) = cast!(value.tracer().trace_ref(), &V) {
+                return Ok(cast!(value.into_tracer().into_trace_ref(), V).ok().unwrap());
+            }
+            Err(value)
+        })
     }
 }
 

@@ -41,7 +41,7 @@ impl Capture {
                     if let Some(var) = binding_to_var.get(&key).cloned() {
                         return Input::new(var, Effect::Read);
                     }
-                    if r.context_id() != target {
+                    if r.context_id() != &target {
                         let v = var_scope.create_var();
                         binding_to_var.insert(key, v.clone());
                         closure_vars.push(v.clone());
@@ -141,40 +141,6 @@ impl Capture {
             ));
         }
 
-        for update in ctx.updates() {
-            let cell_key = BindingKey::Cell(CellKey::from(&update.cell));
-            let cell_var = match binding_to_var.get(&cell_key) {
-                Some(v) => v.clone(),
-                None => {
-                    let v = var_scope.create_var();
-                    binding_to_var.insert(cell_key, v.clone());
-                    v
-                }
-            };
-            let value_key = BindingKey::Trace(TracerKey::from(&update.value));
-            let value_var = if let Some(v) = binding_to_var.get(&value_key) {
-                v.clone()
-            } else if update.value.context_id() != target {
-                let v = var_scope.create_var();
-                binding_to_var.insert(value_key, v.clone());
-                closure_vars.push(v.clone());
-                closure_values.push(TraceObject::from(update.value.clone()));
-                v
-            } else {
-                let v = var_scope.create_var();
-                binding_to_var.insert(value_key, v.clone());
-                v
-            };
-            eqns.push(Eqn::new(
-                update_op(),
-                vec![
-                    Input::new(cell_var, Effect::Write),
-                    Input::new(value_var, Effect::Read),
-                ],
-                vec![],
-            ));
-        }
-
         for obj in &outputs {
             let key = match obj {
                 TraceObject::Ref(r) => BindingKey::Trace(TracerKey::from(r)),
@@ -257,11 +223,14 @@ impl From<&Arc<Invocation>> for InvKey {
     }
 }
 
+// Collect all the invocations that are reachable from the outputs.
+// for the given target context.
 fn collect_invocations(
     outputs: &[TraceRef],
     target: ContextID,
 ) -> (
     HashMap<InvKey, Arc<Invocation>>,
+    // contains a map from invocation to output indices and the corresponding trace refs.
     HashMap<InvKey, BTreeMap<usize, TraceRef>>,
 ) {
     let mut invs: HashMap<InvKey, Arc<Invocation>> = HashMap::new();
@@ -269,16 +238,16 @@ fn collect_invocations(
     let mut pending: Vec<Arc<Invocation>> = Vec::new();
 
     for out in outputs {
-        if out.context_id() != target {
+        if out.context_id() != &target {
             continue;
         }
         if let Some((inv, pos)) = out.producer() {
-            if inv.context_id() != target {
+            if inv.context_id() != &target {
                 continue;
             }
-            if let Some(ret_idx) = pos.return_index() {
-                let key = InvKey::from(&inv);
-                pending.push(inv);
+            if let Some(ret_idx) = pos {
+                let key = InvKey::from(inv);
+                pending.push(inv.clone());
                 output_vars
                     .entry(key)
                     .or_default()
@@ -292,7 +261,7 @@ fn collect_invocations(
         if invs.contains_key(&k) {
             continue;
         }
-        if inv.context_id() != target {
+        if inv.context_id() != &target {
             continue;
         }
         invs.insert(k, inv.clone());
@@ -302,18 +271,22 @@ fn collect_invocations(
                 .iter()
                 .flat_map(|(_, closure)| closure.iter()),
         ) {
-            let trace = op.resolve();
-            if trace.context_id() != target {
-                continue;
-            }
-            if let Some((pred, pos)) = trace.producer() {
-                if pred.context_id() != target {
+            if let Some(trace) = op.trace() {
+                if trace.context_id() != &target {
                     continue;
                 }
-                let key = InvKey::from(&pred);
-                pending.push(pred);
-                if let Some(out_idx) = pos.return_index() {
-                    output_vars.entry(key).or_default().insert(out_idx, trace);
+                if let Some((pred, pos)) = trace.producer() {
+                    if pred.context_id() != &target {
+                        continue;
+                    }
+                    let key = InvKey::from(pred);
+                    pending.push(pred.clone());
+                    if let Some(out_idx) = pos {
+                        output_vars
+                            .entry(key)
+                            .or_default()
+                            .insert(out_idx, trace.clone());
+                    }
                 }
             }
         }
@@ -335,23 +308,24 @@ fn topo_sort_invocations(
 
     for inv in invs.values() {
         let kid = InvKey::from(inv);
-        for op in inv.inputs().iter().chain(
+        for input in inv.inputs().iter().chain(
             inv.subexprs()
                 .iter()
                 .flat_map(|(_, closure)| closure.iter()),
         ) {
-            let inp = op.resolve();
-            if inp.context_id() != target {
-                continue;
-            }
-            if let Some((pred, _)) = inp.producer() {
-                if pred.context_id() != target {
+            if let Some(trace) = input.trace() {
+                if trace.context_id() != &target {
                     continue;
                 }
-                let pid = InvKey::from(&pred);
-                if pid != kid && invs.contains_key(&pid) {
-                    succ.entry(pid).or_default().push(kid);
-                    *indeg.get_mut(&kid).unwrap() += 1;
+                if let Some((pred, _)) = trace.producer() {
+                    if pred.context_id() != &target {
+                        continue;
+                    }
+                    let pid = InvKey::from(pred);
+                    if pid != kid && invs.contains_key(&pid) {
+                        succ.entry(pid).or_default().push(kid);
+                        *indeg.get_mut(&kid).unwrap() += 1;
+                    }
                 }
             }
         }
