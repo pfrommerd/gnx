@@ -105,7 +105,10 @@ fn nested_expr_closure_names_match_outer_names() {
         vec![Input::new(outer_input, Effect::Read)],
         vec![Eqn::new_with_subexprs(
             Op::new(&CALL, AttrMap::default()),
-            vec![SubExpr::new(Arc::new(inner), vec![outer_closure])],
+            vec![SubExpr::new(
+                Arc::new(inner),
+                vec![Input::read(outer_closure)],
+            )],
             vec![Input::new(outer_input, Effect::Read)],
             vec![outer_output],
         )],

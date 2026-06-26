@@ -1,4 +1,4 @@
-use crate::{Generic, Invocation, TraceCellRef, Traceable, Value, ValueInfo};
+use crate::{Generic, Invocation, Traceable, Value, ValueInfo};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -15,23 +15,16 @@ enum TraceVariant {
         inv: Arc<Invocation>,
         ret_idx: usize,
     },
-    // A placeholder for the read state of a cell,
-    // either from an outer context or a cell input
-    // that was read from in the current context.
-    CapturedCellState(TraceCellRef),
-    // state of a cell returned by an invocation
-    // at the given return index
+    // The state of a new cell created
+    // by the specified invocation
     NewCellState {
         inv: Arc<Invocation>,
         ret_idx: usize,
     },
-    // an the cell has been updated by the specified invocation
-    UpdatedCellState(Arc<Invocation>),
-}
-
-pub enum Position {
-    Returned(usize),
-    Input(usize),
+    // the cell has been updated by the specified invocation
+    UpdatedCellState {
+        inv: Arc<Invocation>,
+    },
 }
 
 pub struct Trace {
@@ -58,20 +51,21 @@ impl Debug for TraceRef {
                 .field("ret_idx", &ret_idx)
                 .field("ctx", &self.0.context_id)
                 .finish(),
-            TraceVariant::CapturedCellState(cell) => f
-                .debug_struct("CapturedCellState")
-                .field("cell", &cell)
-                .field("ctx", &self.0.context_id)
-                .finish(),
             TraceVariant::NewCellState { inv, ret_idx } => f
                 .debug_struct("NewCellState")
                 .field("call", &inv)
                 .field("ret_idx", &ret_idx)
                 .field("ctx", &self.0.context_id)
                 .finish(),
-            TraceVariant::UpdatedCellState(inv) => f
+            TraceVariant::UpdatedCellState {
+                inv,
+                subexpr,
+                index,
+            } => f
                 .debug_struct("UpdatedCellState")
                 .field("call", &inv)
+                .field("subexpr", &subexpr)
+                .field("index", &index)
                 .field("ctx", &self.0.context_id)
                 .finish(),
             TraceVariant::Concrete(value) => f
@@ -100,14 +94,6 @@ impl TraceRef {
         }))
     }
 
-    pub fn captured_cell_state(cell: TraceCellRef) -> Self {
-        TraceRef(Arc::new(Trace {
-            info: cell.type_info().clone(),
-            variant: TraceVariant::CapturedCellState(cell),
-            context_id: TraceContext::current_id(),
-        }))
-    }
-
     pub fn returned(invocation: Arc<Invocation>, ret_idx: usize, info: ValueInfo) -> Self {
         TraceRef(Arc::new(Trace {
             variant: TraceVariant::Returned {
@@ -119,9 +105,18 @@ impl TraceRef {
         }))
     }
 
-    pub fn updated(invocation: Arc<Invocation>, info: ValueInfo) -> Self {
+    pub fn updated_cell(
+        invocation: Arc<Invocation>,
+        info: ValueInfo,
+        subexpr: Option<usize>,
+        index: usize,
+    ) -> Self {
         TraceRef(Arc::new(Trace {
-            variant: TraceVariant::UpdatedCellState(invocation),
+            variant: TraceVariant::UpdatedCellState {
+                inv: invocation,
+                subexpr,
+                index,
+            },
             info,
             context_id: TraceContext::current_id(),
         }))
@@ -132,13 +127,12 @@ impl TraceRef {
     }
 
     // Returns the produce of this trace, if any.
-    pub fn producer(&self) -> Option<(&Arc<Invocation>, Option<usize>)> {
+    pub fn producer(&self) -> Option<&Arc<Invocation>> {
         match &self.0.variant {
             TraceVariant::Placeholder => None,
-            TraceVariant::Returned { inv, ret_idx } => Some((&inv, Some(*ret_idx))),
-            TraceVariant::UpdatedCellState(invocation) => Some((&invocation, None)),
-            TraceVariant::NewCellState { inv, ret_idx } => Some((&inv, Some(*ret_idx))),
-            TraceVariant::CapturedCellState(_) => None,
+            TraceVariant::Returned { inv, .. } => Some(inv),
+            TraceVariant::NewCellState { inv, .. } => Some(inv),
+            TraceVariant::UpdatedCellState { inv, .. } => Some(inv),
             TraceVariant::Concrete(_) => None,
         }
     }
@@ -182,6 +176,10 @@ impl From<TraceRef> for Tracer<Generic> {
 }
 
 impl<T: Traceable> Tracer<T> {
+    pub fn placeholder(info: ValueInfo) -> Self {
+        unsafe { Tracer::unchecked_new(TraceRef::placeholder(info)) }
+    }
+
     pub unsafe fn unchecked_new(trace: TraceRef) -> Self {
         Tracer {
             trace,

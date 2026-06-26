@@ -73,7 +73,7 @@ impl PrettyVarScope {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", self.name_for(output))?;
+            write!(f, "{}", self.name_for(output.var()))?;
         }
         if !eqn.outputs().is_empty() {
             write!(f, " = ")?;
@@ -162,8 +162,8 @@ impl PrettyVarScope {
                 write!(f, "@{}", printer.defer(subexpr, self))?;
             } else {
                 let child = PrettyVarScope::new();
-                for (sub_input, outer_var) in expr.closure().iter().zip(subexpr.closure()) {
-                    child.alias(sub_input.var(), self.name_for(outer_var));
+                for (sub_input, outer_input) in expr.closure().iter().zip(subexpr.closure()) {
+                    child.alias(sub_input.var(), self.name_for(outer_input.var()));
                 }
                 child.fmt_expr_with_printer(
                     expr,
@@ -178,7 +178,7 @@ impl PrettyVarScope {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", self.name_for(var))?;
+                    write!(f, "{}", self.name_for(var.var()))?;
                 }
                 write!(f, "]")?;
             }
@@ -372,8 +372,11 @@ impl PrettyPrinter {
             .closure()
             .iter()
             .zip(subexpr.closure())
-            .map(|(sub_input, outer_var)| {
-                (sub_input.var().clone(), outer_scope.name_for(outer_var))
+            .map(|(sub_input, outer_input)| {
+                (
+                    sub_input.var().clone(),
+                    outer_scope.name_for(outer_input.var()),
+                )
             })
             .collect();
         self.deferred.push(DeferredExpr {

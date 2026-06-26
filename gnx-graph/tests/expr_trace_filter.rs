@@ -1,9 +1,10 @@
 use gnx_math::{Array, ArrayInfo, ArrayRef, DType, Shape};
 use gnx_expr::trace::{CellKey, TraceCellRef, TraceContext, TraceRef, Tracer, TracerKey};
+use gnx_expr::ValueInfo;
 use gnx_graph::{Filter, Graph, GraphContext, GraphSource, Of, TypedGraph};
 
-fn f32x4_info() -> ArrayInfo {
-    ArrayInfo::new(Shape::fixed([4]), DType::F32)
+fn f32x4_info() -> ValueInfo {
+    ValueInfo::new(ArrayInfo::new(Shape::fixed([4]), DType::F32))
 }
 
 #[test]

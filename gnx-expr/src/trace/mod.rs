@@ -8,7 +8,7 @@ pub use cell::{CellKey, TraceCell, TraceCellRef, TracerCell};
 pub use context::{ContextID, TraceContext, TraceContextGuard};
 pub use trace_ref::{Trace, TraceRef, Tracer};
 
-use std::cell::UnsafeCell;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::sync::{Arc, OnceLock, Weak};
 
@@ -21,19 +21,6 @@ pub use super::value::{ConcreteValue, Generic, Traceable, Value, ValueInfo};
 pub enum TraceObject {
     Ref(TraceRef),
     Cell(TraceCellRef),
-}
-
-/// Closure or input lists for [`Invocation::invoke`] and [`crate::Capture::from_context`].
-pub type TraceOperands = Vec<TraceObject>;
-
-impl TraceObject {
-    /// Effective trace value for dependency walking and context checks.
-    pub fn resolve(&self) -> TraceRef {
-        match self {
-            TraceObject::Ref(r) => r.clone(),
-            TraceObject::Cell(c) => c.get(),
-        }
-    }
 }
 
 impl<T: Traceable> From<Tracer<T>> for TraceObject {
@@ -63,11 +50,44 @@ impl From<TraceCellRef> for TraceObject {
 // An input type for an invocation.
 // Either a TraceRef or a TraceCellRef with an effect
 // (Unusued, Read, Write, ReadWrite).
-// The effect specified is used to get() or set()
-// the cell with the appropriate TraceRef.
+// The effect specified is used to get() or set() the cell with the appropriate TraceRef.
+#[derive(Clone)]
 pub enum TraceInput {
     Ref(TraceRef),
     Cell(TraceCellRef, Effect),
+}
+
+impl From<TraceObject> for TraceInput {
+    fn from(value: TraceObject) -> Self {
+        match value {
+            TraceObject::Ref(r) => TraceInput::Ref(r),
+            TraceObject::Cell(c) => TraceInput::Cell(c, Effect::Read),
+        }
+    }
+}
+
+impl From<TraceRef> for TraceInput {
+    fn from(value: TraceRef) -> Self {
+        TraceInput::Ref(value)
+    }
+}
+
+impl<T: Traceable> From<Tracer<T>> for TraceInput {
+    fn from(value: Tracer<T>) -> Self {
+        TraceInput::Ref(value.into_trace_ref())
+    }
+}
+
+impl From<TraceCellRef> for TraceInput {
+    fn from(value: TraceCellRef) -> Self {
+        TraceInput::Cell(value, Effect::Read)
+    }
+}
+
+impl<T: Traceable> From<TracerCell<T>> for TraceInput {
+    fn from(value: TracerCell<T>) -> Self {
+        TraceInput::Cell(value.into(), Effect::Read)
+    }
 }
 
 // The output *type* for the invocation.
@@ -119,8 +139,15 @@ pub enum InvChild {
 }
 
 pub struct Invocation {
+    // The "owning" context for this invocation.
     context_id: ContextID,
     op: Op,
+    /// If we are writing into or reading from potentially
+    /// aliased cells, this will be set to the "parent" invocation.
+    /// This is used to enforce ordering of aliased writes and reads.
+    /// (If we write to aliased cells, this is set to Context.last_aliased_read,
+    ///  and if we read from any aliased cells, this is set to Context.last_aliased_write)
+    aliasing_parent: Option<Arc<Invocation>>,
     // Subexpressions and the associated closure variables.
     subexprs: Vec<(Arc<Expr>, Vec<InvParent>)>,
     inputs: Vec<InvParent>,
@@ -156,13 +183,36 @@ impl Invocation {
         &self.inputs
     }
 
+    pub fn aliasing_parent(&self) -> Option<&Arc<Invocation>> {
+        self.aliasing_parent.as_ref()
+    }
+
     pub fn outputs(&self) -> &[InvChild] {
         let outputs = self.outputs.get().unwrap();
         outputs
     }
 
-    pub fn invoke(op: Op, inputs: Vec<TraceInput>, outputs: Vec<TraceOutput>) -> Vec<TraceObject> {
-        Self::invoke_with_subexprs(op, Vec::new(), inputs, outputs)
+    pub fn invoke<I>(
+        op: Op,
+        subexprs: Vec<(Arc<Expr>, Vec<TraceInput>)>,
+        inputs: Vec<I>,
+        outputs: Vec<ValueInfo>,
+    ) -> Vec<Tracer<Generic>>
+    where
+        I: Into<TraceInput>,
+    {
+        Self::invoke_with_subexprs(
+            op,
+            subexprs,
+            inputs.into_iter().map(Into::into).collect(),
+            outputs.into_iter().map(TraceOutput::Ref).collect(),
+        )
+        .into_iter()
+        .map(|object| match object {
+            TraceObject::Ref(r) => Tracer::from(r),
+            TraceObject::Cell(_) => panic!("invoke_refs produced a cell"),
+        })
+        .collect()
     }
 
     pub fn invoke_with_subexprs(
@@ -171,94 +221,143 @@ impl Invocation {
         inputs: Vec<TraceInput>,
         outputs: Vec<TraceOutput>,
     ) -> Vec<TraceObject> {
-        // Cells that are updated by this invocation.
         let context_id = TraceContext::current_id();
-        let mut mutated_cells = Vec::new();
-        let mut handle_input = |input: TraceInput| match input {
-            TraceInput::Ref(r) => InvParent::Ref(r),
-            TraceInput::Cell(c, e) => match e {
-                Effect::Unused => InvParent::Cell(c, None),
-                Effect::Read => InvParent::Cell(c, Some(c.get())),
-                Effect::Write => {
-                    mutated_cells.push(c.clone());
-                    InvParent::Cell(c, None)
+        // Unaliased cells that are updated by this invocation.
+        // contains the cell, subexpr index (none if input), and index
+        let mut updated_cells: BTreeSet<TraceCellRef> = BTreeSet::new();
+        // Whether any aliased inputs were read or writen.
+        let mut read_aliased = false;
+        let mut write_aliased = false;
+        fn handle_input(
+            input: TraceInput,
+            mutated_cells: &mut Vec<TraceCellRef>,
+            read_aliased: &mut bool,
+            write_aliased: &mut bool,
+        ) -> InvParent {
+            match input {
+                TraceInput::Ref(r) => InvParent::Ref(r),
+                TraceInput::Cell(c, e) => {
+                    if !c.context_id().is_current() {
+                        *foreign_cells = true;
+                    }
+                    match e {
+                        Effect::Unused => InvParent::Cell(c, None),
+                        Effect::Read => {
+                            let read = c.read_home();
+                            InvParent::Cell(c, Some(read))
+                        }
+                        Effect::Write => {
+                            mutated_cells.push(c.clone());
+                            InvParent::Cell(c, None)
+                        }
+                        Effect::ReadWrite => {
+                            mutated_cells.push(c.clone());
+                            let read = c.read_home();
+                            InvParent::Cell(c, Some(read))
+                        }
+                    }
                 }
-                Effect::ReadWrite => {
-                    mutated_cells.push(c.clone());
-                    InvParent::Cell(c, Some(c.get()))
-                }
-            },
-        };
+            }
+        }
         // Convert all inputs to TraceParent types, which include
         // the parent refs for cells that are read from or written to.
-        let inputs = inputs.into_iter().map(handle_input).collect();
+        let inputs = inputs
+            .into_iter()
+            .map(|input| {
+                handle_input(
+                    input,
+                    &mut updated_cells,
+                    &mut read_aliased,
+                    &mut write_aliased,
+                )
+            })
+            .collect();
         let subexprs = subexprs
             .into_iter()
-            .map(|(expr, closure)| (expr, closure.into_iter().map(handle_input).collect()))
+            .map(|(expr, closure)| {
+                (
+                    expr,
+                    closure
+                        .into_iter()
+                        .map(|input| handle_input(input, &mut mutated_cells, &mut foreign_cells))
+                        .collect(),
+                )
+            })
             .collect();
+        let parent_write = if foreign_cells {
+            TraceContext::current().and_then(|ctx| ctx.last_global_write())
+        } else {
+            None
+        };
         let invocation = Arc::new(Invocation {
             op,
             subexprs,
             context_id,
             inputs,
+            parent_write,
             outputs: OnceLock::new(),
         });
-        let handle_output = |(idx, output): (usize, TraceOutput)| -> (TraceObject, InvChild) match output {
-            TraceOutput::Ref(info) => {
-                let trace = TraceRef::returned(invocation.clone(), idx, info);
-                (TraceObject::Ref(trace), InvChild::Ref(Arc::downgrade(&trace.0)))
-            },
-            TraceOutput::NewCell(info) => {
-                let trace = TraceCellRef::new(TraceRef::returned(invocation.clone(), idx, info));
-                (TraceObject::Cell(trace), InvChild::NewCell(Arc::downgrade(&trace.0)))
-            },
-            TraceOutput::InputCell(idx) => InvChild::InputCell {
-                idx,
-                cell: Weak::new(),
-            },
-            TraceOutput::ClosureCell { subexpr, idx } => InvChild::ClosureCell {
-                subexpr,
-                idx,
-                cell: Weak::new(),
-            },
-        };
-        let (values, outputs) = outputs.into_iter().map(handle_output).unzip();
-        // For any mutated input/closure cells, set them
-        // to a new tracer that depends on the invocation.
-        for cell in mutated_cells {
-            cell.set(TraceRef::updated(
-                invocation.clone(),
-                cell.type_info().clone(),
-                context_id,
-            ));
-        }
-        // Construct output objects.
-        let outputs = outputs
-            .into_iter()
-            .enumerate()
-            .map(|(idx, output)| match output {
+        let mut values = Vec::new();
+        let mut children = Vec::new();
+        for (idx, output) in outputs.into_iter().enumerate() {
+            match output {
                 TraceOutput::Ref(info) => {
-                    TraceObject::Ref(TraceRef::returned(invocation.clone(), idx, info))
+                    let trace = TraceRef::returned(invocation.clone(), idx, info);
+                    children.push(InvChild::Ref(Arc::downgrade(&trace.0)));
+                    values.push(TraceObject::Ref(trace));
                 }
-                TraceOutput::NewCell(info) => TraceObject::Cell(TraceCellRef::new(
-                    TraceRef::returned(invocation.clone(), idx, info, context_id),
-                )),
-            })
-            .collect();
+                TraceOutput::NewCell(info) => {
+                    let trace =
+                        TraceCellRef::new(TraceRef::returned(invocation.clone(), idx, info));
+                    children.push(InvChild::NewCell(trace.downgrade()));
+                    values.push(TraceObject::Cell(trace));
+                }
+                TraceOutput::InputCell(idx) => {
+                    let cell = match invocation.inputs.get(idx) {
+                        Some(InvParent::Cell(cell, _)) => cell.clone(),
+                        _ => panic!("TraceOutput::InputCell referenced a non-cell input"),
+                    };
+                    children.push(InvChild::InputCell {
+                        idx,
+                        cell: cell.downgrade(),
+                    });
+                    values.push(TraceObject::Cell(cell));
+                }
+                TraceOutput::ClosureCell { subexpr, idx } => {
+                    let cell = match invocation
+                        .subexprs
+                        .get(subexpr)
+                        .and_then(|(_, c)| c.get(idx))
+                    {
+                        Some(InvParent::Cell(cell, _)) => cell.clone(),
+                        _ => panic!("TraceOutput::ClosureCell referenced a non-cell closure"),
+                    };
+                    children.push(InvChild::ClosureCell {
+                        subexpr,
+                        idx,
+                        cell: cell.downgrade(),
+                    });
+                    values.push(TraceObject::Cell(cell));
+                }
+            }
+        }
+        invocation
+            .outputs
+            .set(children)
+            .expect("new invocation outputs are set once");
 
-        // Return the outputs as tracers.
-        outputs
-            .into_iter()
-            .enumerate()
-            .map(|(index, info)| {
-                Tracer::from(TraceRef::produced(
-                    abstract_,
-                    invocation.clone(),
-                    Position::Return(index),
-                    info,
-                    context_id,
-                ))
-            })
-            .collect()
+        let had_writes = !mutated_cells.is_empty();
+        for cell in mutated_cells {
+            let value = TraceRef::updated(invocation.clone(), cell.type_info().clone());
+            cell.set_from_invocation(value);
+        }
+
+        if had_writes {
+            if let Some(ctx) = TraceContext::current() {
+                ctx.register_global_write(invocation.clone());
+            }
+        }
+
+        values
     }
 }

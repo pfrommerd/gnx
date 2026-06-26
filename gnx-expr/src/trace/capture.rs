@@ -1,8 +1,7 @@
-use crate::builtins::update_op;
 use crate::trace::{
-    CellKey, ContextID, Generic, Invocation, TraceContext, TraceObject, TraceRef, Tracer,
+    CellKey, ContextID, Generic, InvParent, Invocation, TraceContext, TraceObject, TraceRef, Tracer,
 };
-use crate::{Effect, Effects, Eqn, Expr, Input, SubExpr, Var, VarScope};
+use crate::{Effect, Effects, Eqn, Expr, Input, Output, SubExpr, Var, VarScope};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -29,11 +28,11 @@ impl Capture {
         let mut closure_vars = Vec::new();
         let mut closure_values = Vec::new();
 
-        let alloc_operand = |op: &TraceObject,
-                             binding_to_var: &mut HashMap<BindingKey, Var>,
-                             closure_vars: &mut Vec<Var>,
-                             closure_values: &mut Vec<TraceObject>,
-                             var_scope: &mut VarScope|
+        let alloc_object = |op: &TraceObject,
+                            binding_to_var: &mut HashMap<BindingKey, Var>,
+                            closure_vars: &mut Vec<Var>,
+                            closure_values: &mut Vec<TraceObject>,
+                            var_scope: &mut VarScope|
          -> Input {
             match op {
                 TraceObject::Ref(r) => {
@@ -59,8 +58,8 @@ impl Capture {
                     }
                     let v = var_scope.create_var();
                     binding_to_var.insert(key, v.clone());
-                    let resolved = c.get();
-                    if resolved.context_id() != target {
+                    let resolved = c.read_home();
+                    if resolved.context_id() != &target {
                         closure_vars.push(v.clone());
                         closure_values.push(TraceObject::from(c.clone()));
                     }
@@ -70,7 +69,7 @@ impl Capture {
         };
 
         for inp in &inputs {
-            let input = alloc_operand(
+            let input = alloc_object(
                 inp,
                 &mut binding_to_var,
                 &mut closure_vars,
@@ -81,9 +80,44 @@ impl Capture {
         }
 
         let output_refs: Vec<TraceRef> = outputs.iter().map(|o| o.resolve()).collect();
-        let (invocations, output_vars) = collect_invocations(&output_refs, target);
-        let ordered_invs = topo_sort_invocations(invocations, target);
-        let mut eqns = Vec::with_capacity(ordered_invs.len() + ctx.updates().len());
+        let (invocations, output_vars) = collect_invocations(&output_refs, target.clone());
+        let ordered_invs = topo_sort_invocations(invocations, target.clone());
+        let mut eqns = Vec::with_capacity(ordered_invs.len());
+
+        let alloc_parent = |op: &InvParent,
+                            binding_to_var: &mut HashMap<BindingKey, Var>,
+                            closure_vars: &mut Vec<Var>,
+                            closure_values: &mut Vec<TraceObject>,
+                            var_scope: &mut VarScope|
+         -> Input {
+            match op {
+                InvParent::Ref(r) => alloc_object(
+                    &TraceObject::from(r.clone()),
+                    binding_to_var,
+                    closure_vars,
+                    closure_values,
+                    var_scope,
+                ),
+                InvParent::Cell(c, read) => {
+                    let key = BindingKey::Cell(CellKey::from(c));
+                    let var = if let Some(var) = binding_to_var.get(&key).cloned() {
+                        var
+                    } else {
+                        let v = var_scope.create_var();
+                        binding_to_var.insert(key, v);
+                        if c.read_home().context_id() != &target {
+                            closure_vars.push(v);
+                            closure_values.push(TraceObject::from(c.clone()));
+                        }
+                        v
+                    };
+                    match read {
+                        Some(_) => Input::read_write(var, false),
+                        None => Input::write(var, false),
+                    }
+                }
+            }
+        };
 
         for inv in &ordered_invs {
             let subexprs: Vec<SubExpr> = inv
@@ -93,14 +127,13 @@ impl Capture {
                     let closure = closure
                         .iter()
                         .map(|op| {
-                            *alloc_operand(
+                            alloc_parent(
                                 op,
                                 &mut binding_to_var,
                                 &mut closure_vars,
                                 &mut closure_values,
                                 &mut var_scope,
                             )
-                            .var()
                         })
                         .collect();
                     SubExpr::new(Arc::clone(expr), closure)
@@ -110,7 +143,7 @@ impl Capture {
                 .inputs()
                 .iter()
                 .map(|op| {
-                    alloc_operand(
+                    alloc_parent(
                         op,
                         &mut binding_to_var,
                         &mut closure_vars,
@@ -120,17 +153,18 @@ impl Capture {
                 })
                 .collect();
 
-            let outs = &output_vars[&InvKey::from(inv)];
-            let mut out_vars = Vec::with_capacity(inv.outputs());
-            for out_idx in 0..inv.outputs() {
+            let empty_outs = BTreeMap::new();
+            let outs = output_vars.get(&InvKey::from(inv)).unwrap_or(&empty_outs);
+            let mut out_vars = Vec::with_capacity(inv.outputs().len());
+            for out_idx in 0..inv.outputs().len() {
                 match outs.get(&out_idx) {
                     Some(out_tracer) => {
                         let v = var_scope.create_var();
                         binding_to_var
                             .insert(BindingKey::Trace(TracerKey::from(out_tracer)), v.clone());
-                        out_vars.push(v);
+                        out_vars.push(Output::New(v));
                     }
-                    None => out_vars.push(Var::hole()),
+                    None => out_vars.push(Output::Aliased(Var::hole())),
                 }
             }
             eqns.push(Eqn::new_with_subexprs(
@@ -153,10 +187,8 @@ impl Capture {
         let output_vars: Vec<Var> = outputs
             .iter()
             .map(|obj| match obj {
-                TraceObject::Ref(r) => {
-                    binding_to_var[&BindingKey::Trace(TracerKey::from(r))].clone()
-                }
-                TraceObject::Cell(c) => binding_to_var[&BindingKey::Cell(CellKey::from(c))].clone(),
+                TraceObject::Ref(r) => binding_to_var[&BindingKey::Trace(TracerKey::from(r))],
+                TraceObject::Cell(c) => binding_to_var[&BindingKey::Cell(CellKey::from(c))],
             })
             .collect();
 

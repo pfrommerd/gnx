@@ -12,7 +12,7 @@ pub fn op_by_name(dialect_name: &'static str, op_name: &'static str, attrs: Attr
     let operation = dialect
         .create(op_name)
         .unwrap_or_else(|| panic!("unknown operation `{dialect_name}::{op_name}`"));
-    Op::new(operation, attrs)
+    Op::new_with_attrs(operation, attrs)
 }
 
 #[doc(hidden)]
@@ -74,7 +74,7 @@ impl ExprBuilder {
         let subexprs = subexprs
             .unwrap_or_default()
             .into_iter()
-            .map(|expr| SubExpr::new(Arc::new(expr), Vec::new()))
+            .map(|expr| SubExpr::new(Arc::new(expr), Vec::<Input>::new()))
             .collect();
         self.eqns
             .push(Eqn::new_with_subexprs(op, subexprs, inputs, outputs));

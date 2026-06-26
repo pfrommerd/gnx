@@ -3,7 +3,7 @@ use std::fmt::Display;
 use gnx_expr::trace::{
     Generic, Invocation, TraceCellRef, TraceContext, TraceObject, Tracer, ValueInfo,
 };
-use gnx_expr::{AttrMap, Capture, Effect, Op};
+use gnx_expr::{AttrMap, Capture, Op};
 use gnx_expr::{Dialect, Operation};
 
 pub struct SampleOperation {
@@ -235,7 +235,7 @@ fn capture_foreign_context_tracer_is_closure() {
 }
 
 #[test]
-fn capture_trace_cell_cross_context_update_emits_gnx_update() {
+fn capture_trace_cell_cross_context_update_does_not_emit_update_eqn() {
     let outer = TraceContext::enter();
     let _outer_ctx = outer.context();
     let value = Tracer::<Generic>::placeholder(sample_info());
@@ -246,15 +246,12 @@ fn capture_trace_cell_cross_context_update_emits_gnx_update() {
     let new_val = Tracer::<Generic>::placeholder(sample_info());
     cell.set(new_val.trace_ref().clone());
 
-    assert_eq!(inner_ctx.updates().len(), 1);
-
     let cap = Capture::from_context(inner_ctx, vec![], vec![]).unwrap();
-    assert_eq!(cap.expr().eqns().len(), 1);
-    let update_eqn = &cap.expr().eqns()[0];
-    assert!(update_eqn.op().to_string().contains("update"));
-    assert_eq!(update_eqn.inputs().len(), 2);
-    assert_eq!(update_eqn.inputs()[0].effect(), Effect::Write);
-    assert_eq!(update_eqn.inputs()[1].effect(), Effect::Read);
+    assert_eq!(
+        cap.expr().eqns().len(),
+        0,
+        "captures only include invocations reachable from outputs"
+    );
     drop(inner);
     drop(outer);
 }
@@ -268,10 +265,10 @@ fn capture_trace_cell_in_context_override_no_update_eqn() {
     let replacement = Tracer::<Generic>::placeholder(sample_info());
     cell.set(replacement.trace_ref().clone());
 
-    assert!(ctx.updates().is_empty());
+    let _ = ctx;
     assert_eq!(
         cell.get().context_id(),
         replacement.context_id(),
-        "in-context set records an override"
+        "in-context set updates the cell value"
     );
 }

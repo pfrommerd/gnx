@@ -3,7 +3,8 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
-use crate::{Generic, ValueInfo};
+use crate::builtins::{READ_OP, UPDATE_OP};
+use crate::{Generic, Invocation, Op, ValueInfo};
 
 use super::context::{ContextID, TraceContext};
 use super::{TraceRef, Traceable, Tracer};
@@ -22,7 +23,8 @@ impl CellKey {
 pub struct TraceCell {
     context_id: ContextID,
     type_info: ValueInfo,
-    cell: RwLock<TraceRef>,
+    /// `None` = placeholder; `Some` holds the current trace under its own lock.
+    cell: Option<RwLock<TraceRef>>,
 }
 
 /// Shared handle to a mutable [`TraceCell`].
@@ -35,22 +37,91 @@ impl TraceCellRef {
         TraceCellRef(Arc::new(TraceCell {
             context_id: TraceContext::current_id(),
             type_info: base.info().clone(),
-            cell: RwLock::new(base),
+            cell: Some(RwLock::new(base)),
         }))
+    }
+
+    pub fn placeholder(info: ValueInfo) -> Self {
+        TraceCellRef(Arc::new(TraceCell {
+            context_id: TraceContext::current_id(),
+            type_info: info,
+            cell: None,
+        }))
+    }
+
+    pub fn context_id(&self) -> &ContextID {
+        &self.0.context_id
     }
 
     pub fn type_info(&self) -> &ValueInfo {
         &self.0.type_info
     }
 
+    pub fn is_placeholder(&self) -> bool {
+        self.0.cell.is_none()
+    }
+
+    /// Whether aliasing analysis cannot assume this cell is unique.
+    pub fn is_maybe_aliased(&self) -> bool {
+        !self.0.context_id.is_current() || self.is_placeholder()
+    }
+
     /// Resolve the trace for this cell in the active context.
     pub fn get(&self) -> TraceRef {
-        self.0.get(self)
+        // If we are in the current context,
+        // return the actual trace.
+        if self.0.context_id.is_current() && !self.is_placeholder() {
+            let inner_cell = self.0.cell.as_ref().unwrap();
+            return inner_cell.read().unwrap().clone();
+        }
+        // Otherwise, bind an invocation with this cell.
+        let [trace] = Invocation::invoke(
+            Op::new(&READ_OP),
+            vec![],
+            vec![self.clone()],
+            vec![self.type_info().clone()],
+        )
+        .try_into()
+        .unwrap();
+        trace.into_trace_ref()
     }
 
     /// Bind the cell: update home storage in-context, otherwise via [`TraceContext`].
     pub fn set(&self, value: TraceRef) {
-        self.0.set(self, value);
+        if self.0.context_id.is_current() && !self.is_placeholder() {
+            let inner_cell = self.0.cell.as_ref().unwrap();
+            let mut guard = inner_cell.write().unwrap();
+            *guard = value;
+        } else {
+            Invocation::invoke(
+                Op::new(&UPDATE_OP),
+                vec![],
+                vec![self.clone()],
+                vec![self.type_info().clone()],
+            );
+        }
+    }
+
+    // Callback from an invocation to update the cell.
+    pub(crate) fn direct_update_from_invoke(
+        &self,
+        invocation: &Arc<Invocation>,
+        subexpr: Option<usize>,
+        index: usize,
+    ) {
+        assert!(
+            !self.is_maybe_aliased(),
+            "aliased cells cannot be updated directly"
+        );
+        let inner_cell = self.0.cell.as_ref().unwrap();
+        let mut guard = inner_cell.write().unwrap();
+        // set the cell value to an updated trace.
+        *guard =
+            TraceRef::updated_cell(invocation.clone(), self.type_info().clone(), subexpr, index);
+    }
+
+    pub(crate) fn downgrade(&self) -> std::sync::Weak<TraceCell> {
+        Arc::downgrade(&self.0)
     }
 }
 
@@ -82,38 +153,14 @@ impl Debug for TraceCellRef {
 
 impl Debug for TraceCell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = self.cell.read().unwrap().clone();
-        f.debug_struct("TraceCell")
-            .field("ctx", &self.context_id)
-            .field("type_info", &self.type_info)
-            .field("value", &value)
-            .finish()
-    }
-}
-
-impl TraceCell {
-    pub fn context_id(&self) -> &ContextID {
-        &self.context_id
-    }
-
-    fn get(&self, cell_ref: &TraceCellRef) -> TraceRef {
-        if self.context_id.is_current() {
-            return self.cell.read().unwrap().clone();
-        }
-        assert!(self.context_id.is_alive(), "Accessing a leaked TraceCell!");
-        let ctx = TraceContext::current().unwrap();
-        ctx.cell_override(CellKey::from(cell_ref))
-            .unwrap_or_else(|| TraceRef::captured_cell_state(cell_ref.clone()))
-    }
-
-    fn set(&self, cell_ref: &TraceCellRef, value: TraceRef) {
-        if self.context_id.is_current() {
-            *self.cell.write().unwrap() = value;
-            return;
-        }
-        assert!(self.context_id.is_alive(), "Accessing a leaked TraceCell!");
-        let ctx = TraceContext::current().unwrap();
-        ctx.override_cell(CellKey::from(cell_ref), value);
+        let mut dbg = f.debug_struct("TraceCell");
+        dbg.field("ctx", &self.context_id)
+            .field("type_info", &self.type_info);
+        match self.cell {
+            Some(ref cell) => dbg.field("value", &cell.read().unwrap()),
+            None => dbg.field("value", &"placeholder"),
+        };
+        dbg.finish()
     }
 }
 
@@ -127,6 +174,13 @@ impl<T: Traceable> TracerCell<T> {
     pub fn new(trace: Tracer<T>) -> Self {
         TracerCell {
             shared: TraceCellRef::new(trace.trace_ref().clone()),
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn placeholder(info: ValueInfo) -> Self {
+        TracerCell {
+            shared: TraceCellRef::placeholder(info),
             _phantom: PhantomData,
         }
     }
@@ -198,10 +252,8 @@ impl<T: Traceable> Clone for TracerCell<T> {
 
 impl<T: Traceable> std::fmt::Debug for TracerCell<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let value = self.shared.get().clone();
         f.debug_struct("TracerCell")
             .field("shared", &self.shared)
-            .field("value", &value)
             .finish()
     }
 }

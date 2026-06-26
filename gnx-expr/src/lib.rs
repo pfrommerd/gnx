@@ -10,6 +10,7 @@ pub mod value;
 pub use attr::*;
 pub use dialects::*;
 pub use trace::*;
+pub use util::expr_macro;
 
 use std::cmp::{Eq, PartialEq};
 use std::cmp::{Ord, PartialOrd};
@@ -18,6 +19,8 @@ use std::fmt;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+
+use crate::util::pretty;
 
 // The inventory crate is used to statically register all dialects.
 #[doc(hidden)]
@@ -87,10 +90,15 @@ impl fmt::Display for Op {
 }
 
 impl Op {
-    pub fn new(impl_: &'static dyn Operation, attrs: AttrMap) -> Self {
+    pub fn new(impl_: &'static dyn Operation) -> Self {
+        Op {
+            impl_,
+            attrs: AttrMap::default(),
+        }
+    }
+    pub fn new_with_attrs(impl_: &'static dyn Operation, attrs: AttrMap) -> Self {
         Op { impl_, attrs }
     }
-
     pub fn attrs(&self) -> &AttrMap {
         &self.attrs
     }
@@ -194,6 +202,45 @@ pub enum Effect {
     ReadWrite,
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InputKind {
+    Unused,
+    Read,
+    // The following two fields are only for cells.
+    //
+    // noalias: whether we are guaranteed
+    // that this input cell is not aliased to any other input cell.
+    //
+    Write { noalias: bool },
+    ReadWrite { noalias: bool },
+}
+
+impl InputKind {
+    pub fn effect(self) -> Effect {
+        match self {
+            InputKind::Unused => Effect::Unused,
+            InputKind::Read => Effect::Read,
+            InputKind::Write { .. } => Effect::Write,
+            InputKind::ReadWrite { .. } => Effect::ReadWrite,
+        }
+    }
+
+    fn restriction_rank(self) -> usize {
+        match self {
+            InputKind::Unused => 0,
+            InputKind::Read => 1,
+            InputKind::Write { noalias: false } => 2,
+            InputKind::Write { noalias: true } => 3,
+            InputKind::ReadWrite { noalias: false } => 4,
+            InputKind::ReadWrite { noalias: true } => 5,
+        }
+    }
+
+    pub fn can_bind_to(self, bound: InputKind) -> bool {
+        bound == InputKind::Unused || self.restriction_rank() <= bound.restriction_rank()
+    }
+}
+
 impl Effect {
     pub fn combine(self, other: Effect) -> Effect {
         match (self, other) {
@@ -238,21 +285,69 @@ impl std::ops::Index<&Var> for Effects {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct Input {
-    var: Var,
-    effect: Effect,
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum Input {
+    Unused(Var),
+    Read(Var),
+    Write { src: Var, noalias: bool },
+    ReadWrite { src: Var, noalias: bool },
 }
 
 impl Input {
     pub fn new(var: Var, effect: Effect) -> Self {
-        Self { var, effect }
+        match effect {
+            Effect::Unused => Self::Unused(var),
+            Effect::Read => Self::Read(var),
+            Effect::Write => Self::Write {
+                src: var,
+                noalias: false,
+            },
+            Effect::ReadWrite => Self::ReadWrite {
+                src: var,
+                noalias: false,
+            },
+        }
+    }
+    pub fn unused(var: Var) -> Self {
+        Self::Unused(var)
+    }
+    pub fn read(var: Var) -> Self {
+        Self::Read(var)
+    }
+    pub fn write(var: Var, noalias: bool) -> Self {
+        Self::Write { src: var, noalias }
+    }
+    pub fn read_write(var: Var, noalias: bool) -> Self {
+        Self::ReadWrite { src: var, noalias }
     }
     pub fn var(&self) -> &Var {
-        &self.var
+        match self {
+            Input::Unused(var)
+            | Input::Read(var)
+            | Input::Write { src: var, .. }
+            | Input::ReadWrite { src: var, .. } => var,
+        }
+    }
+    pub fn kind(&self) -> InputKind {
+        match self {
+            Input::Unused(_) => InputKind::Unused,
+            Input::Read(_) => InputKind::Read,
+            Input::Write { noalias, .. } => InputKind::Write { noalias: *noalias },
+            Input::ReadWrite { noalias, .. } => InputKind::ReadWrite { noalias: *noalias },
+        }
     }
     pub fn effect(&self) -> Effect {
-        self.effect
+        self.kind().effect()
+    }
+
+    pub fn can_bind_to(&self, bound: &Input) -> bool {
+        self.kind().can_bind_to(bound.kind())
+    }
+}
+
+impl From<Var> for Input {
+    fn from(value: Var) -> Self {
+        Input::Read(value)
     }
 }
 
@@ -277,6 +372,28 @@ impl SubExpr {
     }
 }
 
+impl From<Var> for Output {
+    fn from(value: Var) -> Self {
+        if value.id().is_none() {
+            Output::Aliased(value)
+        } else {
+            Output::New(value)
+        }
+    }
+}
+
+impl Output {
+    pub fn var(&self) -> &Var {
+        match self {
+            Output::New(var) | Output::Aliased(var) => var,
+        }
+    }
+
+    pub fn is_new(&self) -> bool {
+        matches!(self, Output::New(_))
+    }
+}
+
 #[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub enum Output {
     // This is a "fresh" variable that does
@@ -297,26 +414,32 @@ pub struct Eqn {
 }
 
 impl Eqn {
-    pub fn new(op: Op, inputs: Vec<Input>, outputs: Vec<Output>) -> Self {
+    pub fn new<O>(op: Op, inputs: Vec<Input>, outputs: Vec<O>) -> Self
+    where
+        O: Into<Output>,
+    {
         Eqn {
             op,
             subexprs: Vec::new(),
             inputs,
-            outputs,
+            outputs: outputs.into_iter().map(Into::into).collect(),
         }
     }
 
-    pub fn new_with_subexprs(
+    pub fn new_with_subexprs<O>(
         op: Op,
         subexprs: Vec<SubExpr>,
         inputs: Vec<Input>,
-        outputs: Vec<Output>,
-    ) -> Self {
+        outputs: Vec<O>,
+    ) -> Self
+    where
+        O: Into<Output>,
+    {
         Eqn {
             op,
             subexprs,
             inputs,
-            outputs,
+            outputs: outputs.into_iter().map(Into::into).collect(),
         }
     }
 
@@ -348,8 +471,8 @@ impl Eqn {
         let mut output_effects = Effects::new();
         let mut max_effect = Effect::Unused;
         for output in &self.outputs {
-            if let Some(e) = effects.remove(output) {
-                output_effects.insert(output.clone(), e);
+            if let Some(e) = effects.remove(output.var()) {
+                output_effects.insert(*output.var(), e);
                 max_effect = max_effect.combine(e);
             }
         }
@@ -363,6 +486,77 @@ impl Eqn {
             effects.insert(input.var().clone(), max_effect);
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ValidationError {
+    errors: Vec<ValidationIssue>,
+}
+
+impl ValidationError {
+    pub fn is_empty(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    pub fn errors(&self) -> &[ValidationIssue] {
+        &self.errors
+    }
+
+    fn push(&mut self, issue: ValidationIssue) {
+        self.errors.push(issue);
+    }
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{} validation error(s)", self.errors.len())?;
+        for error in &self.errors {
+            writeln!(f, "- {error:?}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValidationIssue {
+    HoleInput {
+        eqn: Option<usize>,
+        input: usize,
+    },
+    DuplicateOutput {
+        eqn: usize,
+        var: Var,
+    },
+    UndefinedInput {
+        eqn: usize,
+        input: usize,
+        var: Var,
+    },
+    UndefinedSubExprClosure {
+        eqn: usize,
+        subexpr: usize,
+        input: usize,
+        var: Var,
+    },
+    InvalidSubExprBinding {
+        eqn: usize,
+        subexpr: usize,
+        input: usize,
+        expected: InputKind,
+        actual: InputKind,
+    },
+    SubExprClosureArity {
+        eqn: usize,
+        subexpr: usize,
+        expected: usize,
+        actual: usize,
+    },
+    UndefinedOutput {
+        output: usize,
+        var: Var,
+    },
 }
 
 impl fmt::Display for Eqn {
@@ -442,9 +636,87 @@ impl Expr {
         self.name_hint.as_deref()
     }
 
-    // pub fn pretty(&self) -> pretty::PrettyExpr<'_> {
-    //     pretty::PrettyExpr::new(self)
-    // }
+    pub fn pretty(&self) -> pretty::PrettyExpr<'_> {
+        pretty::PrettyExpr::new(self)
+    }
+
+    pub fn check(&self) -> Result<(), ValidationError> {
+        let mut err = ValidationError::default();
+        let mut bound = std::collections::BTreeSet::new();
+
+        for (i, input) in self.closure.iter().chain(self.inputs.iter()).enumerate() {
+            if input.var().id().is_none() {
+                err.push(ValidationIssue::HoleInput {
+                    eqn: None,
+                    input: i,
+                });
+            } else {
+                bound.insert(*input.var());
+            }
+        }
+
+        for (eqn_idx, eqn) in self.eqns.iter().enumerate() {
+            for (subexpr_idx, subexpr) in eqn.subexprs.iter().enumerate() {
+                if subexpr.closure.len() != subexpr.expr.closure().len() {
+                    err.push(ValidationIssue::SubExprClosureArity {
+                        eqn: eqn_idx,
+                        subexpr: subexpr_idx,
+                        expected: subexpr.expr.closure().len(),
+                        actual: subexpr.closure.len(),
+                    });
+                }
+                for (input_idx, actual) in subexpr.closure.iter().enumerate() {
+                    if actual.var().id().is_none() || !bound.contains(actual.var()) {
+                        err.push(ValidationIssue::UndefinedSubExprClosure {
+                            eqn: eqn_idx,
+                            subexpr: subexpr_idx,
+                            input: input_idx,
+                            var: *actual.var(),
+                        });
+                    }
+                    if let Some(expected) = subexpr.expr.closure().get(input_idx) {
+                        if !actual.can_bind_to(expected) {
+                            err.push(ValidationIssue::InvalidSubExprBinding {
+                                eqn: eqn_idx,
+                                subexpr: subexpr_idx,
+                                input: input_idx,
+                                expected: expected.kind(),
+                                actual: actual.kind(),
+                            });
+                        }
+                    }
+                }
+            }
+            for (input_idx, input) in eqn.inputs.iter().enumerate() {
+                if input.var().id().is_none() || !bound.contains(input.var()) {
+                    err.push(ValidationIssue::UndefinedInput {
+                        eqn: eqn_idx,
+                        input: input_idx,
+                        var: *input.var(),
+                    });
+                }
+            }
+            for output in &eqn.outputs {
+                if output.is_new() && !bound.insert(*output.var()) {
+                    err.push(ValidationIssue::DuplicateOutput {
+                        eqn: eqn_idx,
+                        var: *output.var(),
+                    });
+                }
+            }
+        }
+
+        for (output_idx, output) in self.outputs.iter().enumerate() {
+            if output.id().is_none() || !bound.contains(output) {
+                err.push(ValidationIssue::UndefinedOutput {
+                    output: output_idx,
+                    var: *output,
+                });
+            }
+        }
+
+        if err.is_empty() { Ok(()) } else { Err(err) }
+    }
 }
 
 impl Hash for Expr {

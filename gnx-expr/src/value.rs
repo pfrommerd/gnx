@@ -2,6 +2,7 @@ use super::trace::Tracer;
 use std::any::{Any, TypeId};
 use std::fmt::{Debug, Display};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 pub trait ConcreteValue: Any + Send + Sync + Debug + Display {
     fn to_info(&self) -> ValueInfo;
@@ -54,38 +55,37 @@ impl Value {
     }
 }
 
-pub struct ValueInfo(Box<dyn AnyInfo>);
+#[derive(Clone)]
+pub struct ValueInfo(Arc<dyn AnyInfo>);
 
 impl ValueInfo {
     pub fn new<T: AnyInfo>(value: T) -> Self {
         // if T is ValueInfo, use it directly
         match castaway::cast!(value, Self) {
             Ok(value) => return value,
-            Err(value) => ValueInfo(Box::new(value)),
+            Err(value) => ValueInfo(Arc::new(value)),
         }
     }
 
-    pub unsafe fn downcast_into_unchecked<T: AnyInfo>(self) -> T {
+    // SAFETY: The caller has checked that the value is of type T.
+    pub unsafe fn downcast_into_unchecked<T: AnyInfo + Clone>(self) -> T {
         // If T is ValueInfo, use it directly. Otherwise upcast to dyn Any
-        let value: Box<dyn Any> = match castaway::cast!(self, T) {
+        let value: Arc<dyn Any + Send + Sync> = match castaway::cast!(self, T) {
             Ok(value) => return value,
             Err(value) => value.0,
         };
-        // TODO: use downcast_unchecked on Any when stabilized.
-        // SAFETY: We know that the value is of type T because we checked the type_id above.
-        let value: Box<T> = unsafe { value.downcast().unwrap_unchecked() };
-        *value
+        let value: Arc<T> = unsafe { value.downcast().unwrap_unchecked() };
+        Arc::unwrap_or_clone(value)
     }
 
-    pub fn downcast_into<T: AnyInfo>(self) -> Result<T, Self> {
+    pub fn downcast_into<T: AnyInfo + Clone>(self) -> Result<T, Self> {
         // If T is ValueInfo, just return self
         castaway::cast!(self, T).or_else(|_value| {
             let value: &dyn Any = _value.0.as_ref();
             if value.type_id() == TypeId::of::<T>() {
-                let value: Box<dyn Any> = _value.0;
-                // SAFETY: We know that the value is of type T because we checked the type_id above.
-                let value: Box<T> = unsafe { value.downcast().unwrap_unchecked() };
-                return Ok(*value);
+                let value: Arc<dyn Any + Send + Sync> = _value.0;
+                let value: Arc<T> = unsafe { value.downcast().unwrap_unchecked() };
+                return Ok(Arc::unwrap_or_clone(value));
             } else {
                 return Err(_value);
             }
@@ -140,13 +140,23 @@ impl Traceable for Generic {
     type Info = ValueInfo;
 }
 
+// Seal the AnyInfo trait to prevent external implementations.
+mod private {
+    pub trait Sealed {}
+}
+
 // Any type which implements Send + Sync + Debug + Display
 // can be used as a ValueInfo.
-pub trait AnyInfo: Any + Send + Sync + Debug + Display {
+pub trait AnyInfo: Any + Send + Sync + Debug + Display + private::Sealed {
     fn dyn_hash(&self, state: &mut dyn std::hash::Hasher);
     fn dyn_eq(&self, other: &dyn AnyInfo) -> bool;
-    fn dyn_clone(&self) -> Box<dyn AnyInfo>;
 }
+
+// Implement the sealed trait for the same blanket
+// types that AnyInfo is implemented for.
+// This means that any type that implements private::Sealed
+// must also use the below impl for AnyInfo.
+impl<T> private::Sealed for T where T: Any + Send + Sync + Debug + Display + Clone + Hash + Eq {}
 
 impl<T> AnyInfo for T
 where
@@ -163,9 +173,6 @@ where
             None => false,
         }
     }
-    fn dyn_clone(&self) -> Box<dyn AnyInfo> {
-        Box::new(self.clone())
-    }
 }
 
 impl Debug for ValueInfo {
@@ -174,11 +181,6 @@ impl Debug for ValueInfo {
     }
 }
 
-impl Clone for ValueInfo {
-    fn clone(&self) -> Self {
-        ValueInfo(self.0.dyn_clone())
-    }
-}
 impl Hash for ValueInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.type_id().hash(state);
