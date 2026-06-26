@@ -61,7 +61,7 @@ fn pretty_expr_uses_alphabetic_names() {
         vec![],
         vec![Input::new(x, Effect::Read), Input::new(y, Effect::Read)],
         vec![Eqn::new(
-            Op::new(&ADD, AttrMap::default()),
+            Op::new(&ADD),
             vec![Input::new(x, Effect::Read), Input::new(y, Effect::Read)],
             vec![z],
         )],
@@ -85,7 +85,7 @@ fn nested_expr_closure_names_match_outer_names() {
         vec![Input::new(inner_closure, Effect::Read)],
         vec![Input::new(inner_input, Effect::Read)],
         vec![Eqn::new(
-            Op::new(&ADD, AttrMap::default()),
+            Op::new(&ADD),
             vec![
                 Input::new(inner_closure, Effect::Read),
                 Input::new(inner_input, Effect::Read),
@@ -104,7 +104,7 @@ fn nested_expr_closure_names_match_outer_names() {
         vec![Input::new(outer_closure, Effect::Read)],
         vec![Input::new(outer_input, Effect::Read)],
         vec![Eqn::new_with_subexprs(
-            Op::new(&CALL, AttrMap::default()),
+            Op::new(&CALL),
             vec![SubExpr::new(
                 Arc::new(inner),
                 vec![Input::read(outer_closure)],
@@ -155,7 +155,7 @@ fn hinted_var_names_are_disambiguated() {
         vec![],
         vec![Input::new(x1, Effect::Read), Input::new(x2, Effect::Read)],
         vec![Eqn::new(
-            Op::new(&ADD, AttrMap::default()),
+            Op::new(&ADD),
             vec![Input::new(x1, Effect::Read), Input::new(x2, Effect::Read)],
             vec![x3],
         )],
@@ -178,7 +178,7 @@ fn large_subexprs_can_be_deferred_with_hinted_names() {
         vec![],
         vec![Input::new(inner_input, Effect::Read)],
         vec![Eqn::new(
-            Op::new(&SIN, AttrMap::default()),
+            Op::new(&SIN),
             vec![Input::new(inner_input, Effect::Read)],
             vec![inner_output],
         )],
@@ -194,7 +194,7 @@ fn large_subexprs_can_be_deferred_with_hinted_names() {
         vec![],
         vec![Input::new(outer_input, Effect::Read)],
         vec![Eqn::new_with_subexprs(
-            Op::new(&CALL, AttrMap::default()),
+            Op::new(&CALL),
             vec![SubExpr::new(Arc::new(inner), vec![])],
             vec![Input::new(outer_input, Effect::Read)],
             vec![outer_output],
@@ -218,7 +218,7 @@ fn inline_subexpr_indentation_is_configurable() {
         vec![],
         vec![Input::new(inner_input, Effect::Read)],
         vec![Eqn::new(
-            Op::new(&SIN, AttrMap::default()),
+            Op::new(&SIN),
             vec![Input::new(inner_input, Effect::Read)],
             vec![inner_output],
         )],
@@ -233,7 +233,7 @@ fn inline_subexpr_indentation_is_configurable() {
         vec![],
         vec![Input::new(outer_input, Effect::Read)],
         vec![Eqn::new_with_subexprs(
-            Op::new(&CALL, AttrMap::default()),
+            Op::new(&CALL),
             vec![SubExpr::new(Arc::new(inner), vec![])],
             vec![Input::new(outer_input, Effect::Read)],
             vec![outer_output],
@@ -258,7 +258,7 @@ fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
             vec![],
             vec![Input::new(inner_input, Effect::Read)],
             vec![Eqn::new(
-                Op::new(&SIN, AttrMap::default()),
+                Op::new(&SIN),
                 vec![Input::new(inner_input, Effect::Read)],
                 vec![inner_output],
             )],
@@ -277,13 +277,13 @@ fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
         vec![Input::new(input, Effect::Read)],
         vec![
             Eqn::new_with_subexprs(
-                Op::new(&CALL, AttrMap::default()),
+                Op::new(&CALL),
                 vec![SubExpr::new(Arc::clone(&inner), vec![])],
                 vec![Input::new(input, Effect::Read)],
                 vec![first],
             ),
             Eqn::new_with_subexprs(
-                Op::new(&CALL, AttrMap::default()),
+                Op::new(&CALL),
                 vec![SubExpr::new(Arc::clone(&inner), vec![])],
                 vec![Input::new(input, Effect::Read)],
                 vec![second],

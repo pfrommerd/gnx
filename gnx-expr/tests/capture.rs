@@ -3,7 +3,7 @@ use std::fmt::Display;
 use gnx_expr::trace::{
     Generic, Invocation, TraceCellRef, TraceContext, TraceObject, Tracer, ValueInfo,
 };
-use gnx_expr::{AttrMap, Capture, Op};
+use gnx_expr::{Capture, Op};
 use gnx_expr::{Dialect, Operation};
 
 pub struct SampleOperation {
@@ -63,7 +63,7 @@ fn op(name: &'static str) -> Op {
         "neg" => &NEG,
         _ => panic!("unknown op"),
     };
-    Op::new(impl_, AttrMap::default())
+    Op::new(impl_)
 }
 
 #[test]
@@ -235,7 +235,10 @@ fn capture_foreign_context_tracer_is_closure() {
 }
 
 #[test]
-fn capture_trace_cell_cross_context_update_does_not_emit_update_eqn() {
+fn capture_escaping_aliased_write_is_preserved() {
+    // A write into a foreign (maybe-aliased) cell is an escaping side effect:
+    // it must be retained in the captured expr even when no output depends on
+    // it (seeded from the aliased-write chain).
     let outer = TraceContext::enter();
     let _outer_ctx = outer.context();
     let value = Tracer::<Generic>::placeholder(sample_info());
@@ -249,11 +252,75 @@ fn capture_trace_cell_cross_context_update_does_not_emit_update_eqn() {
     let cap = Capture::from_context(inner_ctx, vec![], vec![]).unwrap();
     assert_eq!(
         cap.expr().eqns().len(),
-        0,
-        "captures only include invocations reachable from outputs"
+        1,
+        "escaping write into a maybe-aliased cell is preserved"
     );
+    assert_eq!(cap.expr().eqns()[0].op().to_string(), "builtins.update");
     drop(inner);
     drop(outer);
+}
+
+#[test]
+fn capture_nonaliased_dead_store_eliminated() {
+    // Two writes to an in-context (non-aliased) cell with no read between them:
+    // the first store is dead and should not appear in the capture.
+    let guard = TraceContext::enter();
+    let ctx = guard.context();
+    let base = Tracer::<Generic>::placeholder(sample_info());
+    let cell = TraceCellRef::new(base.trace_ref().clone());
+
+    let [v1]: [Tracer<Generic>; 1] = Invocation::invoke(
+        op("abs"),
+        vec![],
+        vec![TraceObject::from(base.clone())],
+        vec![sample_info()],
+    )
+    .try_into()
+    .unwrap();
+    cell.set(v1.trace_ref().clone()); // dead store
+
+    let [v2]: [Tracer<Generic>; 1] = Invocation::invoke(
+        op("neg"),
+        vec![],
+        vec![TraceObject::from(base.clone())],
+        vec![sample_info()],
+    )
+    .try_into()
+    .unwrap();
+    cell.set(v2.trace_ref().clone()); // live store (escapes via output)
+
+    let out = TraceObject::Ref(cell.get());
+    let cap = Capture::from_context(ctx, &[TraceObject::from(base.clone())], &[out]).unwrap();
+    let ops: Vec<String> = cap.expr().eqns().iter().map(|e| e.op().to_string()).collect();
+    assert_eq!(ops, vec!["sample.neg"], "dead store should be eliminated");
+}
+
+#[test]
+fn capture_aliased_read_write_ordering_preserved() {
+    // An input (maybe-aliased) cell read twice, then written: the reads must be
+    // ordered before the write (WAR), though the two reads may appear in either
+    // order (RAR).
+    let guard = TraceContext::enter();
+    let ctx = guard.context();
+    let cell = TraceCellRef::placeholder(sample_info());
+
+    let _r1 = cell.get();
+    let _r2 = cell.get();
+    let w = Tracer::<Generic>::placeholder(sample_info());
+    cell.set(w.trace_ref().clone());
+
+    let cap = Capture::from_context(ctx, vec![], vec![]).unwrap();
+    let ops: Vec<String> = cap.expr().eqns().iter().map(|e| e.op().to_string()).collect();
+    let write_pos = ops
+        .iter()
+        .position(|o| o == "builtins.update")
+        .expect("aliased write retained");
+    let read_count = ops.iter().filter(|o| *o == "builtins.read").count();
+    assert_eq!(read_count, 2, "both aliased reads retained");
+    assert!(
+        ops[..write_pos].iter().all(|o| o == "builtins.read"),
+        "aliased reads must precede the aliased write: {ops:?}"
+    );
 }
 
 #[test]

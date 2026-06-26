@@ -30,7 +30,7 @@ impl Operation for TestOperation {
 }
 
 fn op() -> Op {
-    Op::new(&TEST_OP, AttrMap::default())
+    Op::new(&TEST_OP)
 }
 
 #[test]

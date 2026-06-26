@@ -4,7 +4,8 @@ use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
 use crate::builtins::{READ_OP, UPDATE_OP};
-use crate::{Generic, Invocation, Op, ValueInfo};
+use crate::trace::TraceInput;
+use crate::{Effect, Generic, Invocation, Op, ValueInfo};
 
 use super::context::{ContextID, TraceContext};
 use super::{TraceRef, Traceable, Tracer};
@@ -23,8 +24,13 @@ impl CellKey {
 pub struct TraceCell {
     context_id: ContextID,
     type_info: ValueInfo,
-    /// `None` = placeholder; `Some` holds the current trace under its own lock.
-    cell: Option<RwLock<TraceRef>>,
+    /// The current "home" trace value, held under its own lock. Input cells
+    /// (`is_input`) initialize this to a placeholder trace.
+    home: RwLock<TraceRef>,
+    /// Whether this cell is an abstract input/placeholder. Input cells are
+    /// always treated as maybe-aliased (their relationship to other inputs is
+    /// unknown at trace time).
+    is_input: bool,
 }
 
 /// Shared handle to a mutable [`TraceCell`].
@@ -37,15 +43,17 @@ impl TraceCellRef {
         TraceCellRef(Arc::new(TraceCell {
             context_id: TraceContext::current_id(),
             type_info: base.info().clone(),
-            cell: Some(RwLock::new(base)),
+            home: RwLock::new(base),
+            is_input: false,
         }))
     }
 
     pub fn placeholder(info: ValueInfo) -> Self {
         TraceCellRef(Arc::new(TraceCell {
             context_id: TraceContext::current_id(),
-            type_info: info,
-            cell: None,
+            type_info: info.clone(),
+            home: RwLock::new(TraceRef::placeholder(info)),
+            is_input: true,
         }))
     }
 
@@ -58,7 +66,7 @@ impl TraceCellRef {
     }
 
     pub fn is_placeholder(&self) -> bool {
-        self.0.cell.is_none()
+        self.0.is_input
     }
 
     /// Whether aliasing analysis cannot assume this cell is unique.
@@ -66,13 +74,22 @@ impl TraceCellRef {
         !self.0.context_id.is_current() || self.is_placeholder()
     }
 
+    /// The current home trace value, without emitting a [`READ_OP`].
+    ///
+    /// Used during invocation/capture to thread non-aliased cell values and to
+    /// classify foreign cells. For maybe-aliased cells this is only a structural
+    /// handle (its producer lives in another context or is a placeholder);
+    /// ordering is carried by serialization edges, not this value.
+    pub fn read_home(&self) -> TraceRef {
+        self.0.home.read().unwrap().clone()
+    }
+
     /// Resolve the trace for this cell in the active context.
     pub fn get(&self) -> TraceRef {
         // If we are in the current context,
         // return the actual trace.
         if self.0.context_id.is_current() && !self.is_placeholder() {
-            let inner_cell = self.0.cell.as_ref().unwrap();
-            return inner_cell.read().unwrap().clone();
+            return self.read_home();
         }
         // Otherwise, bind an invocation with this cell.
         let [trace] = Invocation::invoke(
@@ -89,16 +106,18 @@ impl TraceCellRef {
     /// Bind the cell: update home storage in-context, otherwise via [`TraceContext`].
     pub fn set(&self, value: TraceRef) {
         if self.0.context_id.is_current() && !self.is_placeholder() {
-            let inner_cell = self.0.cell.as_ref().unwrap();
-            let mut guard = inner_cell.write().unwrap();
+            let mut guard = self.0.home.write().unwrap();
             *guard = value;
         } else {
-            Invocation::invoke(
+            // Maybe-aliased cell: record the write as an UPDATE_OP invocation so
+            // that aliasing serialization edges are established.
+            Invocation::invoke_with_subexprs(
                 Op::new(&UPDATE_OP),
                 vec![],
-                vec![self.clone()],
-                vec![self.type_info().clone()],
+                vec![TraceInput::Cell(self.clone(), Effect::Write)],
+                vec![],
             );
+            let _ = value;
         }
     }
 
@@ -113,8 +132,7 @@ impl TraceCellRef {
             !self.is_maybe_aliased(),
             "aliased cells cannot be updated directly"
         );
-        let inner_cell = self.0.cell.as_ref().unwrap();
-        let mut guard = inner_cell.write().unwrap();
+        let mut guard = self.0.home.write().unwrap();
         // set the cell value to an updated trace.
         *guard =
             TraceRef::updated_cell(invocation.clone(), self.type_info().clone(), subexpr, index);
@@ -156,10 +174,11 @@ impl Debug for TraceCell {
         let mut dbg = f.debug_struct("TraceCell");
         dbg.field("ctx", &self.context_id)
             .field("type_info", &self.type_info);
-        match self.cell {
-            Some(ref cell) => dbg.field("value", &cell.read().unwrap()),
-            None => dbg.field("value", &"placeholder"),
-        };
+        if self.is_input {
+            dbg.field("value", &"placeholder");
+        } else {
+            dbg.field("value", &self.home.read().unwrap());
+        }
         dbg.finish()
     }
 }

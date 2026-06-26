@@ -83,12 +83,12 @@ struct TraceContextState {
     local_id: usize,
     // The stack offset at which this context can be found.
     stack_offset: usize,
-    // Contains the previous aliased write
-    // which took place in this context.
+    // The most recent write into a maybe-aliased cell in this context.
     last_aliased_write: RefCell<Option<Arc<Invocation>>>,
-    // Contains the previous aliased read
-    // which took place in this context.
-    last_aliased_read: RefCell<Option<Arc<Invocation>>>,
+    // All reads from maybe-aliased cells since `last_aliased_write`. A
+    // subsequent aliased write must be ordered after all of them (WAR), while
+    // the reads themselves may be reordered among each other (RAR).
+    reads_since_write: RefCell<Vec<Arc<Invocation>>>,
 }
 
 /// Active tracing region: cell overrides and update log for capture.
@@ -115,7 +115,7 @@ impl TraceContext {
                     local_id,
                     stack_offset,
                     last_aliased_write: RefCell::new(None),
-                    last_aliased_read: RefCell::new(None),
+                    reads_since_write: RefCell::new(Vec::new()),
                 }),
             };
             stack.push(ctx.clone());
@@ -132,6 +132,37 @@ impl TraceContext {
     pub fn current_id() -> ContextID {
         CONTEXT_STACK
             .with_borrow(|(_, stack)| stack.last().map(|ctx| ctx.id()).unwrap_or(ContextID::ROOT))
+    }
+
+    /// The most recent write into a maybe-aliased cell, if any.
+    pub fn last_aliased_write(&self) -> Option<Arc<Invocation>> {
+        self.state.last_aliased_write.borrow().clone()
+    }
+
+    /// The serialization parents a new maybe-aliased access must be ordered
+    /// after. A write depends on every read since the last write plus the last
+    /// write itself (WAR + WAW); a read depends only on the last write (RAW).
+    pub fn aliasing_parents(&self, write: bool) -> Vec<Arc<Invocation>> {
+        let mut parents = Vec::new();
+        if write {
+            parents.extend(self.state.reads_since_write.borrow().iter().cloned());
+        }
+        if let Some(w) = self.state.last_aliased_write.borrow().clone() {
+            parents.push(w);
+        }
+        parents
+    }
+
+    /// Record that `inv` read from maybe-aliased cells (and did not write).
+    pub fn note_aliased_read(&self, inv: Arc<Invocation>) {
+        self.state.reads_since_write.borrow_mut().push(inv);
+    }
+
+    /// Record that `inv` wrote into maybe-aliased cells, becoming the new
+    /// ordering anchor and clearing the pending reads.
+    pub fn note_aliased_write(&self, inv: Arc<Invocation>) {
+        *self.state.last_aliased_write.borrow_mut() = Some(inv);
+        self.state.reads_since_write.borrow_mut().clear();
     }
 }
 

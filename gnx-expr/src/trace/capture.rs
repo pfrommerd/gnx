@@ -80,7 +80,11 @@ impl Capture {
         }
 
         let output_refs: Vec<TraceRef> = outputs.iter().map(|o| o.resolve()).collect();
-        let (invocations, output_vars) = collect_invocations(&output_refs, target.clone());
+        // Seed escaping side effects: the trailing maybe-aliased write chain must
+        // be retained even when no output value depends on it.
+        let extra_roots: Vec<Arc<Invocation>> = ctx.last_aliased_write().into_iter().collect();
+        let (invocations, output_vars) =
+            collect_invocations(&output_refs, &extra_roots, target.clone());
         let ordered_invs = topo_sort_invocations(invocations, target.clone());
         let mut eqns = Vec::with_capacity(ordered_invs.len());
 
@@ -259,6 +263,7 @@ impl From<&Arc<Invocation>> for InvKey {
 // for the given target context.
 fn collect_invocations(
     outputs: &[TraceRef],
+    extra_roots: &[Arc<Invocation>],
     target: ContextID,
 ) -> (
     HashMap<InvKey, Arc<Invocation>>,
@@ -273,18 +278,25 @@ fn collect_invocations(
         if out.context_id() != &target {
             continue;
         }
-        if let Some((inv, pos)) = out.producer() {
+        if let Some((inv, pos)) = out.producer_with_index() {
             if inv.context_id() != &target {
                 continue;
             }
+            let key = InvKey::from(inv);
+            pending.push(inv.clone());
             if let Some(ret_idx) = pos {
-                let key = InvKey::from(inv);
-                pending.push(inv.clone());
                 output_vars
                     .entry(key)
                     .or_default()
                     .insert(ret_idx, out.clone());
             }
+        }
+    }
+
+    // Seed escaping side effects (maybe-aliased write chain).
+    for inv in extra_roots {
+        if inv.context_id() == &target {
+            pending.push(inv.clone());
         }
     }
 
@@ -307,7 +319,7 @@ fn collect_invocations(
                 if trace.context_id() != &target {
                     continue;
                 }
-                if let Some((pred, pos)) = trace.producer() {
+                if let Some((pred, pos)) = trace.producer_with_index() {
                     if pred.context_id() != &target {
                         continue;
                     }
@@ -320,6 +332,12 @@ fn collect_invocations(
                             .insert(out_idx, trace.clone());
                     }
                 }
+            }
+        }
+        // Serialization predecessors for maybe-aliased ordering.
+        for pred in inv.aliasing_parents() {
+            if pred.context_id() == &target {
+                pending.push(pred.clone());
             }
         }
     }
@@ -338,8 +356,23 @@ fn topo_sort_invocations(
     let mut indeg: HashMap<InvKey, usize> = invs.keys().map(|&k| (k, 0)).collect();
     let mut succ: HashMap<InvKey, Vec<InvKey>> = HashMap::new();
 
+    let add_edge = |pred: &Arc<Invocation>,
+                    kid: InvKey,
+                    succ: &mut HashMap<InvKey, Vec<InvKey>>,
+                    indeg: &mut HashMap<InvKey, usize>| {
+        if pred.context_id() != &target {
+            return;
+        }
+        let pid = InvKey::from(pred);
+        if pid != kid && invs.contains_key(&pid) {
+            succ.entry(pid).or_default().push(kid);
+            *indeg.get_mut(&kid).unwrap() += 1;
+        }
+    };
+
     for inv in invs.values() {
         let kid = InvKey::from(inv);
+        // Data-dependency edges.
         for input in inv.inputs().iter().chain(
             inv.subexprs()
                 .iter()
@@ -349,17 +382,14 @@ fn topo_sort_invocations(
                 if trace.context_id() != &target {
                     continue;
                 }
-                if let Some((pred, _)) = trace.producer() {
-                    if pred.context_id() != &target {
-                        continue;
-                    }
-                    let pid = InvKey::from(pred);
-                    if pid != kid && invs.contains_key(&pid) {
-                        succ.entry(pid).or_default().push(kid);
-                        *indeg.get_mut(&kid).unwrap() += 1;
-                    }
+                if let Some(pred) = trace.producer() {
+                    add_edge(pred, kid, &mut succ, &mut indeg);
                 }
             }
+        }
+        // Serialization edges for maybe-aliased ordering.
+        for pred in inv.aliasing_parents() {
+            add_edge(pred, kid, &mut succ, &mut indeg);
         }
     }
 

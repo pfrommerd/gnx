@@ -21,9 +21,13 @@ enum TraceVariant {
         inv: Arc<Invocation>,
         ret_idx: usize,
     },
-    // the cell has been updated by the specified invocation
+    // the cell has been updated by the specified invocation.
+    // `subexpr` identifies the closure subexpression that wrote the cell
+    // (None for a direct input), and `index` the position within it.
     UpdatedCellState {
         inv: Arc<Invocation>,
+        subexpr: Option<usize>,
+        index: usize,
     },
 }
 
@@ -126,7 +130,7 @@ impl TraceRef {
         &self.0.context_id
     }
 
-    // Returns the produce of this trace, if any.
+    // Returns the producer of this trace, if any.
     pub fn producer(&self) -> Option<&Arc<Invocation>> {
         match &self.0.variant {
             TraceVariant::Placeholder => None,
@@ -134,6 +138,18 @@ impl TraceRef {
             TraceVariant::NewCellState { inv, .. } => Some(inv),
             TraceVariant::UpdatedCellState { inv, .. } => Some(inv),
             TraceVariant::Concrete(_) => None,
+        }
+    }
+
+    // Returns the producing invocation together with the output index it
+    // corresponds to (when the trace is a direct invocation output). Cell
+    // updates have no fixed output slot, so the index is `None`.
+    pub fn producer_with_index(&self) -> Option<(&Arc<Invocation>, Option<usize>)> {
+        match &self.0.variant {
+            TraceVariant::Placeholder | TraceVariant::Concrete(_) => None,
+            TraceVariant::Returned { inv, ret_idx } => Some((inv, Some(*ret_idx))),
+            TraceVariant::NewCellState { inv, ret_idx } => Some((inv, Some(*ret_idx))),
+            TraceVariant::UpdatedCellState { inv, .. } => Some((inv, None)),
         }
     }
 
