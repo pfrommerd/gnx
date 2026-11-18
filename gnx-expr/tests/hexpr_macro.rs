@@ -55,11 +55,13 @@ fn cell_syntax_preserves_metadata_and_lowers_without_dialect_cell_ops() {
 #[test]
 fn hexpr_prints_nested_bodies_inline() {
     let info = ValueInfo::new(0usize);
-    let passthrough = hexpr!({ lambda value: &info => in (value) });
-    let inner = Arc::new(hexpr!({ lambda x: &info =>
-        y: &info = cf::call[passthrough => ()] x;
-        in (y)
-    }));
+    let inner = Arc::new(hexpr! {
+        passthrough = |value: &info| => (value)
+        in |x: &info| => {
+            y: &info = cf::call [@passthrough] x;
+            in (y)
+        }
+    });
     let body = hexpr!({
         lambda input: &info =>
         result: &info = cf::call[inner.clone() => ()] input;
@@ -71,8 +73,7 @@ fn hexpr_prints_nested_bodies_inline() {
         concat!(
             "|input: 0| => {\n",
             "  result: 0 = cf::call [|x: 0| => {\n",
-            "    y: 0 = cf::call [|value: 0| => {\n",
-            "      in (value)\n    }] x;\n",
+            "    y: 0 = cf::call [|value: 0| => (value)] x;\n",
             "    in (y)\n  }] input;\n",
             "  in (result)\n}",
         ),
@@ -181,17 +182,14 @@ fn hexpr_hoists_shared_bodies_with_positional_cell_captures() {
 #[test]
 fn closureless_headers_accept_cell_inputs_and_zero_parameters() {
     let info = ValueInfo::new(0usize);
-    let body = hexpr!({ lambda cell[:]: &info, x: info => in (cell[:], x) });
+    let body = hexpr!(|cell[:]: &info, x: info| => (cell[:], x));
     assert!(body.closure().is_empty());
     assert_eq!(body.inputs().len(), 2);
-    assert_eq!(
-        body.to_string(),
-        "|cell[:]: 0, x: 0| => {\n  in (cell[:], x)\n}"
-    );
+    assert_eq!(body.to_string(), "|cell[:]: 0, x: 0| => (cell[:], x)");
 
-    let high = hexpr!(|| => { in () });
-    let low = expr!(|| => { in () });
-    assert_eq!(high.to_string(), "|| => {\n  in ()\n}");
+    let high = hexpr!(|| => ());
+    let low = expr!(|| => ());
+    assert_eq!(high.to_string(), "|| => ()");
     assert_eq!(low.to_string(), high.to_string());
 }
 
@@ -205,7 +203,7 @@ fn arrow_headers_accept_field_access_and_default_metadata_forms() {
     };
     let low = expr!({ lambda x: &config.info => in (x) });
     let high = hexpr!({ lambda x: &config.info => in (x) });
-    assert_eq!(low.to_string(), "|x: 7| => {\n  in (x)\n}");
+    assert_eq!(low.to_string(), "|x: 7| => (x)");
     assert_eq!(high.to_string(), low.to_string());
     assert_eq!(
         expr!(&config.info; { lambda x => in (x) }).to_string(),

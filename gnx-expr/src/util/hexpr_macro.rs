@@ -183,12 +183,13 @@ impl HExprBuilder<'_> {
 /// `ValueInfo`: a value moves in, and `&info` clones it. The older
 /// `hexpr!(info; { ... })` form supplies default metadata. Cell reads and
 /// creation inherit metadata.
-/// Inline a region with `dialect::op [|| => { in (outer[:]) }]` to refer to
+/// Inline a region with `dialect::op [|| => (outer[:])]` to refer to
 /// an enclosing cell directly. Shared definitions go before `in |...| => { ... }`
 /// and are referenced with `dialect::op [@name{outer[:]}]`. To attach a prebuilt
 /// `HExpr` or `Arc<HExpr>`, use `dialect::op[body => (captures)]`.
 /// Write parameters as `|captured[:]: &info; value: &info| => { ... }` and
-/// return with `in (x)`, `in (x, y)`, or `in ()`.
+/// return with `in (x)`, `in (x, y)`, or `in ()`. A body with no instructions
+/// can be just the result tuple.
 ///
 /// ```
 /// use gnx_expr::{HInstr, ValueInfo, hexpr};

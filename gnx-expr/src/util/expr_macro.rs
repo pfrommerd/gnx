@@ -197,8 +197,9 @@ macro_rules! attr {
 /// `ValueInfo` is moved in; `&info` clones it. The older `expr!(info; { ... })`
 /// form supplies default metadata for unannotated definitions.
 /// Use `;` between captures and inputs: `|captured: &info; x: make_info()| => { ... }`.
-/// Return values with `in (x)`,
-/// `in (x, y)`, or `in ()`. Write operation operands without
+/// Return values with `in (x)`, `in (x, y)`, or `in ()`. A body with no
+/// equations can be just the result tuple: `|x: &info| => (x, x)`.
+/// Write operation operands without
 /// parentheses: `z: &info = dialect::op captured x;`.
 /// If an annotation can be confused with a DSL delimiter, wrap it in braces.
 /// Inline a region with `dialect::op [|x: &info| => { in (outer, x) }] x`.
@@ -270,8 +271,8 @@ macro_rules! __expr_named {
         $crate::__expr_named!(@header $macro, $default, $name; [] [] $($tail)*)
     };
     (@header $macro:ident, $default:tt, $name:ident;
-        [|] [$($header:tt)*] | => { $($body:tt)* } $($tail:tt)*) => {
-        $crate::__expr_named!(@define $macro, $default, $name; [| $($header)* | => { $($body)* }] $($tail)*)
+        [|] [$($header:tt)*] | => $body:tt $($tail:tt)*) => {
+        $crate::__expr_named!(@define $macro, $default, $name; [| $($header)* | => $body] $($tail)*)
     };
     (@header $macro:ident, $default:tt, $name:ident;
         [] [$($header:tt)*] => { $($body:tt)* } $($tail:tt)*) => {
@@ -302,6 +303,10 @@ macro_rules! __typed_lambda {
         $crate::$params!($builder, false; $($args)* ,);
         $crate::$body!($builder; $($rest)*)
     }};
+    ($builder:ident, $params:ident, $body:ident; [|] $phase:ident [$($args:tt)*] | => ($($outputs:tt)*)) => {{
+        $crate::$params!($builder, false; $($args)* ,);
+        $crate::$body!($builder; in ($($outputs)*))
+    }};
     ($builder:ident, $params:ident, $body:ident; [] $phase:ident [$($args:tt)*] => $($rest:tt)*) => {{
         $crate::$params!($builder, false; $($args)* ,);
         $crate::$body!($builder; $($rest)*)
@@ -310,7 +315,7 @@ macro_rules! __typed_lambda {
         $crate::__typed_lambda!($builder, $params, $body; $end $phase [$($args)* $head] $($rest)*)
     };
     ($builder:ident, $params:ident, $body:ident; [|] $phase:ident [$($args:tt)*]) => {
-        compile_error!("expected `| => { ... }` after the parameters");
+        compile_error!("expected `| =>` followed by a block or a result tuple");
     };
     ($builder:ident, $params:ident, $body:ident; [] $phase:ident [$($args:tt)*]) => {
         compile_error!("expected `=>` after the lambda parameters");

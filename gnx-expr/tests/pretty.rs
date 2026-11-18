@@ -93,7 +93,7 @@ fn inline_expr_captures_values_in_first_use_order() {
         result: &info = test::call [|x: &info| => {
             z: &info = test::add local x;
             in (z, y, local)
-        }] [|| => { in (x) }] x;
+        }] [|| => (x)] x;
         in (result)
     });
     outer.check().unwrap();
@@ -105,6 +105,7 @@ fn inline_expr_captures_values_in_first_use_order() {
         &[outer.eqns()[0].outputs()[0].0, outer.inputs()[1].0]
     );
     assert_eq!(second.closure(), &[outer.inputs()[0].0]);
+    assert!(outer.to_string().contains("[|| => (x)]"));
     let inner = first.expr();
     assert_eq!(
         inner.eqns()[0].inputs(),
@@ -114,6 +115,16 @@ fn inline_expr_captures_values_in_first_use_order() {
         inner.outputs()[1..],
         [inner.closure()[1].0, inner.closure()[0].0]
     );
+}
+
+#[test]
+fn expr_without_equations_can_return_repeated_values_directly() {
+    let info = gnx_expr::ValueInfo::new(0usize);
+    let body = expr!(|arg: info| => (arg, arg));
+    body.check().unwrap();
+    assert!(body.eqns().is_empty());
+    assert_eq!(body.outputs(), &[body.inputs()[0].0; 2]);
+    assert_eq!(body.to_string(), "|arg: 0| => (arg, arg)");
 }
 
 #[test]

@@ -147,6 +147,10 @@ impl PrettyVarScope {
             expr.inputs(),
             |param, f| self.fmt_definition(param, f),
         )?;
+        if expr.instructions().is_empty() {
+            return fmt_tuple(f, expr.outputs(), cell_var);
+        }
+        writeln!(f, "{{")?;
         for instruction in expr.instructions() {
             printer.write_indent(f, indent + 1)?;
             match instruction {
@@ -200,14 +204,17 @@ impl PrettyVarScope {
             expr.inputs(),
             |input, f| self.fmt_param(input, f),
         )?;
+        let value_var = |var: &Var, f: &mut fmt::Formatter<'_>| self.fmt_var(var, f);
+        if expr.eqns().is_empty() {
+            return fmt_tuple(f, expr.outputs(), value_var);
+        }
+        writeln!(f, "{{")?;
         for eqn in expr.eqns() {
             printer.write_indent(f, indent_level + 1)?;
             self.fmt_eqn_with_printer(eqn, f, printer, indent_level)?;
             writeln!(f, ";")?;
         }
-        printer.fmt_return(f, indent_level, expr.outputs(), |var, f| {
-            self.fmt_var(var, f)
-        })
+        printer.fmt_return(f, indent_level, expr.outputs(), value_var)
     }
 
     fn fmt_eqn_op(
@@ -588,9 +595,9 @@ impl<'a, E: PrintableExpr + 'a> PrettyPrinter<'a, E> {
         format: impl Fn(&Var, &mut fmt::Formatter<'_>) -> fmt::Result,
     ) -> fmt::Result {
         self.write_indent(f, indent + 1)?;
-        write!(f, "in (")?;
-        fmt_list(f, outputs, format)?;
-        writeln!(f, ")")?;
+        write!(f, "in ")?;
+        fmt_tuple(f, outputs, format)?;
+        writeln!(f)?;
         self.write_indent(f, indent)?;
         write!(f, "}}")
     }
@@ -613,7 +620,17 @@ fn fmt_lambda<T>(
         }
         fmt_list(f, inputs, format)?;
     }
-    writeln!(f, "| => {{")
+    write!(f, "| => ")
+}
+
+fn fmt_tuple<T>(
+    f: &mut fmt::Formatter<'_>,
+    items: &[T],
+    format: impl Fn(&T, &mut fmt::Formatter<'_>) -> fmt::Result,
+) -> fmt::Result {
+    write!(f, "(")?;
+    fmt_list(f, items, format)?;
+    write!(f, ")")
 }
 
 fn fmt_list<T>(
