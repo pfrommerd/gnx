@@ -1,9 +1,9 @@
-use std::hash::{Hash, Hasher};
+use anyhash::{Hash, HasherWrite};
 
 use gnx_expr::{CellKey, CellTrace, ObjectTracer, Trace, TracerKey};
 use gnx_math::{Array, ArrayInfo, ArrayRef, Device, DeviceInfo};
 
-use super::equality::leaf_builders_eq;
+use super::hash::CoreHash;
 use crate::*;
 
 // Unfiltered trace leaves compare by handle, not contents. When selected, only
@@ -33,13 +33,13 @@ macro_rules! impl_trace_traits {
                 left: &Self::Builder<L>,
                 right: &Self::Builder<L>,
                 ctx: &mut GraphEqContext,
-            ) -> Option<bool> {
-                Some(leaf_builders_eq(left, right, ctx))
+            ) -> bool {
+                left.graph_eq(right, ctx)
             }
         }
 
         impl GraphHash for $ty {
-            fn graph_hash<H: Hasher, L: Leaf, F: Filter<L>>(
+            fn graph_hash<H: HasherWrite, L: Leaf, F: Filter<L>>(
                 &self,
                 hasher: &mut H,
                 filter: F,
@@ -51,11 +51,11 @@ macro_rules! impl_trace_traits {
                 } else {
                     HashMarker::Included.hash(hasher);
                     std::any::type_name::<Self>().hash(hasher);
-                    $identity(self).hash(hasher);
+                    CoreHash($identity(self)).hash(hasher);
                 }
             }
 
-            fn hash_builder<H: Hasher, L: Leaf>(
+            fn hash_builder<H: HasherWrite, L: Leaf>(
                 builder: &Self::Builder<L>,
                 hasher: &mut H,
                 ctx: &mut GraphHashContext,
@@ -91,7 +91,7 @@ impl<'g, G: Graph, L: Leaf> GraphVisitor<'g, G, L> for IsSelected {
     }
 }
 
-#[derive(Hash, PartialEq, Eq)]
+#[derive(std::hash::Hash, PartialEq, Eq)]
 enum ObjectIdentity {
     Value(TracerKey),
     Cell(CellKey),

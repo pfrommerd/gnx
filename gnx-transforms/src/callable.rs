@@ -1,41 +1,53 @@
-use gnx_graph::Graph;
+use gnx_graph::{Graph, OwnedGraph, util::GraphResult};
+use std::convert::Infallible;
 
-#[rustfmt::skip]
-pub trait Callable<Input: Graph> {
+/// The input and output graph types shared by the callable interfaces.
+pub trait Function<I: Graph> {
     type Output: Graph;
-
-    fn invoke(&self, input: Input) -> Self::Output;
 }
 
-// A Jitable is any Callable that can also be called
-// with an owned version of its input and where the output is owned.
-// E.g. a fn(&u32, &u32) -> u32 is Jitable with (Arc<u32>, Arc<u32>) -> u32
-//
-// This is not always true. For instance (Vec<&u32>) -> u32 is not Jitable
-// as we cannot coerce a Vec<Arc<u32>> into a Vec<&u32>.
-pub trait Jitable<I: Graph>: Callable<I, Output = Self::OwnedOutput> {
-    type OwnedOutput: Graph<Owned = Self::OwnedOutput>;
-
-    fn invoke_owned(&self, input: I::Owned) -> Self::Output;
+/// A callable that returns its output directly.
+/// Implementing `TryCallable` does not automatically implement `Callable`,
+/// even when the error is `Infallible`.
+///
+/// ```compile_fail
+/// use gnx_transforms::{Callable, Function, TryCallable};
+/// use std::convert::Infallible;
+/// struct OnlyTry;
+/// impl Function<()> for OnlyTry { type Output = u32; }
+/// impl TryCallable<()> for OnlyTry {
+///     type Error = Infallible;
+///     fn try_invoke(&self, _: ()) -> Result<u32, Infallible> { Ok(1) }
+/// }
+/// assert_eq!(Callable::invoke(&OnlyTry, ()), 1);
+/// ```
+pub trait Callable<I: Graph>: Function<I> {
+    fn invoke(&self, input: I) -> Self::Output;
 }
 
 /// A callable whose successful result is a graph. Errors need not be graphs.
-pub trait TryCallable<I: Graph> {
-    type Output: Graph;
+pub trait TryCallable<I: Graph>: Function<I> {
     type Error;
 
     fn try_invoke(&self, input: I) -> Result<Self::Output, Self::Error>;
 }
 
-/// A fallible callable that can also accept the owned form of its input graph.
-pub trait TryJitable<I: Graph>: TryCallable<I, Output = Self::OwnedOutput> {
-    type OwnedOutput: Graph<Owned = Self::OwnedOutput>;
+/// An infallible callable that can also accept rebuilt, owned inputs.
+pub trait Jitable<I: Graph>:
+    Callable<I, Output: Graph<Owned = <Self as Function<I>>::Output>>
+{
+    fn invoke_owned(&self, input: I::Owned) -> Self::Output;
+}
 
+/// A fallible callable that can also accept rebuilt, owned inputs.
+pub trait TryJitable<I: Graph>:
+    TryCallable<I, Output: Graph<Owned = <Self as Function<I>>::Output>>
+{
     fn try_invoke_owned(&self, input: I::Owned) -> Result<Self::Output, Self::Error>;
 }
 
 pub mod as_fn {
-    use super::Callable;
+    use super::{Callable, TryCallable};
     use gnx_graph::Graph;
     macro_rules! callable_ext {
         ($num:expr, $($T:ty)*) => {
@@ -49,6 +61,16 @@ pub mod as_fn {
                     }
                 }
                 impl<$($T: Graph,)* FUNC: Callable<($($T,)*)>> [< CallableExt $num >]<$($T,)*> for FUNC {}
+
+                pub trait [< TryCallableExt $num >]<$($T: Graph,)*>: TryCallable<($($T,)*)> {
+                    fn as_try_fn(&self) -> impl Fn($($T,)*) -> Result<Self::Output, Self::Error> {
+                        |$([<$T:lower>],)*| self.try_invoke(($([<$T:lower>],)*))
+                    }
+                    fn into_try_fn(self) -> impl Fn($($T,)*) -> Result<Self::Output, Self::Error> where Self: Sized {
+                        move |$([<$T:lower>],)*| self.try_invoke(($([<$T:lower>],)*))
+                    }
+                }
+                impl<$($T: Graph,)* FUNC: TryCallable<($($T,)*)>> [< TryCallableExt $num >]<$($T,)*> for FUNC {}
             }
         };
     }
@@ -70,27 +92,32 @@ pub mod as_fn {
 macro_rules! impl_tuple_arg_fn {
     ($($T:ty)*) => {
         paste::paste! {
-            impl<$($T: Graph,)* FUNC, OUT: Graph> Callable<($($T,)*)> for FUNC
+            impl<$($T: Graph,)* FUNC, RET: GraphResult> Function<($($T,)*)> for FUNC
             where
-                FUNC: Fn($($T,)*) -> OUT,
+                FUNC: Fn($($T,)*) -> RET,
             {
-                type Output = OUT;
-                fn invoke(&self, input: ($($T,)*)) -> Self::Output {
-                    let ($([<$T:lower>],)*) = input;
-                    self($([<$T:lower>],)*)
-                }
+                type Output = RET::Output;
             }
 
-            impl<$($T: Graph,)* FUNC, OUT: Graph, ERR> TryCallable<($($T,)*)> for FUNC
+            impl<$($T: Graph,)* FUNC, RET: GraphResult> TryCallable<($($T,)*)> for FUNC
             where
-                FUNC: Fn($($T,)*) -> Result<OUT, ERR>,
+                FUNC: Fn($($T,)*) -> RET,
             {
-                type Output = OUT;
-                type Error = ERR;
+                type Error = RET::Error;
 
                 fn try_invoke(&self, input: ($($T,)*)) -> Result<Self::Output, Self::Error> {
                     let ($([<$T:lower>],)*) = input;
-                    self($([<$T:lower>],)*)
+                    self($([<$T:lower>],)*).into_result()
+                }
+            }
+
+            impl<$($T: Graph,)* FUNC, RET: GraphResult<Error = Infallible>>
+                Callable<($($T,)*)> for FUNC
+            where
+                FUNC: Fn($($T,)*) -> RET,
+            {
+                fn invoke(&self, input: ($($T,)*)) -> Self::Output {
+                    self.try_invoke(input).unwrap_or_else(|never| match never {})
                 }
             }
         }
@@ -113,27 +140,25 @@ impl_tuple_arg_fn!(A B C D E F G H I J K L);
 macro_rules! impl_tuple_arg_jitable_fn {
     ($($T:ty)*) => {
         paste::paste! {
-            impl<$($T: Graph<Owned = $T>,)* FUNC, OUT: Graph<Owned = OUT>> Jitable<($($T,)*)> for FUNC
+            impl<$($T: Graph<Owned = $T>,)* FUNC, RET: GraphResult>
+                TryJitable<($($T,)*)> for FUNC
             where
-                FUNC: Fn($($T,)*) -> OUT,
+                FUNC: Fn($($T,)*) -> RET,
+                RET::Output: OwnedGraph,
             {
-                type OwnedOutput = OUT;
-
-                fn invoke_owned(&self, input: ($($T,)*)) -> Self::Output {
-                    let ($([<$T:lower>],)*) = input;
-                    self($([<$T:lower>],)*)
+                fn try_invoke_owned(&self, input: ($($T,)*)) -> Result<Self::Output, Self::Error> {
+                    self.try_invoke(input)
                 }
             }
 
-            impl<$($T: Graph<Owned = $T>,)* FUNC, OUT: Graph<Owned = OUT>, ERR>
-                TryJitable<($($T,)*)> for FUNC
+            impl<$($T: Graph<Owned = $T>,)* FUNC, RET: GraphResult<Error = Infallible>>
+                Jitable<($($T,)*)> for FUNC
             where
-                FUNC: Fn($($T,)*) -> Result<OUT, ERR>,
+                FUNC: Fn($($T,)*) -> RET,
+                RET::Output: OwnedGraph,
             {
-                type OwnedOutput = OUT;
-
-                fn try_invoke_owned(&self, input: ($($T,)*)) -> Result<Self::Output, Self::Error> {
-                    self.try_invoke(input)
+                fn invoke_owned(&self, input: ($($T,)*)) -> Self::Output {
+                    self.invoke(input)
                 }
             }
         }

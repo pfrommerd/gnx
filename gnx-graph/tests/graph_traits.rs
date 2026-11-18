@@ -1,7 +1,6 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::Hasher;
 use std::rc::Rc;
 
+use gnx_graph::anyhash::HasherWrite;
 use gnx_graph::{
     Graph, GraphContext, GraphEq, GraphEqContext, GraphHash, GraphHashContext, GraphPartialEq,
     Leaf, Nothing, Of, SourceError,
@@ -10,25 +9,34 @@ use gnx_graph::{
 #[derive(Clone, Leaf, GraphHash, GraphPartialEq, GraphEq)]
 struct Hashable(u32);
 
-fn hash_graph<G, L, F>(graph: &G, filter: F) -> u64
+#[derive(Default)]
+struct HashBytes(Vec<u8>);
+
+impl HasherWrite for HashBytes {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+}
+
+fn hash_graph<G, L, F>(graph: &G, filter: F) -> Vec<u8>
 where
     G: GraphHash,
     L: Leaf,
     F: gnx_graph::Filter<L>,
 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = HashBytes::default();
     graph.graph_hash::<_, L, _>(&mut hasher, filter, &mut GraphHashContext::new());
-    hasher.finish()
+    hasher.0
 }
 
-fn hash_builder<G, L>(builder: &G::Builder<L>) -> u64
+fn hash_builder<G, L>(builder: &G::Builder<L>) -> Vec<u8>
 where
     G: GraphHash,
     L: Leaf,
 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = HashBytes::default();
     G::hash_builder(builder, &mut hasher, &mut GraphHashContext::new());
-    hasher.finish()
+    hasher.0
 }
 
 #[test]
@@ -142,15 +150,22 @@ fn direct_builder_equality_ignores_holes_but_preserves_static_data_and_sharing()
         let value = Rc::new(value);
         builder((vec![value.clone(), value], flag))
     };
-    assert_eq!(compare(packed(1, true), packed(2, true)), Some(true));
-    assert_eq!(compare(packed(1, true), packed(1, false)), Some(false));
-    assert_eq!(
-        compare(
-            packed(1, true),
-            builder((vec![Rc::new(1), Rc::new(1)], true))
-        ),
-        Some(false)
-    );
+    assert!(compare(packed(1, true), packed(2, true)));
+    assert!(!compare(packed(1, true), packed(1, false)));
+    assert!(!compare(
+        packed(1, true),
+        builder((vec![Rc::new(1), Rc::new(1)], true)),
+    ));
+}
+
+#[test]
+fn derived_builder_equality_compares_static_values_and_holes() {
+    use gnx_graph::LeafBuilder::{Leaf, Static};
+    let compare = |a, b| Hashable::builders_eq::<Hashable>(&a, &b, &mut GraphEqContext::new());
+    assert!(compare(Leaf, Leaf));
+    assert!(compare(Static(Hashable(1)), Static(Hashable(1))));
+    assert!(!compare(Static(Hashable(1)), Static(Hashable(2))));
+    assert!(!compare(Leaf, Static(Hashable(1))));
 }
 
 #[test]

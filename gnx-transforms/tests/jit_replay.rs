@@ -379,13 +379,16 @@ fn trace_cache_checks_builder_equality_after_a_hash_match() {
     struct Static(u32);
 
     let calls = Cell::new(0);
-    let f = jit(|value: Static| {
+    let f = jit(|value: Static, input: Array| {
         calls.set(calls.get() + 1);
-        value.0
+        (value.0, input)
     });
-    assert_eq!(f.invoke((Static(1),)), 1);
-    assert_eq!(f.invoke((Static(2),)), 2);
-    assert_eq!(f.invoke((Static(1),)), 1);
+    for label in [1, 2, 1] {
+        let input = array();
+        let (output_label, output) = f.invoke((Static(label), input.clone()));
+        assert_eq!(output_label, label);
+        same(&output, &input);
+    }
     assert_eq!(calls.get(), 2);
 }
 

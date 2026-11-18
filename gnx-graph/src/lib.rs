@@ -3,6 +3,7 @@ mod core;
 mod des;
 mod ser;
 
+pub use anyhash;
 pub use builtins::*;
 pub use core::*;
 pub use des::*;

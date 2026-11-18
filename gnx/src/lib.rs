@@ -22,6 +22,8 @@ pub use gnx_math::array::{Array, Shape};
 pub use gnx_math::backend::devices;
 pub use gnx_math::device::Device;
 
-pub use gnx_transforms::{Callable, Jit, TryCallable, TryJitable, jit, jit_fn, jittable};
+pub use gnx_transforms::{
+    Callable, Function, Jit, Jitable, TryCallable, TryJitable, jit, jit_fn, jittable, try_jit_fn,
+};
 
 extern crate self as gnx;

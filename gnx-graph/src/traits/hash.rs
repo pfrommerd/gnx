@@ -1,6 +1,6 @@
+use anyhash::{Hash, HasherWrite};
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -35,7 +35,8 @@ enum SharedHashVisit {
     Seen(usize),
 }
 
-#[derive(Hash)]
+#[derive(Clone, Copy)]
+#[repr(u8)]
 pub enum HashMarker {
     Included,
     Excluded,
@@ -43,34 +44,47 @@ pub enum HashMarker {
     SharedNode,
 }
 
+impl Hash for HashMarker {
+    fn hash<H: HasherWrite>(&self, state: &mut H) {
+        (*self as u8).hash(state);
+    }
+}
+
+// Adapt leaves from libraries that only implement the standard hash trait.
+#[derive(std::hash::Hash)]
+pub(super) struct CoreHash<T>(pub T);
+anyhash::impl_hash!(impl<T: std::hash::Hash> CoreHash<T>);
+
 struct Included<T: ?Sized>(PhantomData<T>);
 
 struct Excluded<T: ?Sized>(PhantomData<T>);
 
 impl<T: ?Sized> Hash for Included<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash<H: HasherWrite>(&self, state: &mut H) {
         HashMarker::Included.hash(state);
         std::any::type_name::<T>().hash(state);
     }
 }
 
 impl<T: ?Sized> Hash for Excluded<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
+    fn hash<H: HasherWrite>(&self, state: &mut H) {
         HashMarker::Excluded.hash(state);
         std::any::type_name::<T>().hash(state);
     }
 }
 
+/// Hash a graph or its builder into an `anyhash` writer, independently of the
+/// type of hash the writer produces.
 pub trait GraphHash: Graph {
     fn graph_hash<H, L, F>(&self, hasher: &mut H, filter: F, ctx: &mut GraphHashContext)
     where
-        H: Hasher,
+        H: HasherWrite,
         L: Leaf,
         F: Filter<L>;
 
     fn hash_builder<H, L>(builder: &Self::Builder<L>, hasher: &mut H, ctx: &mut GraphHashContext)
     where
-        H: Hasher,
+        H: HasherWrite,
         L: Leaf;
 }
 
@@ -80,7 +94,7 @@ macro_rules! impl_leaf_hash {
             impl GraphHash for $T {
                 fn graph_hash<H, L, F>(&self, hasher: &mut H, filter: F, _ctx: &mut GraphHashContext)
                 where
-                    H: Hasher,
+                    H: HasherWrite,
                     L: Leaf,
                     F: Filter<L>,
                 {
@@ -99,7 +113,7 @@ macro_rules! impl_leaf_hash {
                     _ctx: &mut GraphHashContext,
                 )
                 where
-                    H: Hasher,
+                    H: HasherWrite,
                     L: Leaf,
                 {
                     match builder {
@@ -124,7 +138,7 @@ impl_leaf_hash!(
 impl GraphHash for f32 {
     fn graph_hash<H, L, F>(&self, hasher: &mut H, filter: F, _ctx: &mut GraphHashContext)
     where
-        H: Hasher,
+        H: HasherWrite,
         L: Leaf,
         F: Filter<L>,
     {
@@ -132,21 +146,21 @@ impl GraphHash for f32 {
             Ok(_) => Excluded::<Self>(PhantomData).hash(hasher),
             Err(_) => {
                 Included::<Self>(PhantomData).hash(hasher);
-                OrderedFloat::from(*self).hash(hasher);
+                CoreHash(OrderedFloat::from(*self)).hash(hasher);
             }
         }
     }
 
     fn hash_builder<H, L>(builder: &Self::Builder<L>, hasher: &mut H, _ctx: &mut GraphHashContext)
     where
-        H: Hasher,
+        H: HasherWrite,
         L: Leaf,
     {
         match builder {
             LeafBuilder::Leaf => Excluded::<L>(PhantomData).hash(hasher),
             LeafBuilder::Static(value) => {
                 Included::<Self>(PhantomData).hash(hasher);
-                OrderedFloat::from(*value).hash(hasher);
+                CoreHash(OrderedFloat::from(*value)).hash(hasher);
             }
         }
     }
@@ -155,7 +169,7 @@ impl GraphHash for f32 {
 impl GraphHash for f64 {
     fn graph_hash<H, L, F>(&self, hasher: &mut H, filter: F, _ctx: &mut GraphHashContext)
     where
-        H: Hasher,
+        H: HasherWrite,
         L: Leaf,
         F: Filter<L>,
     {
@@ -163,21 +177,21 @@ impl GraphHash for f64 {
             Ok(_) => Excluded::<Self>(PhantomData).hash(hasher),
             Err(_) => {
                 Included::<Self>(PhantomData).hash(hasher);
-                OrderedFloat::from(*self).hash(hasher);
+                CoreHash(OrderedFloat::from(*self)).hash(hasher);
             }
         }
     }
 
     fn hash_builder<H, L>(builder: &Self::Builder<L>, hasher: &mut H, _ctx: &mut GraphHashContext)
     where
-        H: Hasher,
+        H: HasherWrite,
         L: Leaf,
     {
         match builder {
             LeafBuilder::Leaf => Excluded::<L>(PhantomData).hash(hasher),
             LeafBuilder::Static(value) => {
                 Included::<Self>(PhantomData).hash(hasher);
-                OrderedFloat::from(*value).hash(hasher);
+                CoreHash(OrderedFloat::from(*value)).hash(hasher);
             }
         }
     }
@@ -186,7 +200,7 @@ impl GraphHash for f64 {
 impl<T: GraphHash> GraphHash for Vec<T> {
     fn graph_hash<H, L, F>(&self, hasher: &mut H, filter: F, ctx: &mut GraphHashContext)
     where
-        H: Hasher,
+        H: HasherWrite,
         L: Leaf,
         F: Filter<L>,
     {
@@ -205,7 +219,7 @@ impl<T: GraphHash> GraphHash for Vec<T> {
 
     fn hash_builder<H, L>(builder: &Self::Builder<L>, hasher: &mut H, ctx: &mut GraphHashContext)
     where
-        H: Hasher,
+        H: HasherWrite,
         L: Leaf,
     {
         fn hash_vec_builder<T, H, L>(
@@ -214,7 +228,7 @@ impl<T: GraphHash> GraphHash for Vec<T> {
             ctx: &mut GraphHashContext,
         ) where
             T: GraphHash,
-            H: Hasher,
+            H: HasherWrite,
             L: Leaf,
         {
             match builder {
@@ -242,7 +256,7 @@ macro_rules! impl_shared_hash {
                 filter: __Filter,
                 ctx: &mut GraphHashContext,
             ) where
-                __Hasher: Hasher,
+                __Hasher: HasherWrite,
                 __Leaf: Leaf,
                 __Filter: Filter<__Leaf>,
             {
@@ -265,7 +279,7 @@ macro_rules! impl_shared_hash {
                 hasher: &mut H,
                 ctx: &mut GraphHashContext,
             ) where
-                H: Hasher,
+                H: HasherWrite,
                 L: Leaf,
             {
                 let id = GraphId::from($W::as_ptr(builder) as u64);
@@ -291,7 +305,7 @@ impl_shared_hash!(Arc);
 impl<T: GraphHash> GraphHash for &T {
     fn graph_hash<H, L, F>(&self, hasher: &mut H, filter: F, ctx: &mut GraphHashContext)
     where
-        H: Hasher,
+        H: HasherWrite,
         L: Leaf,
         F: Filter<L>,
     {
@@ -311,7 +325,7 @@ impl<T: GraphHash> GraphHash for &T {
 
     fn hash_builder<H, L>(builder: &Self::Builder<L>, hasher: &mut H, ctx: &mut GraphHashContext)
     where
-        H: Hasher,
+        H: HasherWrite,
         L: Leaf,
     {
         let id = GraphId::from(Arc::as_ptr(builder) as u64);
@@ -340,7 +354,7 @@ macro_rules! impl_tuple_hash {
                 ctx: &mut GraphHashContext,
             )
             where
-                __Hasher: Hasher,
+                __Hasher: HasherWrite,
                 __Leaf: Leaf,
                 __Filter: Filter<__Leaf>,
             {
@@ -363,7 +377,7 @@ macro_rules! impl_tuple_hash {
                 ctx: &mut GraphHashContext,
             )
             where
-                __Hasher: Hasher,
+                __Hasher: HasherWrite,
                 __Leaf: Leaf,
             {
                 match builder {

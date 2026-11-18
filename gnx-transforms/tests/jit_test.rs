@@ -25,9 +25,12 @@ fn jit_attribute_reuses_its_static_wrapper() {
             });
         }
     });
-    assert_eq!(cached_attribute(&10), 11);
-    assert_eq!(cached_attribute(&11), 12);
-    assert_eq!(cached_attribute(&10), 11);
+    let mut value = 10;
+    assert_eq!(cached_attribute(&value), 11);
+    value = 11;
+    assert_eq!(cached_attribute(&value), 12);
+    value = 10;
+    assert_eq!(cached_attribute(&value), 11);
     assert_eq!(ATTRIBUTE_TRACES.load(Ordering::Relaxed), 2);
 }
 
@@ -79,6 +82,56 @@ fn nested_call_does_not_wait_for_its_own_trace_slot() {
     );
     worker.join().unwrap();
     assert_eq!(recursive(7), 8);
+}
+
+#[test]
+fn one_callable_can_have_separate_typed_jits_for_different_signatures() {
+    use gnx_transforms::{Function, TryCallable, TryJitable};
+    use std::convert::Infallible;
+
+    struct Overloaded;
+
+    impl Function<(&u32,)> for Overloaded {
+        type Output = u32;
+    }
+
+    impl TryCallable<(&u32,)> for Overloaded {
+        type Error = Infallible;
+
+        fn try_invoke(&self, (value,): (&u32,)) -> Result<u32, Infallible> {
+            Ok(value + 1)
+        }
+    }
+
+    impl TryJitable<(&u32,)> for Overloaded {
+        fn try_invoke_owned(&self, (value,): (Arc<u32>,)) -> Result<u32, Infallible> {
+            self.try_invoke((value.as_ref(),))
+        }
+    }
+
+    impl Function<(Arc<u32>,)> for Overloaded {
+        type Output = u32;
+    }
+
+    impl TryCallable<(Arc<u32>,)> for Overloaded {
+        type Error = Infallible;
+
+        fn try_invoke(&self, (value,): (Arc<u32>,)) -> Result<u32, Infallible> {
+            Ok(*value + 2)
+        }
+    }
+
+    impl TryJitable<(Arc<u32>,)> for Overloaded {
+        fn try_invoke_owned(&self, input: (Arc<u32>,)) -> Result<u32, Infallible> {
+            self.try_invoke(input)
+        }
+    }
+
+    let borrowed = jit::<(&u32,), _>(Overloaded);
+    let owned = jit::<(Arc<u32>,), _>(Overloaded);
+    assert_eq!(borrowed.try_invoke((&4,)), Ok(5));
+    assert_eq!(owned.try_invoke((Arc::new(4),)), Ok(6));
+    assert_eq!(borrowed.try_invoke((&4,)), Ok(5));
 }
 
 #[jit]

@@ -108,7 +108,7 @@ pub fn derive_graph_hash(input: ProcTokenStream) -> ProcTokenStream {
         Data::Struct(data) => {
             let field_hashes = field_hashes(&data.fields, quote!(self), &g);
             quote! {
-                ::std::hash::Hash::hash(&::core::any::type_name::<Self>(), hasher);
+                #g::anyhash::Hash::hash(&::core::any::type_name::<Self>(), hasher);
                 #(#field_hashes)*
             }
         }
@@ -126,7 +126,7 @@ pub fn derive_graph_hash(input: ProcTokenStream) -> ProcTokenStream {
                                 #g::GraphHash::graph_hash(
                                     #ident,
                                     hasher,
-                                    filter.child(#g::KeyRef::Attr(#key)),
+                                    filter.child(#g::KeyRef::from(#key)),
                                     ctx,
                                 );
                             }
@@ -134,7 +134,7 @@ pub fn derive_graph_hash(input: ProcTokenStream) -> ProcTokenStream {
                         quote! {
                             Self::#variant_ident { #(#bindings,)* } => {
                                 let #tmp = #i;
-                                ::std::hash::Hash::hash(&#tmp, hasher);
+                                #g::anyhash::Hash::hash(&#tmp, hasher);
                                 #(#field_hashes)*
                             }
                         }
@@ -148,14 +148,14 @@ pub fn derive_graph_hash(input: ProcTokenStream) -> ProcTokenStream {
                                 #g::GraphHash::graph_hash(
                                     #ident,
                                     hasher,
-                                    filter.child(#g::KeyRef::Index(#i)),
+                                    filter.child(#g::KeyRef::from(#i)),
                                     ctx,
                                 );
                             }
                         });
                         quote! {
                             Self::#variant_ident(#(#bindings,)*) => {
-                                ::std::hash::Hash::hash(&#i, hasher);
+                                #g::anyhash::Hash::hash(&#i, hasher);
                                 #(#field_hashes)*
                             }
                         }
@@ -163,14 +163,14 @@ pub fn derive_graph_hash(input: ProcTokenStream) -> ProcTokenStream {
                     Fields::Unit => {
                         quote! {
                             Self::#variant_ident => {
-                                ::std::hash::Hash::hash(&#i, hasher);
+                                #g::anyhash::Hash::hash(&#i, hasher);
                             }
                         }
                     }
                 }
             });
             quote! {
-                ::std::hash::Hash::hash(&::core::any::type_name::<Self>(), hasher);
+                #g::anyhash::Hash::hash(&::core::any::type_name::<Self>(), hasher);
                 match self {
                     #(#arms)*
                 }
@@ -196,13 +196,13 @@ pub fn derive_graph_hash(input: ProcTokenStream) -> ProcTokenStream {
                 ctx: &mut #g::GraphHashContext,
             )
             where
-                H: ::std::hash::Hasher,
+                H: #g::anyhash::HasherWrite,
                 L: #g::Leaf,
                 F: #g::Filter<L>,
             {
                 if filter.matches_ref(self).is_ok() {
-                    ::std::hash::Hash::hash(&#g::HashMarker::Excluded, hasher);
-                    ::std::hash::Hash::hash(&::core::any::type_name::<Self>(), hasher);
+                    #g::anyhash::Hash::hash(&#g::HashMarker::Excluded, hasher);
+                    #g::anyhash::Hash::hash(&::core::any::type_name::<Self>(), hasher);
                 } else {
                     #body
                 }
@@ -214,12 +214,12 @@ pub fn derive_graph_hash(input: ProcTokenStream) -> ProcTokenStream {
                 ctx: &mut #g::GraphHashContext,
             )
             where
-                H: ::std::hash::Hasher,
+                H: #g::anyhash::HasherWrite,
                 L: #g::Leaf,
             {
                 let _ = (builder, ctx);
-                ::std::hash::Hash::hash(&#g::HashMarker::Included, hasher);
-                ::std::hash::Hash::hash(&::core::any::type_name::<Self>(), hasher);
+                #g::anyhash::Hash::hash(&#g::HashMarker::Included, hasher);
+                #g::anyhash::Hash::hash(&::core::any::type_name::<Self>(), hasher);
             }
         }
     })
@@ -361,6 +361,14 @@ pub fn derive_graph_eq(input: ProcTokenStream) -> ProcTokenStream {
 
     ProcTokenStream::from(quote! {
         #err
-        impl #impl_generics #g::GraphEq for #name #ty_generics #where_clause {}
+        impl #impl_generics #g::GraphEq for #name #ty_generics #where_clause {
+            fn builders_eq<L: #g::Leaf>(
+                left: &Self::Builder<L>,
+                right: &Self::Builder<L>,
+                ctx: &mut #g::GraphEqContext,
+            ) -> bool {
+                #g::LeafBuilder::graph_eq(left, right, ctx)
+            }
+        }
     })
 }

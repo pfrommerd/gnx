@@ -9,8 +9,8 @@ use syn::{
 };
 
 use crate::paths::{
-    graph_crate, require_transforms_crate, transforms_callable, transforms_callable_as_fn,
-    transforms_jit_fn, transforms_jitable,
+    graph_crate, require_transforms_crate, transforms_callable_as_fn, transforms_function_trait,
+    transforms_jit_fn,
 };
 
 struct JittableInput {
@@ -66,19 +66,24 @@ pub fn jittable(input: ProcTokenStream) -> ProcTokenStream {
     ProcTokenStream::from(expand_jittable(input.signature, input.callable))
 }
 
-pub fn jit_fn(input: ProcTokenStream) -> ProcTokenStream {
+pub fn jit_fn(input: ProcTokenStream, fallible: bool) -> ProcTokenStream {
     let input = parse_macro_input!(input as Expr);
     let err = require_transforms_crate();
     let as_fn = transforms_callable_as_fn();
     let jit_fn = transforms_jit_fn();
     let signature = closure_signature(&input);
     let jittable = expand_jittable(signature, input);
+    let into_fn = if fallible {
+        quote!(into_try_fn)
+    } else {
+        quote!(into_fn)
+    };
 
     let expanded = quote! {
         {
             #err
             use #as_fn::*;
-            #jit_fn(#jittable).into_fn()
+            #jit_fn(#jittable).#into_fn()
         }
     };
     ProcTokenStream::from(expanded)
@@ -93,7 +98,7 @@ pub fn jit(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
     let input = parse_macro_input!(input as ItemFn);
     let err = require_transforms_crate();
     let jit_fn = transforms_jit_fn();
-    let callable = transforms_callable();
+    let graph = graph_crate();
 
     let vis = &input.vis;
     let sig = &input.sig;
@@ -146,16 +151,16 @@ pub fn jit(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
         quote! {
             struct _FnContainer<F>(F);
             #impls
-            static __JIT: #jit_type<_FnContainer<fn(#(#inputs_ty),*) -> #output_ty>> =
+            static __JIT: #jit_type<(#(#inputs_ty,)*), _FnContainer<fn(#(#inputs_ty),*) -> #output_ty>> =
                 #jit_fn(_FnContainer((#f) as fn(#(#inputs_ty),*) -> #output_ty));
-            #callable::invoke(&__JIT, (#(#args_gathered,)*))
+            #graph::util::GraphResult::from_result(__JIT.try_invoke_compatible((#(#args_gathered,)*)))
         }
     } else {
         // A local static can't name a function's generic parameters.
         let jittable = expand_jittable(Some(signature), parse_quote! { #f });
         quote! {
             let jitted_fn = #jit_fn(#jittable);
-            #callable::invoke(&jitted_fn, (#(#args_gathered,)*))
+            #graph::util::GraphResult::from_result(jitted_fn.try_invoke_compatible((#(#args_gathered,)*)))
         }
     };
 
@@ -205,52 +210,51 @@ fn expand_jittable(signature: Option<JittableSignature>, callable: Expr) -> Toke
 }
 
 fn expand_owned_impls() -> TokenStream2 {
-    let callable_trait = transforms_callable();
-    let jitable_trait = transforms_jitable();
+    let function = transforms_function_trait("Function");
+    let callable = transforms_function_trait("Callable");
+    let try_callable = transforms_function_trait("TryCallable");
+    let jitable = transforms_function_trait("Jitable");
+    let try_jitable = transforms_function_trait("TryJitable");
     let graph = graph_crate();
-    (0..=12)
-        .map(|arity| {
-            let type_params = generic_idents(arity, Span::call_site());
-            let vars = (0..arity)
-                .map(|i| Ident::new(&format!("__arg{}", i), Span::call_site()))
-                .collect::<Vec<_>>();
-            quote! {
-                impl<F, OUT: #graph::Graph, #(#type_params: #graph::Graph,)*>
-                    #callable_trait<(#(#type_params,)*)> for _FnContainer<F>
-                where
-                    F: Fn(#(#type_params),*) -> OUT,
-                {
-                    type Output = OUT;
+    quote! {
+        impl<I: #graph::Graph, F: #function<I>> #function<I> for _FnContainer<F> {
+            type Output = F::Output;
+        }
 
-                    fn invoke(&self, input: (#(#type_params,)*)) -> Self::Output {
-                        let (#(#vars,)*) = input;
-                        (self.0)(#(#vars),*)
-                    }
-                }
-
-                impl<F, OUT: #graph::Graph<Owned = OUT>, #(#type_params: #graph::Graph<Owned = #type_params>,)*>
-                    #jitable_trait<(#(#type_params,)*)> for _FnContainer<F>
-                where
-                    F: Fn(#(#type_params),*) -> OUT,
-                {
-                    type OwnedOutput = OUT;
-
-                    fn invoke_owned(
-                        &self,
-                        input: <(#(#type_params,)*) as #graph::Graph>::Owned,
-                    ) -> Self::Output {
-                        let (#(#vars,)*) = input;
-                        (self.0)(#(#vars),*)
-                    }
-                }
+        impl<I: #graph::Graph, F: #callable<I>> #callable<I> for _FnContainer<F> {
+            fn invoke(&self, input: I) -> Self::Output {
+                self.0.invoke(input)
             }
-        })
-        .collect()
+        }
+
+        impl<I: #graph::Graph, F: #try_callable<I>> #try_callable<I> for _FnContainer<F> {
+            type Error = F::Error;
+
+            fn try_invoke(&self, input: I) -> ::core::result::Result<Self::Output, Self::Error> {
+                self.0.try_invoke(input)
+            }
+        }
+
+        impl<I: #graph::Graph, F: #jitable<I>> #jitable<I> for _FnContainer<F> {
+            fn invoke_owned(&self, input: I::Owned) -> Self::Output {
+                self.0.invoke_owned(input)
+            }
+        }
+
+        impl<I: #graph::Graph, F: #try_jitable<I>> #try_jitable<I> for _FnContainer<F> {
+            fn try_invoke_owned(&self, input: I::Owned) -> ::core::result::Result<Self::Output, Self::Error> {
+                self.0.try_invoke_owned(input)
+            }
+        }
+    }
 }
 
 fn expand_signature_impls(signature: JittableSignature) -> TokenStream2 {
-    let callable_trait = transforms_callable();
-    let jitable_trait = transforms_jitable();
+    let function = transforms_function_trait("Function");
+    let callable = transforms_function_trait("Callable");
+    let try_callable = transforms_function_trait("TryCallable");
+    let jitable = transforms_function_trait("Jitable");
+    let try_jitable = transforms_function_trait("TryJitable");
     let graph = graph_crate();
     let span = Span::call_site();
     let mut generic_types = Vec::new();
@@ -306,10 +310,11 @@ fn expand_signature_impls(signature: JittableSignature) -> TokenStream2 {
         .map(|lifetime| quote! { #lifetime })
         .collect::<Vec<_>>();
     impl_generics.push(quote! { F });
+    impl_generics.extend(generic_types.iter().map(|ident| quote! { #ident }));
+    let adapter_generics = impl_generics.clone();
     if output_type.needs_generic {
         impl_generics.push(quote! { __JittableOutput });
     }
-    impl_generics.extend(generic_types.iter().map(|ident| quote! { #ident }));
     let vars = (0..input_types.len())
         .map(|i| Ident::new(&format!("__arg{}", i), span))
         .collect::<Vec<_>>();
@@ -340,41 +345,66 @@ fn expand_signature_impls(signature: JittableSignature) -> TokenStream2 {
     } else {
         quote! { F: for<#(#call_lifetimes),*> Fn(#(#fn_input_types),*) -> #output_type }
     };
-    let callable_impl = quote! {
-        impl<#(#impl_generics),*>
-            #callable_trait<(#(#input_types,)*)> for _FnContainer<F>
+    quote! {
+        impl<#(#impl_generics),*> #function<(#(#input_types,)*)> for _FnContainer<F>
         where
             #(#callable_bounds,)*
-            #output_type: #graph::Graph,
+            #output_type: #graph::util::GraphResult,
             #fn_bound,
         {
-            type Output = #output_type;
+            type Output = <#output_type as #graph::util::GraphResult>::Output;
+        }
 
-            fn invoke(&self, input: (#(#input_types,)*)) -> Self::Output {
+        impl<#(#impl_generics),*> #try_callable<(#(#input_types,)*)> for _FnContainer<F>
+        where
+            #(#callable_bounds,)*
+            #output_type: #graph::util::GraphResult,
+            #fn_bound,
+        {
+            type Error = <#output_type as #graph::util::GraphResult>::Error;
+
+            fn try_invoke(&self, input: (#(#input_types,)*)) -> ::core::result::Result<Self::Output, Self::Error> {
                 let (#(#vars,)*) = input;
-                (self.0)(#(#vars),*)
+                #graph::util::GraphResult::into_result((self.0)(#(#vars),*))
             }
         }
-    };
 
-    quote! {
-        #callable_impl
+        impl<#(#adapter_generics),*> #callable<(#(#input_types,)*)> for _FnContainer<F>
+        where
+            #(#callable_bounds,)*
+            Self: #try_callable<(#(#input_types,)*), Error = ::core::convert::Infallible>,
+        {
+            fn invoke(&self, input: (#(#input_types,)*)) -> Self::Output {
+                <Self as #try_callable<(#(#input_types,)*)>>::try_invoke(self, input)
+                    .unwrap_or_else(|never| match never {})
+            }
+        }
 
-        impl<#(#impl_generics),*>
-            #jitable_trait<(#(#input_types,)*)> for _FnContainer<F>
+        impl<#(#impl_generics),*> #try_jitable<(#(#input_types,)*)> for _FnContainer<F>
         where
             #(#owned_bounds,)*
-            #output_type: #graph::Graph<Owned = #output_type>,
+            #output_type: #graph::util::GraphResult,
+            <#output_type as #graph::util::GraphResult>::Output: #graph::OwnedGraph,
             #fn_bound,
         {
-            type OwnedOutput = #output_type;
-
-            fn invoke_owned(
+            fn try_invoke_owned(
                 &self,
                 input: <(#(#input_types,)*) as #graph::Graph>::Owned,
-            ) -> Self::Output {
+            ) -> ::core::result::Result<Self::Output, Self::Error> {
                 let (#(#vars,)*) = input;
-                (self.0)(#(#owned_args),*)
+                #graph::util::GraphResult::into_result((self.0)(#(#owned_args),*))
+            }
+        }
+
+        impl<#(#adapter_generics),*> #jitable<(#(#input_types,)*)> for _FnContainer<F>
+        where
+            #(#owned_bounds,)*
+            Self: #callable<(#(#input_types,)*)>
+                + #try_jitable<(#(#input_types,)*), Error = ::core::convert::Infallible>,
+        {
+            fn invoke_owned(&self, input: <(#(#input_types,)*) as #graph::Graph>::Owned) -> Self::Output {
+                <Self as #try_jitable<(#(#input_types,)*)>>::try_invoke_owned(self, input)
+                    .unwrap_or_else(|never| match never {})
             }
         }
     }
@@ -420,10 +450,4 @@ fn push_unique(generic_types: &mut Vec<Ident>, ident: Ident) {
     if !generic_types.iter().any(|existing| existing == &ident) {
         generic_types.push(ident);
     }
-}
-
-fn generic_idents(arity: usize, span: Span) -> Vec<Ident> {
-    (0..arity)
-        .map(|i| Ident::new(&format!("__JittableInput{}", i), span))
-        .collect()
 }

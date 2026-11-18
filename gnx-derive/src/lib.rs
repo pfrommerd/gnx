@@ -19,9 +19,16 @@ pub fn impl_lifetime_free(input: ProcTokenStream) -> ProcTokenStream {
     lifetime_free::impl_lifetime_free(input)
 }
 
+/// Wrap an infallible function or closure in a JIT that returns its output directly.
 #[proc_macro]
 pub fn jit_fn(input: ProcTokenStream) -> ProcTokenStream {
-    transforms::jit_fn(input)
+    transforms::jit_fn(input, false)
+}
+
+/// Wrap a function or closure in a JIT that always returns a `Result`.
+#[proc_macro]
+pub fn try_jit_fn(input: ProcTokenStream) -> ProcTokenStream {
+    transforms::jit_fn(input, true)
 }
 
 #[proc_macro]
@@ -73,6 +80,8 @@ pub fn derive_graph_partial_eq(input: ProcTokenStream) -> ProcTokenStream {
     graph_traits::derive_graph_partial_eq(input)
 }
 
+/// Derive builder equality for a graph backed by `LeafBuilder`.
+/// Graphs with other builders should implement `GraphEq` directly.
 #[proc_macro_derive(GraphEq)]
 pub fn derive_graph_eq(input: ProcTokenStream) -> ProcTokenStream {
     graph_traits::derive_graph_eq(input)

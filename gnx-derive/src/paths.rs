@@ -68,25 +68,11 @@ pub fn transforms_jit_fn() -> Path {
     }
 }
 
-pub fn transforms_callable() -> Path {
+pub fn transforms_function_trait(name: &str) -> Path {
+    let name = syn::Ident::new(name, proc_macro2::Span::call_site());
     match crate_name("gnx-transforms") {
-        Ok(FoundCrate::Itself) => syn::parse_quote!(::gnx_transforms::Callable),
-        Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx_transforms::Callable),
-        Err(_) => match crate_name("gnx") {
-            Ok(_) => syn::parse_quote!(::gnx::Callable),
-            Err(_) => syn::parse_quote!(::gnx_transforms::Callable),
-        },
-    }
-}
-
-pub fn transforms_jitable() -> Path {
-    match crate_name("gnx-transforms") {
-        Ok(FoundCrate::Itself) => syn::parse_quote!(::gnx_transforms::Jitable),
-        Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx_transforms::Jitable),
-        Err(_) => match crate_name("gnx") {
-            Ok(_) => syn::parse_quote!(::gnx::transforms::Jitable),
-            Err(_) => syn::parse_quote!(::gnx_transforms::Jitable),
-        },
+        Err(_) if crate_name("gnx").is_ok() => syn::parse_quote!(::gnx::#name),
+        _ => syn::parse_quote!(::gnx_transforms::#name),
     }
 }
 
