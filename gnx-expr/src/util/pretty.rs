@@ -1,4 +1,4 @@
-use crate::{Eqn, Expr, Input, SubExpr, Var};
+use crate::{Eqn, Expr, HExpr, HInstr, Kind, Op, Ownership, SubExpr, ValueInfo, Var};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -49,8 +49,28 @@ impl PrettyVarScope {
         write!(f, "{}", self.name_for(var))
     }
 
-    pub fn fmt_input(&self, input: &Input, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name_for(input.var()))
+    pub fn fmt_input(&self, input: &(Var, Ownership), f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if input.1 == Ownership::Borrow {
+            write!(f, "&")?;
+        }
+        write!(f, "{}", self.name_for(&input.0))
+    }
+
+    fn fmt_param(
+        &self,
+        (var, ownership, info): &(Var, Ownership, ValueInfo),
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
+        self.fmt_input(&(*var, *ownership), f)?;
+        write!(f, ": {info}")
+    }
+
+    fn fmt_definition(&self, (var, kind): &(Var, Kind), f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt_var(var, f)?;
+        match kind {
+            Kind::Value(info) => write!(f, ": {info}"),
+            Kind::Cell(info) => write!(f, "[:]: {info}"),
+        }
     }
 
     pub fn fmt_eqn(&self, eqn: &Eqn, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -65,12 +85,7 @@ impl PrettyVarScope {
         printer: &mut PrettyPrinter,
         indent_level: usize,
     ) -> fmt::Result {
-        for (i, output) in eqn.outputs().iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{}", self.name_for(output.var()))?;
-        }
+        fmt_list(f, eqn.outputs(), |output, f| self.fmt_definition(output, f))?;
         if !eqn.outputs().is_empty() {
             write!(f, " = ")?;
         }
@@ -92,6 +107,97 @@ impl PrettyVarScope {
         self.fmt_expr_with_printer(expr, f, &mut printer, 0)
     }
 
+    /// Format the HExpr body and display metadata at its explicit definitions.
+    pub fn fmt_hexpr(&self, expr: &HExpr, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cell_var = |var: &Var, f: &mut fmt::Formatter<'_>| {
+            self.fmt_var(var, f)?;
+            if matches!(expr.kind(var), Some(Kind::Cell(_))) {
+                write!(f, "[:]")?;
+            }
+            Ok(())
+        };
+        fmt_lambda(f, expr.closure(), expr.inputs(), |param, f| {
+            self.fmt_definition(param, f)
+        })?;
+        for instruction in expr.instructions() {
+            write!(f, "  ")?;
+            match instruction {
+                HInstr::Apply(eqn) => self.fmt_macro_eqn(eqn, f, 1, false)?,
+                HInstr::CreateCell { cell, initial, .. } => {
+                    cell_var(cell, f)?;
+                    write!(f, " = ")?;
+                    self.fmt_var(initial, f)?;
+                }
+                HInstr::ReadCell { cell, output, .. } => {
+                    self.fmt_var(output, f)?;
+                    write!(f, " <- ")?;
+                    cell_var(cell, f)?;
+                }
+                HInstr::WriteCell { cell, value } => {
+                    cell_var(cell, f)?;
+                    write!(f, " <- ")?;
+                    self.fmt_var(value, f)?;
+                }
+            }
+            writeln!(f, ";")?;
+        }
+        write!(f, "  ")?;
+        fmt_return(f, expr.outputs(), cell_var)
+    }
+
+    // Print nested bodies and their bindings so they can sit inside `expr!(...)`.
+    fn fmt_macro_expr(
+        &self,
+        expr: &Expr,
+        f: &mut fmt::Formatter<'_>,
+        indent: usize,
+    ) -> fmt::Result {
+        fmt_lambda(f, expr.closure(), expr.inputs(), |input, f| {
+            self.fmt_param(input, f)
+        })?;
+        let padding = (indent + 1) * 2;
+        for eqn in expr.eqns() {
+            write!(f, "{:padding$}", "")?;
+            self.fmt_macro_eqn(eqn, f, indent + 1, true)?;
+            writeln!(f, ";")?;
+        }
+        write!(f, "{:padding$}", "")?;
+        fmt_return(f, expr.outputs(), |var, f| self.fmt_var(var, f))
+    }
+
+    fn fmt_macro_eqn(
+        &self,
+        eqn: &Eqn,
+        f: &mut fmt::Formatter<'_>,
+        indent: usize,
+        ownership: bool,
+    ) -> fmt::Result {
+        if !eqn.outputs().is_empty() {
+            fmt_list(f, eqn.outputs(), |output, f| self.fmt_definition(output, f))?;
+            write!(f, " = ")?;
+        }
+        fmt_op(eqn.op(), f)?;
+        let operand = |input: &(Var, Ownership), f: &mut fmt::Formatter<'_>| {
+            if ownership {
+                self.fmt_input(input, f)
+            } else {
+                self.fmt_var(&input.0, f)
+            }
+        };
+        for subexpr in eqn.subexprs() {
+            write!(f, "[expr!(")?;
+            PrettyVarScope::new().fmt_macro_expr(subexpr.expr(), f, indent)?;
+            write!(f, ") => (")?;
+            fmt_list(f, subexpr.closure(), operand)?;
+            write!(f, ")]")?;
+        }
+        for input in eqn.inputs() {
+            write!(f, " ")?;
+            operand(input, f)?;
+        }
+        Ok(())
+    }
+
     fn fmt_expr_with_printer(
         &self,
         expr: &Expr,
@@ -99,37 +205,16 @@ impl PrettyVarScope {
         printer: &mut PrettyPrinter,
         indent_level: usize,
     ) -> fmt::Result {
-        write!(f, "{{ lambda ")?;
-        for (i, input) in expr.closure().iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            self.bind(input.var());
-            self.fmt_input(input, f)?;
-        }
-        write!(f, " ; ")?;
-        for (i, input) in expr.inputs().iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            self.bind(input.var());
-            self.fmt_input(input, f)?;
-        }
-        writeln!(f, " .")?;
+        fmt_lambda(f, expr.closure(), expr.inputs(), |input, f| {
+            self.fmt_param(input, f)
+        })?;
         for eqn in expr.eqns() {
             printer.write_indent(f, indent_level + 1)?;
             self.fmt_eqn_with_printer(eqn, f, printer, indent_level)?;
-            writeln!(f)?;
+            writeln!(f, ";")?;
         }
         printer.write_indent(f, indent_level + 1)?;
-        write!(f, "in (")?;
-        for (i, output) in expr.outputs().iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{}", self.name_for(output))?;
-        }
-        write!(f, ") }}")
+        fmt_return(f, expr.outputs(), |var, f| self.fmt_var(var, f))
     }
 
     fn fmt_eqn_op(
@@ -139,18 +224,7 @@ impl PrettyVarScope {
         printer: &mut PrettyPrinter,
         indent_level: usize,
     ) -> fmt::Result {
-        let op = eqn.op();
-        write!(f, "{}::{}", op.impl_.dialect().name(), op.impl_.name())?;
-        if !op.attrs().is_empty() {
-            write!(f, "<")?;
-            for (i, (key, value)) in op.attrs().iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{key}: {value}")?;
-            }
-            write!(f, ">")?;
-        }
+        fmt_op(eqn.op(), f)?;
         for subexpr in eqn.subexprs() {
             let expr = subexpr.expr().as_ref();
             write!(f, " ")?;
@@ -159,7 +233,7 @@ impl PrettyVarScope {
             } else {
                 let child = PrettyVarScope::new();
                 for (sub_input, outer_input) in expr.closure().iter().zip(subexpr.closure()) {
-                    child.alias(sub_input.var(), self.name_for(outer_input.var()));
+                    child.alias(&sub_input.0, self.name_for(&outer_input.0));
                 }
                 child.fmt_expr_with_printer(
                     expr,
@@ -174,7 +248,7 @@ impl PrettyVarScope {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", self.name_for(var.var()))?;
+                    self.fmt_input(var, f)?;
                 }
                 write!(f, "]")?;
             }
@@ -368,12 +442,7 @@ impl PrettyPrinter {
             .closure()
             .iter()
             .zip(subexpr.closure())
-            .map(|(sub_input, outer_input)| {
-                (
-                    sub_input.var().clone(),
-                    outer_scope.name_for(outer_input.var()),
-                )
-            })
+            .map(|(sub_input, outer_input)| (sub_input.0, outer_scope.name_for(&outer_input.0)))
             .collect();
         self.deferred.push(DeferredExpr {
             name: name.clone(),
@@ -425,6 +494,64 @@ impl PrettyPrinter {
         }
         Ok(())
     }
+}
+
+fn fmt_lambda<T>(
+    f: &mut fmt::Formatter<'_>,
+    closure: &[T],
+    inputs: &[T],
+    format: impl Fn(&T, &mut fmt::Formatter<'_>) -> fmt::Result,
+) -> fmt::Result {
+    write!(f, "{{ lambda")?;
+    if !closure.is_empty() {
+        write!(f, " ")?;
+        fmt_list(f, closure, &format)?;
+        write!(f, ";")?;
+    }
+    if !inputs.is_empty() {
+        write!(f, " ")?;
+        fmt_list(f, inputs, format)?;
+    }
+    writeln!(f, " =>")
+}
+
+fn fmt_return(
+    f: &mut fmt::Formatter<'_>,
+    outputs: &[Var],
+    format: impl Fn(&Var, &mut fmt::Formatter<'_>) -> fmt::Result,
+) -> fmt::Result {
+    write!(f, "in (")?;
+    fmt_list(f, outputs, format)?;
+    write!(f, ") }}")
+}
+
+fn fmt_list<T>(
+    f: &mut fmt::Formatter<'_>,
+    items: &[T],
+    format: impl Fn(&T, &mut fmt::Formatter<'_>) -> fmt::Result,
+) -> fmt::Result {
+    for (index, item) in items.iter().enumerate() {
+        if index > 0 {
+            write!(f, ", ")?;
+        }
+        format(item, f)?;
+    }
+    Ok(())
+}
+
+fn fmt_op(op: &Op, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "{}::{}", op.impl_.dialect().name(), op.impl_.name())?;
+    if !op.attrs().is_empty() {
+        write!(f, "<")?;
+        for (index, (key, value)) in op.attrs().iter().enumerate() {
+            if index > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{key}: {value}")?;
+        }
+        write!(f, ">")?;
+    }
+    Ok(())
 }
 
 fn alphabetic_name(mut index: usize) -> String {

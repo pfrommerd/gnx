@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use gnx_expr::trace::{
-    Generic, Invocation, CellTrace, TraceContext, ObjectTracer, Tracer, ValueInfo,
+    CellTrace, Generic, Invocation, ObjectTracer, TraceContext, Tracer, ValueInfo,
 };
 use gnx_expr::{Capture, HInstr, Op};
 use gnx_expr::{Dialect, Operation};
@@ -135,7 +135,7 @@ fn capture_diamond_distinct_intermediate_vars() {
         .as_apply()
         .unwrap();
     assert_eq!(add.inputs().len(), 2);
-    assert_ne!(add.inputs()[0].var(), add.inputs()[1].var());
+    assert_ne!(&add.inputs()[0].0, &add.inputs()[1].0);
 }
 
 #[test]
@@ -164,7 +164,7 @@ fn capture_reuses_var_when_same_tracer_used_twice() {
         .unwrap()
         .as_apply()
         .unwrap();
-    assert_eq!(add.inputs()[0].var(), add.inputs()[1].var());
+    assert_eq!(&add.inputs()[0].0, &add.inputs()[1].0);
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn capture_placeholder_only() {
     assert_eq!(ex.inputs().len(), 1);
     assert_eq!(
         ex.outputs(),
-        ex.inputs().iter().map(|i| *i.var()).collect::<Vec<_>>()
+        ex.inputs().iter().map(|i| i.0).collect::<Vec<_>>()
     );
 }
 
@@ -221,8 +221,8 @@ fn capture_foreign_context_tracer_is_closure() {
         .as_apply()
         .unwrap();
     assert_ne!(
-        add.inputs()[0].var(),
-        add.inputs()[1].var(),
+        &add.inputs()[0].0,
+        &add.inputs()[1].0,
         "a and outer b must be distinct vars"
     );
     drop(inner);
@@ -287,10 +287,10 @@ fn capture_aliased_update_preserves_value_and_producer() {
         panic!("expected structural write");
     };
     assert_eq!(producer.op().to_string(), "sample.neg");
-    assert_eq!(cell, expr.inputs()[0].var());
+    assert_eq!(cell, &expr.inputs()[0].0);
     assert_eq!(expr.cell_access(cell), Some(gnx_expr::CellAccess::Write));
-    assert_eq!(expr.cell_access(expr.inputs()[1].var()), None);
-    assert_eq!(value, producer.outputs()[0].var());
+    assert_eq!(expr.cell_access(&expr.inputs()[1].0), None);
+    assert_eq!(value, &producer.outputs()[0].0);
 }
 
 #[test]
@@ -317,8 +317,8 @@ fn capture_foreign_cell_update_preserves_assigned_closure_value() {
     else {
         panic!("expected structural write");
     };
-    assert_eq!(cell, expr.closure()[0].var());
-    assert_eq!(assigned, expr.closure()[1].var());
+    assert_eq!(cell, &expr.closure()[0].0);
+    assert_eq!(assigned, &expr.closure()[1].0);
     let ObjectTracer::Ref(captured_value) = &cap.closure()[1] else {
         panic!("assigned value must be an immutable trace");
     };
@@ -377,8 +377,8 @@ fn capture_aliased_read_write_ordering_preserved() {
     let w = Tracer::<Generic>::placeholder(sample_info());
     cell.set(w.trace_ref().clone());
 
-    let cap =
-        Capture::from_context(ctx, &[ObjectTracer::from(cell), ObjectTracer::from(w)], &[]).unwrap();
+    let cap = Capture::from_context(ctx, &[ObjectTracer::from(cell), ObjectTracer::from(w)], &[])
+        .unwrap();
     let instructions = cap.expr().instructions();
     assert_eq!(instructions.len(), 3);
     assert!(matches!(instructions[0], HInstr::ReadCell { .. }));

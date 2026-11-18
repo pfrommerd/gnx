@@ -291,7 +291,9 @@ name = "gnx-transforms"
 version = "0.1.0"
 dependencies = [
  "gnx-derive",
+ "gnx-expr",
  "gnx-graph",
+ "gnx-math",
  "paste",
 ]
 

@@ -1,23 +1,19 @@
 use gnx_expr::{
-    Capture, Dialect, Generic, HExpr, InputId, InputSpec, Invocation, Kind, LoweringError, Op,
-    Operation, Ownership, CellTrace, TraceContext, Tracer, ValueInfo, lower,
+    Capture, CellTrace, Dialect, Generic, HExpr, InputId, InputSpec, Invocation, Kind,
+    LoweringError, Op, Operation, Ownership, TraceContext, Tracer, ValueInfo, lower,
 };
 
 fn all_values(expr: &HExpr, ownership: Ownership) -> InputSpec {
-    let mut next = 0;
-    let mut bind = |params: &[gnx_expr::HParam]| {
+    let bind = |params: &[(gnx_expr::Var, Kind)], source: fn(usize) -> InputId| {
         params
             .iter()
-            .map(|param| {
-                let id = InputId(next);
-                next += 1;
-                (id, param.kind().clone(), ownership)
-            })
+            .enumerate()
+            .map(|(index, param)| (source(index), param.1.clone(), ownership))
             .collect()
     };
     InputSpec {
-        closure: bind(expr.closure()),
-        inputs: bind(expr.inputs()),
+        closure: bind(expr.closure(), InputId::Closure),
+        inputs: bind(expr.inputs(), InputId::Input),
     }
 }
 struct TestDialect;
@@ -80,26 +76,29 @@ fn boundary_descriptors_cover_all_five_output_kinds() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId(10), Kind::Value(info()), Ownership::Borrow),
-            (InputId(20), Kind::Value(info()), Ownership::Move),
-            (InputId(30), Kind::Cell(info()), Ownership::Borrow),
+            (InputId::Input(10), Kind::Value(info()), Ownership::Borrow),
+            (InputId::Input(20), Kind::Value(info()), Ownership::Move),
+            (InputId::Input(30), Kind::Cell(info()), Ownership::Borrow),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
-    assert_eq!(lowered.inputs, vec![InputId(10), InputId(20), InputId(30)]);
+    assert_eq!(
+        lowered.inputs,
+        vec![InputId::Input(10), InputId::Input(20), InputId::Input(30)]
+    );
     assert_eq!(
         lowered.results(),
         &[
             lower::Output::OutputValue { output_idx: 0 },
             lower::Output::InputValue {
-                input_id: InputId(10)
+                input_id: InputId::Input(10)
             },
             lower::Output::InputCell {
-                input_id: InputId(30)
+                input_id: InputId::Input(30)
             },
             lower::Output::NewInputCell {
                 id: 0,
-                input_id: InputId(10)
+                input_id: InputId::Input(10)
             },
             lower::Output::NewOutputCell {
                 id: 1,
@@ -126,19 +125,19 @@ fn update_indices_address_descriptors_not_owned_return_slots() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId(7), Kind::Cell(info()), Ownership::Borrow),
-            (InputId(91), Kind::Value(info()), Ownership::Borrow),
+            (InputId::Input(7), Kind::Cell(info()), Ownership::Borrow),
+            (InputId::Input(91), Kind::Value(info()), Ownership::Borrow),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
     assert!(lowered.expr.outputs().is_empty());
     assert_eq!(lowered.results().len(), 2);
-    assert_eq!(lowered.updates, vec![(InputId(7), 2)]);
+    assert_eq!(lowered.updates, vec![(InputId::Input(7), 2)]);
     assert_eq!(
         lowered.outputs,
         vec![
             lower::Output::InputValue {
-                input_id: InputId(91)
+                input_id: InputId::Input(91)
             };
             3
         ]
@@ -155,8 +154,8 @@ fn update_only_sources_are_not_exposed_as_user_results() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId(7), Kind::Cell(info()), Ownership::Borrow),
-            (InputId(9), Kind::Value(info()), Ownership::Move),
+            (InputId::Input(7), Kind::Cell(info()), Ownership::Borrow),
+            (InputId::Input(9), Kind::Value(info()), Ownership::Move),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
@@ -165,7 +164,7 @@ fn update_only_sources_are_not_exposed_as_user_results() {
         lowered.outputs,
         vec![lower::Output::OutputValue { output_idx: 0 }]
     );
-    assert_eq!(lowered.updates, vec![(InputId(7), 0)]);
+    assert_eq!(lowered.updates, vec![(InputId::Input(7), 0)]);
     assert_eq!(lowered.expr.outputs().len(), 1);
 }
 
@@ -181,8 +180,8 @@ fn new_input_cell_uses_the_original_input_state_snapshot() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId(7), Kind::Cell(info()), Ownership::Borrow),
-            (InputId(9), Kind::Value(info()), Ownership::Borrow),
+            (InputId::Input(7), Kind::Cell(info()), Ownership::Borrow),
+            (InputId::Input(9), Kind::Value(info()), Ownership::Borrow),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
@@ -190,13 +189,13 @@ fn new_input_cell_uses_the_original_input_state_snapshot() {
         lowered.results(),
         &[lower::Output::NewInputCell {
             id: 0,
-            input_id: InputId(7)
+            input_id: InputId::Input(7)
         }]
     );
     assert_eq!(
         lowered.outputs[lowered.updates[0].1],
         lower::Output::InputValue {
-            input_id: InputId(9)
+            input_id: InputId::Input(9)
         }
     );
     assert!(lowered.expr.outputs().is_empty());
@@ -243,7 +242,10 @@ fn borrowed_input_is_never_moved_but_computed_result_is_owned() {
         .unwrap();
     assert_eq!(lowered.expr.inputs()[0].1, Ownership::Borrow);
     assert_eq!(lowered.expr.eqns()[0].inputs()[0].1, Ownership::Borrow);
-    assert_eq!(lowered.expr.outputs(), lowered.expr.eqns()[0].outputs());
+    assert_eq!(
+        lowered.expr.outputs(),
+        &[lowered.expr.eqns()[0].outputs()[0].0]
+    );
     lowered.expr.check().unwrap();
 }
 
@@ -275,8 +277,8 @@ fn ownership_is_chosen_independently_per_input() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId(0), Kind::Value(info()), Ownership::Borrow),
-            (InputId(1), Kind::Value(info()), Ownership::Move),
+            (InputId::Input(0), Kind::Value(info()), Ownership::Borrow),
+            (InputId::Input(1), Kind::Value(info()), Ownership::Move),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
@@ -332,7 +334,7 @@ fn borrowed_input_passthrough_is_removed_from_low_level_outputs() {
     assert_eq!(
         lowered.results(),
         vec![lower::Output::InputValue {
-            input_id: InputId(0)
+            input_id: InputId::Input(0)
         }]
     );
     lowered.expr.check().unwrap();
@@ -360,7 +362,7 @@ fn the_same_value_id_can_be_moved_into_two_different_arguments() {
     let out = compute(vec![x.clone(), y.clone()]);
     let captured =
         Capture::from_context(guard.context(), &[x.into(), y.into()], &[out.into()]).unwrap();
-    let binding = (InputId(8), Kind::Value(info()), Ownership::Move);
+    let binding = (InputId::Input(8), Kind::Value(info()), Ownership::Move);
     let lowered = captured
         .expr()
         .lower(&InputSpec {
@@ -368,7 +370,7 @@ fn the_same_value_id_can_be_moved_into_two_different_arguments() {
             inputs: vec![binding.clone(), binding],
         })
         .unwrap();
-    assert_eq!(lowered.inputs, vec![InputId(8)]);
+    assert_eq!(lowered.inputs, vec![InputId::Input(8)]);
     assert_eq!(lowered.expr.inputs().len(), 1);
     let uses = lowered.expr.eqns()[0].inputs();
     assert_eq!(uses[0].0, uses[1].0);
@@ -386,7 +388,7 @@ fn value_identity_is_shared_across_captures_and_inputs() {
     let out = compute(vec![captured_value, argument.clone()]);
     let captured =
         Capture::from_context(inner.context(), &[argument.into()], &[out.into()]).unwrap();
-    let binding = (InputId(0), Kind::Value(info()), Ownership::Move);
+    let binding = (InputId::Input(0), Kind::Value(info()), Ownership::Move);
     let lowered = captured
         .expr()
         .lower(&InputSpec {
@@ -423,13 +425,15 @@ fn aliases_cannot_disagree_on_ownership() {
         let spec = InputSpec {
             closure: vec![],
             inputs: vec![
-                (InputId(0), kind.clone(), Ownership::Borrow),
-                (InputId(0), kind, Ownership::Move),
+                (InputId::Input(0), kind.clone(), Ownership::Borrow),
+                (InputId::Input(0), kind, Ownership::Move),
             ],
         };
         assert!(matches!(
             captured.expr().lower(&spec),
-            Err(LoweringError::AliasedInputOwnershipMismatch(InputId(0)))
+            Err(LoweringError::AliasedInputOwnershipMismatch(
+                InputId::Input(0)
+            ))
         ));
     }
 }
@@ -443,13 +447,13 @@ fn one_id_cannot_identify_both_a_value_and_a_cell() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId(0), Kind::Value(info()), Ownership::Borrow),
-            (InputId(0), Kind::Cell(info()), Ownership::Borrow),
+            (InputId::Input(0), Kind::Value(info()), Ownership::Borrow),
+            (InputId::Input(0), Kind::Cell(info()), Ownership::Borrow),
         ],
     };
     assert!(matches!(
         captured.expr().lower(&spec),
-        Err(LoweringError::AliasedInputKindMismatch(InputId(0)))
+        Err(LoweringError::AliasedInputKindMismatch(InputId::Input(0)))
     ));
 }
 
@@ -465,8 +469,8 @@ fn cell_state_and_user_result_share_one_owned_output() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId(0), Kind::Cell(info()), Ownership::Move),
-            (InputId(1), Kind::Value(info()), Ownership::Move),
+            (InputId::Input(0), Kind::Cell(info()), Ownership::Move),
+            (InputId::Input(1), Kind::Value(info()), Ownership::Move),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
@@ -495,8 +499,8 @@ fn borrowed_cell_state_and_value_passthroughs_never_become_returns() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId(0), Kind::Cell(info()), Ownership::Borrow),
-            (InputId(1), Kind::Value(info()), Ownership::Borrow),
+            (InputId::Input(0), Kind::Cell(info()), Ownership::Borrow),
+            (InputId::Input(1), Kind::Value(info()), Ownership::Borrow),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
@@ -504,13 +508,13 @@ fn borrowed_cell_state_and_value_passthroughs_never_become_returns() {
     assert_eq!(
         lowered.outputs[lowered.updates[0].1],
         lower::Output::InputValue {
-            input_id: InputId(1)
+            input_id: InputId::Input(1)
         }
     );
     assert_eq!(
         lowered.results(),
         vec![lower::Output::InputValue {
-            input_id: InputId(1)
+            input_id: InputId::Input(1)
         }]
     );
 }
@@ -526,7 +530,9 @@ fn captured_value_ownership_is_supplied_by_lowering_too() {
         .expr()
         .lower(&all_values(captured.expr(), Ownership::Move))
         .unwrap();
-    assert_eq!(lowered.expr.inputs()[0].1, Ownership::Move);
+    assert_eq!(lowered.closure, vec![InputId::Closure(0)]);
+    assert!(lowered.inputs.is_empty());
+    assert_eq!(lowered.expr.closure()[0].1, Ownership::Move);
     assert_eq!(lowered.expr.eqns()[0].inputs()[0].1, Ownership::Move);
 }
 
@@ -538,7 +544,7 @@ fn input_spec_validates_kinds_metadata_and_arity() {
     for kind in [Kind::Cell(info()), Kind::Value(ValueInfo::new(1usize))] {
         let spec = InputSpec {
             closure: vec![],
-            inputs: vec![(InputId(0), kind, Ownership::Borrow)],
+            inputs: vec![(InputId::Input(0), kind, Ownership::Borrow)],
         };
         assert_eq!(
             captured.expr().lower(&spec).unwrap_err(),
@@ -562,7 +568,7 @@ fn input_spec_validates_capture_kinds_and_arity() {
     let out = compute(vec![x]);
     let captured = Capture::from_context(inner.context(), &[], &[out.into()]).unwrap();
     let spec = InputSpec {
-        closure: vec![(InputId(0), Kind::Cell(info()), Ownership::Borrow)],
+        closure: vec![(InputId::Input(0), Kind::Cell(info()), Ownership::Borrow)],
         inputs: vec![],
     };
     assert_eq!(
@@ -596,52 +602,37 @@ fn input_spec_from_args_shares_value_and_cell_identities_across_both_lists() {
     assert_eq!(
         spec.closure,
         vec![
-            (InputId(0), Kind::Value(info()), Ownership::Move),
-            (InputId(1), Kind::Cell(info()), Ownership::Borrow),
+            (InputId::Input(1), Kind::Value(info()), Ownership::Move),
+            (InputId::Input(0), Kind::Cell(info()), Ownership::Borrow),
         ]
     );
     assert_eq!(
         spec.inputs,
         vec![
-            (InputId(1), Kind::Cell(info()), Ownership::Borrow),
-            (InputId(0), Kind::Value(info()), Ownership::Move),
+            (InputId::Input(0), Kind::Cell(info()), Ownership::Borrow),
+            (InputId::Input(1), Kind::Value(info()), Ownership::Move),
         ]
     );
 }
 
 #[test]
-fn borrowed_passthroughs_through_immutable_calls_are_removed_too() {
-    use gnx_expr::{Expr, Input, VarScope};
-    let mut scope = VarScope::new();
-    let formal = scope.create_var();
-    let body = Expr::new(
-        vec![],
-        vec![Input::new(formal)],
-        vec![],
-        vec![formal],
-        scope,
-    );
+fn immutable_calls_cannot_move_a_borrowed_outer_argument() {
+    let body = gnx_expr::expr!(gnx_expr::ValueInfo::new(0usize); { lambda formal: in (formal) });
     let guard = TraceContext::enter();
     let x = value();
     let result = gnx_expr::builtins::call(
-        body,
+        std::sync::Arc::new(body),
         Vec::<Tracer<Generic>>::new(),
         [x.clone()],
         vec![info()],
     );
     let captured = Capture::from_context(guard.context(), &[x.into()], &result).unwrap();
-    let lowered = captured
-        .expr()
-        .lower(&all_values(captured.expr(), Ownership::Borrow))
-        .unwrap();
-    assert!(lowered.expr.eqns().is_empty());
-    assert!(lowered.expr.outputs().is_empty());
-    assert_eq!(
-        lowered.results(),
-        vec![lower::Output::InputValue {
-            input_id: InputId(0)
-        }]
-    );
+    assert!(matches!(
+        captured
+            .expr()
+            .lower(&all_values(captured.expr(), Ownership::Borrow)),
+        Err(LoweringError::MoveBorrowed(_))
+    ));
 }
 
 #[test]
@@ -663,7 +654,7 @@ fn repeated_borrowed_results_are_all_forwarded_without_low_level_returns() {
         lowered.results(),
         vec![
             lower::Output::InputValue {
-                input_id: InputId(0)
+                input_id: InputId::Input(0)
             };
             2
         ]

@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 pub struct GraphContext {
     // The boxes contain HashMap<GraphId, T>
     maps: HashMap<TypeId, Box<dyn Any>>,
-    // All the GraphIds we've seen so far
+    // GraphIds currently under construction, for cycle detection.
     seen: HashSet<GraphId>,
 }
 
@@ -26,7 +26,6 @@ impl GraphContext {
         if self.seen.contains(&id) {
             return Err(E::invalid_id(id));
         }
-        self.seen.insert(id);
         let map = self
             .maps
             .entry(TypeId::of::<T>())
@@ -37,6 +36,7 @@ impl GraphContext {
         if let Some(s) = map.get(&id) {
             Ok(Some(s.clone()))
         } else {
+            self.seen.insert(id);
             Ok(None)
         }
     }
@@ -49,7 +49,7 @@ impl GraphContext {
             .maps
             .entry(TypeId::of::<T>())
             .or_insert_with(|| Box::new(HashMap::<GraphId, T>::new()));
-        // self.seen.insert(id);
+        self.seen.remove(&id);
         let map = map
             .downcast_mut::<HashMap<GraphId, T>>()
             .ok_or(E::custom("Internal context error"))?;
@@ -66,7 +66,13 @@ impl GraphContext {
         match value {
             Some(value) => Ok(value),
             None => {
-                let value = builder(self)?;
+                let value = match builder(self) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.seen.remove(&id);
+                        return Err(error);
+                    }
+                };
                 self._finish::<T, E>(id, value.clone())?;
                 Ok(value)
             }

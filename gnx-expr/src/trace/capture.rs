@@ -1,7 +1,7 @@
 use crate::trace::{
-    CellKey, ContextID, Generic, Invocation, TraceContext, ObjectTracer, Trace, Tracer,
+    CellKey, ContextID, Generic, Invocation, ObjectTracer, Trace, TraceContext, Tracer,
 };
-use crate::{Eqn, HExpr, HInstr, HParam, Input, Kind, Output, SubExpr, Var, VarScope};
+use crate::{Eqn, HExpr, HInstr, Kind, Ownership, SubExpr, Var, VarScope};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -53,8 +53,7 @@ impl Capture {
             let var = builder.scope.create_var();
             let kind = object_kind(input);
             builder.bindings.insert(key, var);
-            builder.kinds.insert(var, kind.clone());
-            builder.inputs.push(HParam { var, kind });
+            builder.inputs.push((var, kind));
         }
         let mut roots = Vec::new();
         for output in &outputs {
@@ -83,7 +82,6 @@ impl Capture {
                 inputs: builder.inputs,
                 instructions: builder.instructions,
                 outputs: output_vars,
-                kinds: builder.kinds,
             },
             closure: builder.closure_values,
         })
@@ -152,9 +150,8 @@ struct Builder {
     target: ContextID,
     scope: VarScope,
     bindings: BTreeMap<BindingKey, Var>,
-    kinds: BTreeMap<Var, Kind>,
-    inputs: Vec<HParam>,
-    closure_params: Vec<HParam>,
+    inputs: Vec<(Var, Kind)>,
+    closure_params: Vec<(Var, Kind)>,
     closure_values: Vec<ObjectTracer>,
     instructions: Vec<HInstr>,
 }
@@ -164,7 +161,6 @@ impl Builder {
             target,
             scope: VarScope::new(),
             bindings: BTreeMap::new(),
-            kinds: BTreeMap::new(),
             inputs: vec![],
             closure_params: vec![],
             closure_values: vec![],
@@ -175,8 +171,7 @@ impl Builder {
         let var = self.scope.create_var();
         let kind = object_kind(&obj);
         self.bindings.insert(object_key(&obj), var);
-        self.kinds.insert(var, kind.clone());
-        self.closure_params.push(HParam { var, kind });
+        self.closure_params.push((var, kind));
         self.closure_values.push(obj);
         var
     }
@@ -205,14 +200,16 @@ impl Builder {
                 let initial = self.value(&cell.read_home())?;
                 let var = self.scope.create_var();
                 self.bindings.insert(object_key(obj), var);
-                self.kinds.insert(var, object_kind(obj));
-                self.instructions
-                    .push(HInstr::CreateCell { cell: var, initial });
+                self.instructions.push(HInstr::CreateCell {
+                    cell: var,
+                    initial,
+                    kind: object_kind(obj),
+                });
                 Ok(var)
             }
         }
     }
-    fn outputs(&mut self, inv: &Arc<Invocation>) -> Vec<Var> {
+    fn outputs(&mut self, inv: &Arc<Invocation>) -> Vec<(Var, Kind)> {
         inv.outputs()
             .iter()
             .enumerate()
@@ -221,8 +218,7 @@ impl Builder {
                 self.bindings
                     .entry(BindingKey::Result(InvKey::from(inv), index))
                     .or_insert(var);
-                self.kinds.insert(var, Kind::Value(info.clone()));
-                var
+                (var, Kind::Value(info.clone()))
             })
             .collect()
     }
@@ -237,19 +233,19 @@ impl Builder {
             } => {
                 let inputs = inputs
                     .iter()
-                    .map(|value| self.value(value).map(Input::new))
+                    .map(|value| self.value(value).map(|var| (var, Ownership::Borrow)))
                     .collect::<Result<_, _>>()?;
                 let subexprs = subexprs
                     .iter()
                     .map(|(expr, captures)| {
                         let captures = captures
                             .iter()
-                            .map(|value| self.value(value).map(Input::new))
+                            .map(|value| self.value(value).map(|var| (var, Ownership::Borrow)))
                             .collect::<Result<_, _>>()?;
                         Ok(SubExpr::new(expr.clone(), captures))
                     })
                     .collect::<Result<_, CaptureError>>()?;
-                let outputs = self.outputs(inv).into_iter().map(Output::New).collect();
+                let outputs = self.outputs(inv);
                 HInstr::Apply(Eqn::new_with_subexprs(
                     op.clone(),
                     subexprs,
@@ -259,8 +255,8 @@ impl Builder {
             }
             Invocation::ReadCell { cell, .. } => {
                 let cell = self.object(&ObjectTracer::Cell(cell.clone()))?;
-                let output = self.outputs(inv)[0];
-                HInstr::ReadCell { cell, output }
+                let (output, kind) = self.outputs(inv).pop().expect("cell read has one result");
+                HInstr::ReadCell { cell, output, kind }
             }
             Invocation::WriteCell { cell, value, .. } => {
                 let cell = self.object(&ObjectTracer::Cell(cell.clone()))?;

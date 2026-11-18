@@ -58,6 +58,12 @@ impl Value {
 #[derive(Clone)]
 pub struct ValueInfo(Arc<dyn AnyInfo>);
 
+impl From<&ValueInfo> for ValueInfo {
+    fn from(info: &ValueInfo) -> Self {
+        info.clone()
+    }
+}
+
 impl ValueInfo {
     pub fn new<T: AnyInfo>(value: T) -> Self {
         // if T is ValueInfo, use it directly

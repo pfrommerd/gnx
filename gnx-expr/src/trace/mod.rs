@@ -4,9 +4,9 @@ mod context;
 mod trace_ref;
 
 pub use capture::{Capture, CaptureError, TracerKey};
-pub use cell::{CellKey, TraceCell, CellTrace, CellTracer};
+pub use cell::{CellKey, CellTrace, CellTracer, TraceCell};
 pub use context::{ContextID, TraceContext, TraceContextGuard};
-pub use trace_ref::{TraceData, Trace, Tracer};
+pub use trace_ref::{Trace, TraceData, Tracer};
 
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -218,10 +218,7 @@ impl Invocation {
         I: Into<TraceInput>,
     {
         for (expr, closure) in &subexprs {
-            assert!(
-                crate::lower::validate_immutable_expr(expr).is_ok(),
-                "invalid immutable computation body"
-            );
+            assert!(expr.check().is_ok(), "invalid immutable computation body");
             assert_eq!(
                 closure.len(),
                 expr.closure().len(),

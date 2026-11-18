@@ -95,7 +95,7 @@ impl<T: Graph> Graph for &T {
         visitor: V,
     ) -> V::Output {
         let id = GraphId::from(*self as *const T as u64);
-        visitor.visit_shared(id, View::new(self, filter))
+        visitor.visit_shared(id, View::new(*self, filter))
     }
 
     fn visit_into<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(

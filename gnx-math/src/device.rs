@@ -1,5 +1,5 @@
 use crate::backend::{DeviceHandle, ExecOpts};
-use gnx_expr::{lexpr::Expr, ConcreteValue, Trace, Traceable, Tracer, Value, ValueInfo};
+use gnx_expr::{ConcreteValue, Expr, Trace, Traceable, Tracer, Value, ValueInfo};
 
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};

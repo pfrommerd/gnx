@@ -1,4 +1,4 @@
-use gnx_expr::{Capture, CellAccess, Generic, CellTrace, TraceContext, Tracer, ValueInfo};
+use gnx_expr::{Capture, CellAccess, CellTrace, Generic, TraceContext, Tracer, ValueInfo};
 
 #[test]
 fn cell_access_union_covers_all_access_pairs() {
@@ -52,8 +52,8 @@ fn summaries_are_derived_only_from_structural_cell_accesses() {
     .into_iter()
     .enumerate()
     {
-        assert_eq!(expr.cell_access(expr.inputs()[index].var()), Some(access));
+        assert_eq!(expr.cell_access(&expr.inputs()[index].0), Some(access));
     }
-    // Immutable values have ownership in lexpr::Expr, not resource-access effects.
-    assert_eq!(expr.cell_access(expr.inputs()[4].var()), None);
+    // Immutable values have ownership in Expr, not resource-access effects.
+    assert_eq!(expr.cell_access(&expr.inputs()[4].0), None);
 }

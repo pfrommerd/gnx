@@ -1,4 +1,4 @@
-use crate::trace::{Invocation, TraceInput, ObjectTracer, TraceOutput};
+use crate::trace::{Invocation, ObjectTracer, TraceInput, TraceOutput};
 use crate::value::ValueInfo;
 use crate::{Dialect, Expr, Op, Operation};
 use std::sync::Arc;
@@ -35,14 +35,27 @@ pub fn call_op() -> Op {
     Op::new(&CALL_OP)
 }
 
-/// Invoke an immutable legacy Expr. Mutable bodies must be captured as HExpr.
-pub fn call<C, I>(expr: Expr, closure: C, inputs: I, outputs: Vec<ValueInfo>) -> Vec<ObjectTracer>
+/// Emit one call to the canonical immutable Expr. Mutable HExpr bodies must be
+/// lowered first; LoweredExpr::call handles cell snapshots and boundary updates.
+pub fn call<C, I>(
+    expr: Arc<Expr>,
+    closure: C,
+    inputs: I,
+    outputs: Vec<ValueInfo>,
+) -> Vec<ObjectTracer>
 where
     C: IntoIterator,
     C::Item: Into<TraceInput>,
     I: IntoIterator,
     I::Item: Into<TraceInput>,
 {
+    expr.check().expect("invalid call expression");
+    let closure: Vec<TraceInput> = closure.into_iter().map(Into::into).collect();
+    assert_eq!(
+        closure.len(),
+        expr.closure().len(),
+        "call capture arity mismatch"
+    );
     let inputs: Vec<TraceInput> = inputs.into_iter().map(Into::into).collect();
     assert_eq!(
         inputs.len(),
@@ -56,10 +69,7 @@ where
     );
     Invocation::invoke_with_subexprs(
         call_op(),
-        vec![(
-            Arc::new(expr),
-            closure.into_iter().map(Into::into).collect(),
-        )],
+        vec![(expr, closure.into_iter().map(Into::into).collect())],
         inputs,
         outputs.into_iter().map(TraceOutput::Ref).collect(),
     )

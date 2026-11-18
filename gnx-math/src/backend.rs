@@ -1,4 +1,4 @@
-use gnx_expr::{lexpr::Expr, Value};
+use gnx_expr::{Expr, Value};
 
 use std::fmt::{Debug, Display};
 use std::hash::{Hash, Hasher};
