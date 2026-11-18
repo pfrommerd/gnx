@@ -1,6 +1,7 @@
 use proc_macro::TokenStream as ProcTokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
+use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{
@@ -102,6 +103,9 @@ pub fn jit(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
 
     let vis = &input.vis;
     let sig = &input.sig;
+    let name = sig.ident.unraw().to_string();
+    let mut jit_type = jit_fn;
+    jit_type.segments.last_mut().unwrap().ident = Ident::new("Jit", Span::call_site());
     let block = &input.block;
     let inputs = &sig.inputs;
 
@@ -145,21 +149,19 @@ pub fn jit(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
         output: Some(output_ty.clone()),
     };
     let invoke = if sig.generics.params.is_empty() {
-        let mut jit_type = jit_fn.clone();
-        jit_type.segments.last_mut().unwrap().ident = Ident::new("Jit", Span::call_site());
         let impls = expand_signature_impls(signature);
         quote! {
             struct _FnContainer<F>(F);
             #impls
             static __JIT: #jit_type<(#(#inputs_ty,)*), _FnContainer<fn(#(#inputs_ty),*) -> #output_ty>> =
-                #jit_fn(_FnContainer((#f) as fn(#(#inputs_ty),*) -> #output_ty));
+                #jit_type::new_with_hint(_FnContainer((#f) as fn(#(#inputs_ty),*) -> #output_ty), ::std::borrow::Cow::Borrowed(#name));
             #graph::util::GraphResult::from_result(__JIT.try_invoke_compatible((#(#args_gathered,)*)))
         }
     } else {
         // A local static can't name a function's generic parameters.
         let jittable = expand_jittable(Some(signature), parse_quote! { #f });
         quote! {
-            let jitted_fn = #jit_fn(#jittable);
+            let jitted_fn = #jit_type::new_with_hint(#jittable, ::std::borrow::Cow::Borrowed(#name));
             #graph::util::GraphResult::from_result(jitted_fn.try_invoke_compatible((#(#args_gathered,)*)))
         }
     };

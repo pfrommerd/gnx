@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    Capture, ConcreteValue, Expr, InputId, InputSpec, LoweringError, ObjectTracer, Ownership,
-    Trace, Value, ValueInfo,
+    Capture, ConcreteValue, Expr, InputId, InputSpec, LoweringError, ObjectTracer, Trace, Value,
+    ValueInfo,
 };
 
 // Capture and publication share this gate so a capture sees a consistent
@@ -47,15 +47,6 @@ impl Capture {
             .into_iter()
             .map(value_trace)
             .collect::<Result<Vec<_>, _>>()?;
-        // A retained input lease is not a donation grant.
-        let borrowed = |objects: Vec<_>| {
-            objects
-                .into_iter()
-                .map(|object| (object, Ownership::Borrow))
-                .collect::<Vec<_>>()
-        };
-        let closure = borrowed(closure);
-        let inputs = borrowed(inputs);
         let spec = InputSpec::from_args(&closure, &inputs);
         let program = crate::lower::lower(&expr, &spec)?;
         if !program.updates.is_empty() {
@@ -73,7 +64,7 @@ impl Capture {
             .chain(&program.inputs)
             .copied()
             .map(|id| {
-                let (object, _) = match id {
+                let object = match id {
                     InputId::Closure(index) => closure.get(index),
                     InputId::Input(index) => inputs.get(index),
                 }
@@ -86,27 +77,31 @@ impl Capture {
         let sources = program
             .results()
             .iter()
-            .map(|source| match *source {
-                crate::lower::Output::OutputValue { output_idx }
-                    if output_idx < program.output_infos.len() =>
+            .map(|source| {
+                let crate::lower::Output::Value { result_idx } = *source else {
+                    return Err(EvalPlanError::CellEffect);
+                };
+                match program
+                    .result_source(result_idx)
+                    .ok_or(EvalPlanError::Boundary)?
                 {
-                    Ok(Source::Result(output_idx))
+                    crate::lower::ResultSource::Computed(index) => Ok(Source::Result(index)),
+                    crate::lower::ResultSource::Parameter(id) => snapshots
+                        .get(&id)
+                        .cloned()
+                        .map(Source::Input)
+                        .ok_or(EvalPlanError::Boundary),
                 }
-                crate::lower::Output::InputValue { input_id } => snapshots
-                    .get(&input_id)
-                    .cloned()
-                    .map(Source::Input)
-                    .ok_or(EvalPlanError::Boundary),
-                crate::lower::Output::OutputValue { .. } => Err(EvalPlanError::Boundary),
-                _ => Err(EvalPlanError::CellEffect),
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let expr = program.computation_expr();
         let commit = EvalCommit {
             expected: program.output_infos,
             writes: outputs.into_iter().zip(sources).collect(),
         };
+        drop(program.expr);
         Ok(PreparedEval {
-            expr: Arc::unwrap_or_clone(program.expr),
+            expr: Arc::unwrap_or_clone(expr),
             args,
             commit,
         })

@@ -1,7 +1,8 @@
 use gnx_expr::{
-    CallError, CellKey, CellTrace, Generic, HExpr, InputSpec, ObjectTracer, Ownership,
-    TraceContext, Capture, Tracer, TracerKey, ValueInfo, hexpr,
+    CallError, Capture, CellKey, CellTrace, Generic, HExpr, InputSpec, ObjectTracer, TraceContext,
+    Tracer, TracerKey, ValueInfo, hexpr,
 };
+use gnx_transforms::control_flow::call_lowered;
 fn info() -> ValueInfo {
     ValueInfo::new(0usize)
 }
@@ -12,18 +13,7 @@ fn cell() -> CellTrace {
     CellTrace::placeholder(info())
 }
 fn lower(body: &HExpr, closure: &[ObjectTracer], inputs: &[ObjectTracer]) -> gnx_expr::LoweredExpr {
-    let closure = closure
-        .iter()
-        .cloned()
-        .map(|v| (v, Ownership::Borrow))
-        .collect::<Vec<_>>();
-    let inputs = inputs
-        .iter()
-        .cloned()
-        .map(|v| (v, Ownership::Borrow))
-        .collect::<Vec<_>>();
-    body.lower(&InputSpec::from_args(&closure, &inputs))
-        .unwrap()
+    body.lower(&InputSpec::from_args(closure, inputs)).unwrap()
 }
 fn as_value(object: &ObjectTracer) -> &gnx_expr::Trace {
     let ObjectTracer::Ref(value) = object else {
@@ -45,7 +35,7 @@ fn returning_only_an_input_cell_emits_no_read_or_write() {
     let guard = TraceContext::enter();
     let a = cell();
     let inputs = [ObjectTracer::Cell(a.clone())];
-    let result = lower(&body, &[], &inputs).call(&[], &inputs).unwrap();
+    let result = call_lowered(&lower(&body, &[], &inputs), &[], &inputs).unwrap();
     assert_eq!(CellKey::from(as_cell(&result[0])), CellKey::from(&a));
     let caller = Capture::from_context(guard.context(), &inputs, &result).unwrap();
     assert!(caller.expr().instructions().is_empty());
@@ -67,7 +57,7 @@ fn snapshots_precede_all_updates_and_new_cells_keep_the_old_state() {
     let b = CellTrace::new(b_value.clone());
     let inputs = [ObjectTracer::Cell(a.clone()), ObjectTracer::Cell(b.clone())];
     let lowered = lower(&body, &[], &inputs);
-    let result = lowered.call(&[], &inputs).unwrap();
+    let result = call_lowered(&lowered, &[], &inputs).unwrap();
     assert_eq!(
         result.len(),
         2,
@@ -101,13 +91,14 @@ fn boundary_reuses_stored_sources_with_new_handles_of_the_same_specialization() 
     let new_a = CellTrace::new(value());
     let new_value = value();
     let new_b = CellTrace::new(new_value.clone());
-    distinct_body
-        .call(&[], &[new_a.clone().into(), new_b.into()])
-        .unwrap();
+    call_lowered(&distinct_body, &[], &[new_a.clone().into(), new_b.into()]).unwrap();
     assert_eq!(TracerKey::from(&new_a.get()), TracerKey::from(&new_value));
-    aliased_body
-        .call(&[], &[new_a.clone().into(), new_a.clone().into()])
-        .unwrap();
+    call_lowered(
+        &aliased_body,
+        &[],
+        &[new_a.clone().into(), new_a.clone().into()],
+    )
+    .unwrap();
     assert_eq!(TracerKey::from(&new_a.get()), TracerKey::from(&new_value));
 }
 #[test]
@@ -118,8 +109,9 @@ fn repeated_value_results_are_forwarded_without_owned_call_returns() {
     let x = value();
     let inputs = [ObjectTracer::Ref(x.clone())];
     let lowered = lower(&body, &[], &inputs);
-    assert!(lowered.expr.outputs().is_empty());
-    let results = lowered.call(&[], &inputs).unwrap();
+    assert_eq!(lowered.expr.outputs(), &[lowered.expr.inputs()[0].0; 2]);
+    assert!(lowered.trace_body().outputs().is_empty());
+    let results = call_lowered(&lowered, &[], &inputs).unwrap();
     for result in &results {
         assert_eq!(TracerKey::from(as_value(result)), TracerKey::from(&x));
     }
@@ -136,13 +128,16 @@ fn boundary_validates_variants_and_metadata_before_updates() {
     let inputs = [ObjectTracer::Cell(a.clone()), ObjectTracer::Ref(x.clone())];
     let lowered = lower(&body, &[], &inputs);
     assert!(matches!(
-        lowered.call(&[], &[x.clone().into(), a.clone().into()]),
+        call_lowered(&lowered, &[], &[x.clone().into(), a.clone().into()]),
         Err(CallError::ArgumentType(_))
     ));
     let wrong = gnx_expr::Trace::placeholder(ValueInfo::new(1usize));
     assert!(matches!(
-        lowered.call(&[], &[a.into(), wrong.into()]),
+        call_lowered(&lowered, &[], &[a.into(), wrong.into()]),
         Err(CallError::ArgumentType(_))
     ));
-    assert!(matches!(lowered.call(&[], &[]), Err(CallError::Arity)));
+    assert!(matches!(
+        call_lowered(&lowered, &[], &[]),
+        Err(CallError::Arity)
+    ));
 }

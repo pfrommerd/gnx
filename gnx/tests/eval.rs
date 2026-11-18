@@ -73,10 +73,10 @@ impl Device for MockDevice {
             .iter()
             .chain(expr.inputs())
             .zip(args)
-            .map(|((var, _, _), value)| (*var, number(value.downcast::<DataHandle>().unwrap())))
+            .map(|((var, _), value)| (*var, number(value.downcast::<DataHandle>().unwrap())))
             .collect();
         for eqn in expr.eqns() {
-            let [(left, _), (right, _)] = eqn.inputs() else {
+            let [left, right] = eqn.inputs() else {
                 panic!("expected two add operands");
             };
             let result = values[left] + values[right];

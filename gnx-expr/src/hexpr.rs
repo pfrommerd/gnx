@@ -1,8 +1,9 @@
 //! Mutation-aware expressions captured from a trace DAG.
 //!
 //! Cell accesses are structural instructions, never dialect operations. Lowering
-//! requires explicit alias and ownership bindings and produces an immutable [`crate::Expr`].
+//! requires explicit alias bindings and produces an immutable [`crate::Expr`].
 
+use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
@@ -25,7 +26,7 @@ impl HSubExpr {
     }
 }
 
-/// A high-level equation. Ownership is decided only during lowering.
+/// A high-level equation with value or cell operands.
 #[derive(Clone, Debug)]
 pub struct HEqn {
     op: Op,
@@ -61,8 +62,8 @@ impl HEqn {
     }
 }
 
-/// Derived summary of structural cell accesses. Not a computation effect or
-/// ownership annotation; immutable value parameters have no cell-access summary.
+/// Derived summary of structural cell accesses. Immutable value parameters
+/// have no cell-access summary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CellAccess {
     Unused,
@@ -114,7 +115,7 @@ impl HInstr {
 /// Captured high-level expression. Variables distinguish values from cells.
 ///
 /// ```
-/// use gnx_expr::{Capture, Generic, InputId, InputSpec, Kind, Ownership,
+/// use gnx_expr::{Capture, Generic, InputId, InputSpec, Kind,
 ///                CellTrace, TraceContext, ObjectTracer, Tracer, ValueInfo};
 /// let guard = TraceContext::enter();
 /// let info = ValueInfo::new(0usize);
@@ -130,8 +131,8 @@ impl HInstr {
 /// let spec = InputSpec {
 ///     closure: vec![],
 ///     inputs: vec![
-///         (InputId::Input(0), Kind::Cell(info.clone()), Ownership::Borrow),
-///         (InputId::Input(1), Kind::Value(info), Ownership::Move),
+///         (InputId::Input(0), Kind::Cell(info.clone())),
+///         (InputId::Input(1), Kind::Value(info)),
 ///     ],
 /// };
 /// let lowered = captured.expr().lower(&spec).unwrap();
@@ -143,8 +144,22 @@ pub struct HExpr {
     pub(crate) inputs: Vec<(Var, Kind)>,
     pub(crate) instructions: Vec<HInstr>,
     pub(crate) outputs: Vec<Var>,
+    pub(crate) name_hint: Option<Cow<'static, str>>,
 }
 impl HExpr {
+    pub fn with_name_hint(mut self, hint: impl Into<Cow<'static, str>>) -> Self {
+        self.name_hint = Some(hint.into());
+        self
+    }
+
+    pub fn name_hint(&self) -> Option<&str> {
+        self.name_hint.as_deref()
+    }
+
+    pub fn pretty(&self) -> crate::util::pretty::PrettyHExpr<'_> {
+        crate::util::pretty::PrettyHExpr::new(self)
+    }
+
     pub fn closure(&self) -> &[(Var, Kind)] {
         &self.closure
     }
@@ -192,24 +207,31 @@ impl HExpr {
                     let next = match instr {
                         HInstr::ReadCell { cell, .. } if cell == var => CellAccess::Read,
                         HInstr::WriteCell { cell, .. } if cell == var => CellAccess::Write,
-                        HInstr::Apply(eqn) => {
-                            eqn.subexprs()
-                                .iter()
-                                .fold(CellAccess::Unused, |access, sub| {
-                                    let body = sub.expr();
-                                    body.closure()
-                                        .iter()
-                                        .chain(body.inputs())
-                                        .zip(sub.captures.iter().chain(eqn.inputs()))
-                                        .filter(|(_, operand)| *operand == var)
-                                        .fold(access, |access, ((param, _), _)| {
-                                            access.combine(
-                                                body.cell_access(param)
-                                                    .unwrap_or(CellAccess::Unused),
+                        HInstr::Apply(eqn) => eqn.subexprs().iter().enumerate().fold(
+                            CellAccess::Unused,
+                            |access, (region, sub)| {
+                                let body = sub.expr();
+                                body.closure()
+                                    .iter()
+                                    .zip(sub.captures.iter().copied().map(Some))
+                                    .chain(body.inputs().iter().enumerate().map(
+                                        |(param, binding)| {
+                                            (
+                                                binding,
+                                                eqn.op()
+                                                    .operation()
+                                                    .region_operand(eqn, region, param),
                                             )
-                                        })
-                                })
-                        }
+                                        },
+                                    ))
+                                    .filter(|(_, operand)| *operand == Some(*var))
+                                    .fold(access, |access, ((param, _), _)| {
+                                        access.combine(
+                                            body.cell_access(param).unwrap_or(CellAccess::Unused),
+                                        )
+                                    })
+                            },
+                        ),
                         _ => CellAccess::Unused,
                     };
                     access.combine(next)
@@ -217,15 +239,14 @@ impl HExpr {
         )
     }
 
-    /// Resolve cell aliases, eliminate cell actions, and assign borrow/move
-    /// uses according to the caller-provided ownership of the initial inputs.
+    /// Resolve cell aliases and replace cell actions with immutable SSA flow.
     pub fn lower(&self, spec: &InputSpec) -> Result<LoweredExpr, LoweringError> {
         crate::lower::lower(self, spec)
     }
 }
 
-/// Formats the body in `hexpr!` notation. Metadata is displayed as a value,
-/// not serialized back to Rust source.
+/// Formats the high-level IR, hoisting large nested bodies. Metadata is displayed
+/// as a value, not serialized back to Rust source.
 impl fmt::Display for HExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         crate::util::pretty::PrettyVarScope::new().fmt_hexpr(self, f)

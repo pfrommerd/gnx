@@ -1,5 +1,4 @@
 mod attr;
-pub mod builtins;
 mod dialects;
 pub mod eval;
 mod expr;
@@ -39,13 +38,6 @@ pub enum Kind {
     Cell(ValueInfo),
 }
 
-/// Whether an immutable value is borrowed or ownership is transferred.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Ownership {
-    Borrow,
-    Move,
-}
-
 pub trait Dialect: Sync {
     fn name(&self) -> &'static str;
     fn create(&self, name: &'static str) -> Option<&'static dyn Operation>;
@@ -54,6 +46,23 @@ pub trait Dialect: Sync {
 pub trait Operation: std::any::Any + Sync {
     fn name(&self) -> &'static str;
     fn dialect(&self) -> &'static dyn Dialect;
+
+    /// Lower an application to immutable SSA. Region operations must supply
+    /// their own rule for passing operands and threading state.
+    fn lower(&self, eqn: &HEqn, ctx: &mut lower::LoweringContext<'_>) -> Result<(), LoweringError> {
+        ctx.lower_value_apply(eqn)
+    }
+
+    /// Check the operation-specific signature after generic operand and region checks.
+    fn check_expr(&self, _eqn: &Eqn) -> Result<(), LoweringError> {
+        Ok(())
+    }
+
+    /// Parent binding of a region's explicit parameter, when it corresponds
+    /// to a parent variable. Used to trace structural cell accesses.
+    fn region_operand(&self, _eqn: &HEqn, _region: usize, _param: usize) -> Option<Var> {
+        None
+    }
 }
 
 // An Op is an Operation combined with an attribute set.

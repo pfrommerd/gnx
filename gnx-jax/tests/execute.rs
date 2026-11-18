@@ -5,10 +5,7 @@ use std::sync::Arc;
 
 use futures_executor::block_on;
 use gnx::Eval;
-use gnx_expr::{
-    Dialect, Eqn, Expr, Kind, Op, Operation, Ownership, SubExpr, Value, ValueInfo, VarScope,
-    builtins::call_op,
-};
+use gnx_expr::{Dialect, Eqn, Expr, Op, Operation, SubExpr, Value, ValueInfo, VarScope};
 use gnx_jax::jaxpr::{self, JaxLowering, JaxLoweringError, TraceContext, TraceValue};
 use gnx_jax::{JaxBuffer, dlpack, register_jax_lowering};
 use gnx_math::{
@@ -16,6 +13,7 @@ use gnx_math::{
     DlpackRequest, DlpackTensor, ExecOpts, HostBuffer, MemoryLocation, Shape, TransferPolicy,
     ops::add_op,
 };
+use gnx_transforms::control_flow::{call, call_op};
 use pyo3::prelude::*;
 
 fn info() -> ArrayInfo {
@@ -37,19 +35,18 @@ fn unpack(data: &DataHandle) -> Vec<f32> {
 }
 
 fn nested() -> Expr {
-    use Ownership::{Borrow, Move};
     let ty = ValueInfo::new(info());
     let mut child = VarScope::new();
     let bias = child.create_var();
     let input = child.create_var();
     let sum = child.create_var();
     let child = Expr::new(
-        vec![(bias, Borrow, ty.clone())],
-        vec![(input, Borrow, ty.clone())],
+        vec![(bias, ty.clone())],
+        vec![(input, ty.clone())],
         vec![Eqn::new(
             add_op(),
-            vec![(input, Borrow), (bias, Borrow)],
-            vec![(sum, Kind::Value(ty.clone()))],
+            vec![input, bias],
+            vec![(sum, ty.clone())],
         )],
         vec![sum],
     );
@@ -59,20 +56,16 @@ fn nested() -> Expr {
     let sum = parent.create_var();
     let doubled = parent.create_var();
     Expr::new(
-        vec![(bias, Borrow, ty.clone())],
-        vec![(input, Borrow, ty.clone())],
+        vec![(bias, ty.clone())],
+        vec![(input, ty.clone())],
         vec![
             Eqn::new_with_subexprs(
                 call_op(),
-                vec![SubExpr::new(Arc::new(child), vec![(bias, Borrow)])],
-                vec![(input, Borrow)],
-                vec![(sum, Kind::Value(ty.clone()))],
+                vec![SubExpr::new(Arc::new(child), vec![bias])],
+                vec![input],
+                vec![(sum, ty.clone())],
             ),
-            Eqn::new(
-                Op::new(&DOUBLE),
-                vec![(sum, Move)],
-                vec![(doubled, Kind::Value(ty))],
-            ),
+            Eqn::new(Op::new(&DOUBLE), vec![sum], vec![(doubled, ty)]),
         ],
         vec![doubled],
     )
@@ -154,12 +147,8 @@ fn one_rule(op: Op, info: ArrayInfo) -> Expr {
     let info = ValueInfo::new(info);
     Expr::new(
         vec![],
-        vec![(x, Ownership::Borrow, info.clone())],
-        vec![Eqn::new(
-            op,
-            vec![(x, Ownership::Borrow)],
-            vec![(result, Kind::Value(info))],
-        )],
+        vec![(x, info.clone())],
+        vec![Eqn::new(op, vec![x], vec![(result, info)])],
         vec![result],
     )
 }
@@ -227,6 +216,19 @@ fn jax_cpu_traces_executes_and_transfers() {
     let opts = ExecOpts {
         transfers: TransferPolicy::AllowCopy,
     };
+    let mut vars = VarScope::new();
+    let arg = vars.create_var();
+    let forwarded = Expr::new(
+        vec![],
+        vec![(arg, ValueInfo::new(info()))],
+        vec![],
+        vec![arg, arg],
+    );
+    let result = block_on(device.execute(forwarded, [host([3., 4.])], opts)).unwrap();
+    assert_eq!(result.len(), 2);
+    for value in result {
+        assert_eq!(unpack(value.downcast::<DataHandle>().unwrap()), [3., 4.]);
+    }
     for (bias, expected) in [([1.0, 2.0], [8.0, 12.0]), ([5.0, 6.0], [16.0, 20.0])] {
         // A non-Send iterator is permitted even though the returned future is Send.
         let non_send = Rc::new(());
@@ -312,7 +314,9 @@ fn test_eval(device: &gnx_jax::JaxDevice) {
         .unwrap()
     };
     let cell = ArrayRef::new(x.tracer().clone());
-    let fresh = traced.call(&[cell.tracer().clone().into()]).pop().unwrap();
+    let fresh = call(&traced, &[cell.tracer().clone().into()])
+        .pop()
+        .unwrap();
     assert!(cell.get().data().is_none());
     block_on(device.eval(&cell, ExecOpts::default())).unwrap();
     assert_eq!(unpack(cell.get().data().unwrap()), [12., 18.]);

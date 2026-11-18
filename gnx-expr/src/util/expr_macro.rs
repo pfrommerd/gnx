@@ -1,7 +1,5 @@
 use crate::dialects::dialects;
-use crate::{
-    Attr, AttrList, AttrMap, Eqn, Expr, Kind, Op, Ownership, SubExpr, ValueInfo, Var, VarScope,
-};
+use crate::{Attr, AttrList, AttrMap, Eqn, Expr, Op, SubExpr, ValueInfo, Var, VarScope};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -16,16 +14,17 @@ pub fn op_by_name(dialect_name: &'static str, op_name: &'static str, attrs: Attr
 }
 
 #[doc(hidden)]
-pub struct ExprBuilder {
+pub struct ExprBuilder<'a> {
     var_scope: VarScope,
     vars: BTreeMap<&'static str, Var>,
-    closure: Vec<(Var, Ownership, ValueInfo)>,
-    inputs: Vec<(Var, Ownership, ValueInfo)>,
+    closure: Vec<(Var, ValueInfo)>,
+    inputs: Vec<(Var, ValueInfo)>,
     eqns: Vec<Eqn>,
     info: Option<ValueInfo>,
+    outer: Option<&'a mut dyn FnMut(&'static str) -> Option<ValueInfo>>,
 }
 
-impl ExprBuilder {
+impl ExprBuilder<'_> {
     pub fn new(info: Option<ValueInfo>) -> Self {
         Self {
             var_scope: VarScope::new(),
@@ -34,80 +33,85 @@ impl ExprBuilder {
             inputs: Vec::new(),
             eqns: Vec::new(),
             info,
+            outer: None,
         }
     }
 
     pub fn closure(&mut self, name: &'static str) {
-        self.parameter(true, name, Ownership::Move, self.default_info());
+        self.parameter(true, name, self.default_info());
     }
 
     pub fn input(&mut self, name: &'static str) {
-        self.parameter(false, name, Ownership::Move, self.default_info());
+        self.parameter(false, name, self.default_info());
     }
 
-    pub fn operand(&mut self, name: &'static str) -> (Var, Ownership) {
-        (self.var(name), Ownership::Move)
-    }
-
-    pub fn borrowed_operand(&mut self, name: &'static str) -> (Var, Ownership) {
-        (self.var(name), Ownership::Borrow)
-    }
-
-    pub fn borrowed_closure(&mut self, name: &'static str) {
-        self.parameter(true, name, Ownership::Borrow, self.default_info());
-    }
-
-    pub fn borrowed_input(&mut self, name: &'static str) {
-        self.parameter(false, name, Ownership::Borrow, self.default_info());
+    pub fn operand(&mut self, name: &'static str) -> Var {
+        if let Some(&var) = self.vars.get(name) {
+            return var;
+        }
+        self.resolve(name)
+            .map_or_else(|| self.var(name), |(var, _)| var)
     }
 
     fn default_info(&self) -> ValueInfo {
         self.info.clone().expect("missing ValueInfo annotation")
     }
 
-    pub fn parameter(
-        &mut self,
-        closure: bool,
-        name: &'static str,
-        ownership: Ownership,
-        info: ValueInfo,
-    ) {
+    pub fn parameter(&mut self, closure: bool, name: &'static str, info: ValueInfo) {
         let var = self.var(name);
         let params = if closure {
             &mut self.closure
         } else {
             &mut self.inputs
         };
-        params.push((var, ownership, info));
+        params.push((var, info));
     }
 
-    pub fn output(&mut self, name: &'static str) -> (Var, Kind) {
+    pub fn output(&mut self, name: &'static str) -> (Var, ValueInfo) {
         self.typed_output(name, self.default_info())
     }
 
-    pub fn typed_output(&mut self, name: &'static str, info: ValueInfo) -> (Var, Kind) {
-        (self.result(name), Kind::Value(info))
+    pub fn typed_output(&mut self, name: &'static str, info: ValueInfo) -> (Var, ValueInfo) {
+        let var = if name == "_" {
+            Var::hole()
+        } else {
+            self.var(name)
+        };
+        (var, info)
     }
 
     pub fn result(&mut self, name: &'static str) -> Var {
         if name == "_" {
             Var::hole()
         } else {
-            self.var(name)
+            self.operand(name)
         }
     }
 
-    pub fn subexpr(&self, body: impl Into<Arc<Expr>>, captures: Vec<(Var, Ownership)>) -> SubExpr {
+    pub fn subexpr(&self, body: impl Into<Arc<Expr>>, captures: Vec<Var>) -> SubExpr {
         SubExpr::new(body.into(), captures)
+    }
+
+    pub fn inline_subexpr(&mut self, build: impl FnOnce(ExprBuilder<'_>) -> Expr) -> SubExpr {
+        let mut child = ExprBuilder::new(self.info.clone());
+        let mut captures = Vec::new();
+        // Resolving through this builder also captures names used only by deeper regions.
+        let mut outer = |name| {
+            let (var, info) = self.resolve(name)?;
+            captures.push(var);
+            Some(info)
+        };
+        child.outer = Some(&mut outer);
+        SubExpr::new(Arc::new(build(child)), captures)
     }
 
     pub fn eqn(
         &mut self,
-        outputs: Vec<(Var, Kind)>,
+        outputs: Vec<(Var, ValueInfo)>,
         dialect: &'static str,
         op: &'static str,
         attrs: AttrMap,
-        inputs: Vec<(Var, Ownership)>,
+        inputs: Vec<Var>,
         subexprs: Vec<SubExpr>,
     ) {
         let op = op_by_name(dialect, op, attrs);
@@ -117,6 +121,22 @@ impl ExprBuilder {
 
     pub fn finish(self, outputs: Vec<Var>) -> Expr {
         Expr::new(self.closure, self.inputs, self.eqns, outputs)
+    }
+
+    fn resolve(&mut self, name: &'static str) -> Option<(Var, ValueInfo)> {
+        if let Some(&var) = self.vars.get(name) {
+            let info = self
+                .closure
+                .iter()
+                .chain(&self.inputs)
+                .chain(self.eqns.iter().flat_map(Eqn::outputs))
+                .find_map(|(defined, info)| (*defined == var).then(|| info.clone()))?;
+            return Some((var, info));
+        }
+        let info = (self.outer.as_mut()?)(name)?;
+        let var = self.var(name);
+        self.closure.push((var, info.clone()));
+        Some((var, info))
     }
 
     fn var(&mut self, name: &'static str) -> Var {
@@ -131,12 +151,12 @@ impl ExprBuilder {
 }
 
 #[doc(hidden)]
-pub fn subexpr(body: impl Into<Arc<Expr>>, captures: Vec<(Var, Ownership)>) -> SubExpr {
+pub fn subexpr(body: impl Into<Arc<Expr>>, captures: Vec<Var>) -> SubExpr {
     SubExpr::new(body.into(), captures)
 }
 
 pub fn string_attr(value: &'static str) -> Attr {
-    Attr::String(value.into())
+    Attr::from(value)
 }
 
 pub fn info_attr<T>(value: T) -> Attr
@@ -168,7 +188,7 @@ macro_rules! attr {
         $crate::expr_macro::map_attr(attrs)
     }};
     ($value:literal) => {
-        $crate::expr_macro::string_attr($value)
+        $crate::Attr::from($value)
     };
 }
 
@@ -176,15 +196,17 @@ macro_rules! attr {
 /// Annotate definitions with Rust expressions yielding `ValueInfo`. An owned
 /// `ValueInfo` is moved in; `&info` clones it. The older `expr!(info; { ... })`
 /// form supplies default metadata for unannotated definitions.
-/// In parameter, operand, and nested capture lists, `x` means owned or moved
-/// and `&x` means borrowed. Returns always transfer ownership.
-/// Use `;` between captures and inputs, and `=>` before the body. For example,
-/// `lambda &captured: &info; x: make_info() =>`. Return values with `in (x)`,
+/// Use `;` between captures and inputs: `|captured: &info; x: make_info()| => { ... }`.
+/// Return values with `in (x)`,
 /// `in (x, y)`, or `in ()`. Write operation operands without
-/// parentheses: `z: &info = dialect::op &captured x;`.
+/// parentheses: `z: &info = dialect::op captured x;`.
 /// If an annotation can be confused with a DSL delimiter, wrap it in braces.
-/// Attach a nested expression with `dialect::op[body => (captures)] x y`;
-/// `body` can be an `Expr` or `Arc<Expr>`.
+/// Inline a region with `dialect::op [|x: &info| => { in (outer, x) }] x`.
+/// Only explicit inputs appear in the region's header; references to enclosing
+/// variables (like `outer`) are captured implicitly. Use `name = |...| =>
+/// { ... }` before `in |...| => { ... }` to define a shared region, then refer to it
+/// with `dialect::op [@name{outer}] x`. Captures are positional. To attach a prebuilt
+/// `Expr` or `Arc<Expr>`, use `dialect::op[body => (captures)] x y`.
 ///
 /// ```compile_fail
 /// let _ = gnx_expr::expr!(gnx_expr::ValueInfo::new(0usize); { lambda cell[:]: in (cell) });
@@ -195,10 +217,37 @@ macro_rules! attr {
 /// ```
 #[macro_export]
 macro_rules! expr {
+    (|| $($body:tt)*) => { $crate::expr!(| | $($body)*) };
+    (| $($body:tt)*) => {{
+        let mut __builder = $crate::expr_macro::ExprBuilder::new(None);
+        $crate::__typed_lambda!(__builder, __expr_typed_params, __expr_eqns; [|] first [] $($body)*)
+    }};
+    ({ || $($body:tt)* }) => { $crate::expr!(|| $($body)*) };
+    ({ | $($body:tt)* }) => { $crate::expr!(| $($body)*) };
+    (lambda $($body:tt)*) => {
+        $crate::expr!({ lambda $($body)* })
+    };
     ({ lambda $($body:tt)* }) => {{
         let mut __builder = $crate::expr_macro::ExprBuilder::new(None);
-        $crate::__typed_lambda!(__builder, __expr_typed_params, __expr_eqns; first [] $($body)*)
+        $crate::__typed_lambda!(__builder, __expr_typed_params, __expr_eqns; [] first [] $($body)*)
     }};
+    ($name:ident = $($tail:tt)*) => {
+        $crate::__expr_named!(expr, []; $name = $($tail)*)
+    };
+    ($info:expr; $name:ident = $($tail:tt)*) => {{
+        let __default = $crate::ValueInfo::from($info);
+        $crate::__expr_named!(expr, [&__default;]; $name = $($tail)*)
+    }};
+    ($info:expr; || $($body:tt)*) => { $crate::expr!($info; | | $($body)*) };
+    ($info:expr; { || $($body:tt)* }) => { $crate::expr!($info; || $($body)*) };
+    ($info:expr; { | $($body:tt)* }) => { $crate::expr!($info; | $($body)*) };
+    ($info:expr; | $($body:tt)*) => {{
+        let mut __builder = $crate::expr_macro::ExprBuilder::new(Some($crate::ValueInfo::from($info)));
+        $crate::__typed_lambda!(__builder, __expr_typed_params, __expr_eqns; [|] first [] $($body)*)
+    }};
+    ($info:expr; lambda $($body:tt)*) => {
+        $crate::expr!($info; { lambda $($body)* })
+    };
     ($info:expr; { lambda $($body:tt)* }) => {{
         let mut __builder = $crate::expr_macro::ExprBuilder::new(Some($crate::ValueInfo::from($info)));
         $crate::__expr_params!(__builder; closure [] $($body)*)
@@ -207,19 +256,63 @@ macro_rules! expr {
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __typed_lambda {
-    ($builder:ident, $params:ident, $body:ident; first [$($captures:tt)*] ; $($rest:tt)*) => {{
-        $crate::$params!($builder, true; $($captures)* ,);
-        $crate::__typed_lambda!($builder, $params, $body; inputs [] $($rest)*)
+macro_rules! __expr_named {
+    ($macro:ident, [$($default:tt)*]; in $($body:tt)*) => {
+        $crate::$macro!($($default)* $($body)*)
+    };
+    ($macro:ident, $default:tt; $name:ident = || $($tail:tt)*) => {
+        $crate::__expr_named!($macro, $default; $name = | | $($tail)*)
+    };
+    ($macro:ident, $default:tt; $name:ident = | $($tail:tt)*) => {
+        $crate::__expr_named!(@header $macro, $default, $name; [|] [] $($tail)*)
+    };
+    ($macro:ident, $default:tt; $name:ident = lambda $($tail:tt)*) => {
+        $crate::__expr_named!(@header $macro, $default, $name; [] [] $($tail)*)
+    };
+    (@header $macro:ident, $default:tt, $name:ident;
+        [|] [$($header:tt)*] | => { $($body:tt)* } $($tail:tt)*) => {
+        $crate::__expr_named!(@define $macro, $default, $name; [| $($header)* | => { $($body)* }] $($tail)*)
+    };
+    (@header $macro:ident, $default:tt, $name:ident;
+        [] [$($header:tt)*] => { $($body:tt)* } $($tail:tt)*) => {
+        $crate::__expr_named!(@define $macro, $default, $name; [lambda $($header)* => { $($body)* }] $($tail)*)
+    };
+    (@header $macro:ident, $default:tt, $name:ident;
+        $end:tt [$($header:tt)*] $head:tt $($tail:tt)*) => {
+        $crate::__expr_named!(@header $macro, $default, $name; $end [$($header)* $head] $($tail)*)
+    };
+    (@define $macro:ident, [$($default:tt)*], $name:ident;
+        [$($definition:tt)*] $($tail:tt)*) => {{
+        let $name = ::std::sync::Arc::new(
+            $crate::$macro!($($default)* $($definition)*)
+                .with_name_hint(stringify!($name))
+        );
+        $crate::__expr_named!($macro, [$($default)*]; $($tail)*)
     }};
-    ($builder:ident, $params:ident, $body:ident; $phase:ident [$($args:tt)*] => $($rest:tt)*) => {{
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __typed_lambda {
+    ($builder:ident, $params:ident, $body:ident; $end:tt first [$($captures:tt)*] ; $($rest:tt)*) => {{
+        $crate::$params!($builder, true; $($captures)* ,);
+        $crate::__typed_lambda!($builder, $params, $body; $end inputs [] $($rest)*)
+    }};
+    ($builder:ident, $params:ident, $body:ident; [|] $phase:ident [$($args:tt)*] | => { $($rest:tt)* }) => {{
         $crate::$params!($builder, false; $($args)* ,);
         $crate::$body!($builder; $($rest)*)
     }};
-    ($builder:ident, $params:ident, $body:ident; $phase:ident [$($args:tt)*] $head:tt $($rest:tt)*) => {
-        $crate::__typed_lambda!($builder, $params, $body; $phase [$($args)* $head] $($rest)*)
+    ($builder:ident, $params:ident, $body:ident; [] $phase:ident [$($args:tt)*] => $($rest:tt)*) => {{
+        $crate::$params!($builder, false; $($args)* ,);
+        $crate::$body!($builder; $($rest)*)
+    }};
+    ($builder:ident, $params:ident, $body:ident; $end:tt $phase:ident [$($args:tt)*] $head:tt $($rest:tt)*) => {
+        $crate::__typed_lambda!($builder, $params, $body; $end $phase [$($args)* $head] $($rest)*)
     };
-    ($builder:ident, $params:ident, $body:ident; $phase:ident [$($args:tt)*]) => {
+    ($builder:ident, $params:ident, $body:ident; [|] $phase:ident [$($args:tt)*]) => {
+        compile_error!("expected `| => { ... }` after the parameters");
+    };
+    ($builder:ident, $params:ident, $body:ident; [] $phase:ident [$($args:tt)*]) => {
         compile_error!("expected `=>` after the lambda parameters");
     };
 }
@@ -229,12 +322,16 @@ macro_rules! __typed_lambda {
 macro_rules! __expr_typed_params {
     ($builder:ident, $closure:expr;) => {};
     ($builder:ident, $closure:expr; ,) => {};
-    ($builder:ident, $closure:expr; & $name:ident : $info:expr, $($rest:tt)*) => {{
-        $builder.parameter($closure, stringify!($name), $crate::Ownership::Borrow, $crate::ValueInfo::from($info));
+    ($builder:ident, $closure:expr; $name:ident : $info:expr, $($rest:tt)*) => {{
+        $builder.parameter($closure, stringify!($name), $crate::ValueInfo::from($info));
         $crate::__expr_typed_params!($builder, $closure; $($rest)*);
     }};
-    ($builder:ident, $closure:expr; $name:ident : $info:expr, $($rest:tt)*) => {{
-        $builder.parameter($closure, stringify!($name), $crate::Ownership::Move, $crate::ValueInfo::from($info));
+    ($builder:ident, $closure:expr; $name:ident, $($rest:tt)*) => {{
+        if $closure {
+            $builder.closure(stringify!($name));
+        } else {
+            $builder.input(stringify!($name));
+        }
         $crate::__expr_typed_params!($builder, $closure; $($rest)*);
     }};
 }
@@ -308,14 +405,6 @@ macro_rules! __expr_bind_params {
     ($builder:ident; $kind:ident; $name:ident [:] $($rest:tt)*) => {
         compile_error!("cell mutation is structural HExpr syntax, not a computation parameter annotation");
     };
-    ($builder:ident; closure; & $name:ident $($rest:tt)*) => {
-        $builder.borrowed_closure(stringify!($name));
-        $crate::__expr_bind_params!($builder; closure; $($rest)*)
-    };
-    ($builder:ident; input; & $name:ident $($rest:tt)*) => {
-        $builder.borrowed_input(stringify!($name));
-        $crate::__expr_bind_params!($builder; input; $($rest)*)
-    };
     ($builder:ident; closure; $name:ident $($rest:tt)*) => {
         $builder.closure(stringify!($name));
         $crate::__expr_bind_params!($builder; closure; $($rest)*)
@@ -329,6 +418,7 @@ macro_rules! __expr_bind_params {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __expr_eqns {
+    ($builder:ident; { $($body:tt)* }) => { $crate::__expr_eqns!($builder; $($body)*) };
     ($builder:ident; $out:tt : $($tail:tt)*) => { $crate::__typed_eqn!($builder, __expr_eqns; [$out :] $($tail)*) };
     ($builder:ident; in ($($outputs:tt)*) $(;)?) => {
         $crate::__expr_finish!($builder; [] $($outputs)*)
@@ -363,6 +453,36 @@ macro_rules! __expr_operation {
             [$($outs)*] $dialect :: $op [$($attrs)*] [] $($tail)*)
     };
     (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+        [$($subexprs:tt)*] { lambda $($body:tt)* } $($tail:tt)*) => {
+        $crate::__expr_operation!(@nested $builder, $next;
+            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [lambda $($body)*]] $($tail)*)
+    };
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+        [$($subexprs:tt)*] [{ lambda $($body:tt)* }] $($tail:tt)*) => {
+        $crate::__expr_operation!(@nested $builder, $next;
+            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [lambda $($body)*]] $($tail)*)
+    };
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+        [$($subexprs:tt)*] [lambda $($body:tt)*] $($tail:tt)*) => {
+        $crate::__expr_operation!(@nested $builder, $next;
+            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [lambda $($body)*]] $($tail)*)
+    };
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+        [$($subexprs:tt)*] [|| $($body:tt)*] $($tail:tt)*) => {
+        $crate::__expr_operation!(@nested $builder, $next;
+            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [| | $($body)*]] $($tail)*)
+    };
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+        [$($subexprs:tt)*] [| $($body:tt)*] $($tail:tt)*) => {
+        $crate::__expr_operation!(@nested $builder, $next;
+            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [| $($body)*]] $($tail)*)
+    };
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+        [$($subexprs:tt)*] [@$name:ident $({$($captures:tt)*})?] $($tail:tt)*) => {
+        $crate::__expr_operation!(@nested $builder, $next;
+            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [@$name $({$($captures)*})?]] $($tail)*)
+    };
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
         [$($subexprs:tt)*] [$body:expr => ($($captures:tt)*)] $($tail:tt)*) => {
         $crate::__expr_operation!(@nested $builder, $next;
             [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [$body => ($($captures)*)]] $($tail)*)
@@ -388,16 +508,42 @@ macro_rules! __expr_operation {
             [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)*] [$($inputs)* $head] $($tail)*)
     };
     (@emit $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
-        $([$body:expr => ($($captures:tt)*)])* ($($inputs:tt)*) ; $($rest:tt)*) => {{
+        $([$($region:tt)*])* ($($inputs:tt)*) ; $($rest:tt)*) => {{
         let __inputs = $crate::__expr_inputs!($builder; [] $($inputs)*);
-        let __subexprs = vec![$({
-            let __captures = $crate::__expr_inputs!($builder; [] $($captures)*);
-            $builder.subexpr($body, __captures)
-        }),*];
+        let __subexprs = vec![$($crate::__expr_subexpr!($builder, $next; $($region)*)),*];
         let __outputs = $crate::__expr_outputs!($builder; [] $($outs)*);
         $builder.eqn(__outputs, stringify!($dialect), stringify!($op),
             $crate::__expr_attrs!($($attrs)*), __inputs, __subexprs);
         $crate::$next!($builder; $($rest)*)
+    }};
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __expr_subexpr {
+    ($builder:ident, $next:ident; | $($body:tt)*) => {
+        $crate::__expr_subexpr!(@inline $builder, $next; [|] $($body)*)
+    };
+    ($builder:ident, $next:ident; lambda $($body:tt)*) => {
+        $crate::__expr_subexpr!(@inline $builder, $next; [] $($body)*)
+    };
+    (@inline $builder:ident, __expr_eqns; $end:tt $($body:tt)*) => {
+        $builder.inline_subexpr(|mut __region| {
+            $crate::__typed_lambda!(__region, __expr_typed_params, __expr_eqns; $end first [] $($body)*)
+        })
+    };
+    (@inline $builder:ident, __hexpr_body; $end:tt $($body:tt)*) => {
+        $builder.inline_subexpr(|mut __region| {
+            $crate::__typed_lambda!(__region, __hexpr_typed_params, __hexpr_body; $end first [] $($body)*)
+        })
+    };
+    ($builder:ident, $next:ident; @$name:ident $({$($captures:tt)*})?) => {{
+        let __captures = $crate::__expr_inputs!($builder; [] $($($captures)*)?);
+        $builder.subexpr(::std::sync::Arc::clone(&$name), __captures)
+    }};
+    ($builder:ident, $next:ident; $body:expr => ($($captures:tt)*)) => {{
+        let __captures = $crate::__expr_inputs!($builder; [] $($captures)*);
+        $builder.subexpr($body, __captures)
     }};
 }
 
@@ -425,12 +571,6 @@ macro_rules! __expr_inputs {
     };
     ($builder:ident; [$($inputs:expr,)*] $name:ident [:] $($rest:tt)*) => {
         $crate::__expr_inputs!($builder; [$($inputs,)* $builder.cell_operand(stringify!($name)),] $($rest)*)
-    };
-    ($builder:ident; [$($inputs:expr,)*] move $name:ident $($rest:tt)*) => {
-        compile_error!("write `x` for a moved operand or `&x` for a borrowed operand");
-    };
-    ($builder:ident; [$($inputs:expr,)*] & $name:ident $($rest:tt)*) => {
-        $crate::__expr_inputs!($builder; [$($inputs,)* $builder.borrowed_operand(stringify!($name)),] $($rest)*)
     };
     ($builder:ident; [$($inputs:expr,)*] $name:ident $($rest:tt)*) => {
         $crate::__expr_inputs!($builder; [$($inputs,)* $builder.operand(stringify!($name)),] $($rest)*)

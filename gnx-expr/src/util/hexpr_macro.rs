@@ -4,14 +4,15 @@ use std::sync::Arc;
 use crate::{AttrMap, HEqn, HExpr, HInstr, HSubExpr, Kind, ValueInfo, Var, VarScope};
 
 #[doc(hidden)]
-pub struct HExprBuilder {
+pub struct HExprBuilder<'a> {
     expr: HExpr,
     scope: VarScope,
     vars: BTreeMap<&'static str, Var>,
     info: Option<ValueInfo>,
+    outer: Option<&'a mut dyn FnMut(&'static str) -> Option<Kind>>,
 }
 
-impl HExprBuilder {
+impl HExprBuilder<'_> {
     pub fn new(info: Option<ValueInfo>) -> Self {
         Self {
             expr: HExpr {
@@ -19,10 +20,12 @@ impl HExprBuilder {
                 inputs: vec![],
                 instructions: vec![],
                 outputs: vec![],
+                name_hint: None,
             },
             scope: VarScope::new(),
             vars: BTreeMap::new(),
             info,
+            outer: None,
         }
     }
 
@@ -33,13 +36,22 @@ impl HExprBuilder {
         var
     }
 
-    fn lookup(&self, name: &str, cell: bool) -> (Var, &ValueInfo) {
-        let var = *self
-            .vars
-            .get(name)
+    fn resolve(&mut self, name: &'static str) -> Option<(Var, Kind)> {
+        if let Some(&var) = self.vars.get(name) {
+            return self.expr.kind(&var).cloned().map(|kind| (var, kind));
+        }
+        let kind = (self.outer.as_mut()?)(name)?;
+        let var = self.define(name);
+        self.expr.closure.push((var, kind.clone()));
+        Some((var, kind))
+    }
+
+    fn lookup(&mut self, name: &'static str, cell: bool) -> (Var, ValueInfo) {
+        let (var, kind) = self
+            .resolve(name)
             .unwrap_or_else(|| panic!("undefined variable `{name}`"));
-        let info = match (self.expr.kind(&var), cell) {
-            (Some(Kind::Cell(info)), true) | (Some(Kind::Value(info)), false) => info,
+        let info = match (kind, cell) {
+            (Kind::Cell(info), true) | (Kind::Value(info), false) => info,
             (_, true) => panic!("expected a cell for `{name}`"),
             (_, false) => panic!("expected a value for `{name}`"),
         };
@@ -70,9 +82,9 @@ impl HExprBuilder {
         params.push((var, kind));
     }
 
-    pub fn create_cell(&mut self, name: &'static str, initial: &str) {
+    pub fn create_cell(&mut self, name: &'static str, initial: &'static str) {
         let (initial, info) = self.lookup(initial, false);
-        let kind = Kind::Cell(info.clone());
+        let kind = Kind::Cell(info);
         let cell = self.define(name);
         self.expr.instructions.push(HInstr::CreateCell {
             cell,
@@ -81,16 +93,16 @@ impl HExprBuilder {
         });
     }
 
-    pub fn read_cell(&mut self, name: &'static str, cell: &str) {
+    pub fn read_cell(&mut self, name: &'static str, cell: &'static str) {
         let (cell, info) = self.lookup(cell, true);
-        let kind = Kind::Value(info.clone());
+        let kind = Kind::Value(info);
         let output = self.define(name);
         self.expr
             .instructions
             .push(HInstr::ReadCell { cell, output, kind });
     }
 
-    pub fn write_cell(&mut self, cell: &str, value: &str) {
+    pub fn write_cell(&mut self, cell: &'static str, value: &'static str) {
         let (cell, cell_info) = self.lookup(cell, true);
         let (value, value_info) = self.lookup(value, false);
         assert_eq!(cell_info, value_info, "cell assignment type mismatch");
@@ -99,16 +111,28 @@ impl HExprBuilder {
             .push(HInstr::WriteCell { cell, value });
     }
 
-    pub fn operand(&self, name: &str) -> Var {
+    pub fn operand(&mut self, name: &'static str) -> Var {
         self.lookup(name, false).0
     }
 
-    pub fn cell_operand(&self, name: &str) -> Var {
+    pub fn cell_operand(&mut self, name: &'static str) -> Var {
         self.lookup(name, true).0
     }
 
     pub fn subexpr(&self, body: impl Into<Arc<HExpr>>, captures: Vec<Var>) -> HSubExpr {
         HSubExpr::new(body.into(), captures)
+    }
+
+    pub fn inline_subexpr(&mut self, build: impl FnOnce(HExprBuilder<'_>) -> HExpr) -> HSubExpr {
+        let mut child = HExprBuilder::new(self.info.clone());
+        let mut captures = Vec::new();
+        let mut outer = |name| {
+            let (var, kind) = self.resolve(name)?;
+            captures.push(var);
+            Some(kind)
+        };
+        child.outer = Some(&mut outer);
+        HSubExpr::new(Arc::new(build(child)), captures)
     }
 
     pub fn output(&mut self, name: &'static str) -> (Var, Kind) {
@@ -143,7 +167,7 @@ impl HExprBuilder {
             .push(HInstr::Apply(HEqn::new(op, subexprs, inputs, outputs)));
     }
 
-    pub fn result(&self, name: &str, cell: bool) -> Var {
+    pub fn result(&mut self, name: &'static str, cell: bool) -> Var {
         self.lookup(name, cell).0
     }
 
@@ -158,15 +182,18 @@ impl HExprBuilder {
 /// Annotate parameters and equation results with Rust expressions yielding
 /// `ValueInfo`: a value moves in, and `&info` clones it. The older
 /// `hexpr!(info; { ... })` form supplies default metadata. Cell reads and
-/// creation inherit metadata; ownership is assigned during lowering.
-/// Nested bodies are `HExpr` or `Arc<HExpr>`, never immutable `Expr`.
-/// End the lambda header with `=>` and return with `in (x)`, `in (x, y)`, or `in ()`.
+/// creation inherit metadata.
+/// Inline a region with `dialect::op [|| => { in (outer[:]) }]` to refer to
+/// an enclosing cell directly. Shared definitions go before `in |...| => { ... }`
+/// and are referenced with `dialect::op [@name{outer[:]}]`. To attach a prebuilt
+/// `HExpr` or `Arc<HExpr>`, use `dialect::op[body => (captures)]`.
+/// Write parameters as `|captured[:]: &info; value: &info| => { ... }` and
+/// return with `in (x)`, `in (x, y)`, or `in ()`.
 ///
 /// ```
 /// use gnx_expr::{HInstr, ValueInfo, hexpr};
 /// let info = ValueInfo::new(0usize);
-/// let body = hexpr!({
-///     lambda captured[:]: &info; value: info =>
+/// let body = hexpr!(|captured[:]: &info; value: info| => {
 ///     local[:] = value;
 ///     captured[:] <- value;
 ///     result <- captured[:];
@@ -176,11 +203,11 @@ impl HExprBuilder {
 /// assert!(matches!(body.instructions()[1], HInstr::WriteCell { .. }));
 /// assert!(matches!(body.instructions()[2], HInstr::ReadCell { .. }));
 /// assert_eq!(body.to_string(), concat!(
-///     "{ lambda captured[:]: 0; value: 0 =>\n",
+///     "|captured[:]: 0; value: 0| => {\n",
 ///     "  local[:] = value;\n",
 ///     "  captured[:] <- value;\n",
 ///     "  result <- captured[:];\n",
-///     "  in (result, local[:]) }",
+///     "  in (result, local[:])\n}",
 /// ));
 /// ```
 /// ```compile_fail
@@ -191,14 +218,41 @@ impl HExprBuilder {
 /// use gnx_expr::{ValueInfo, expr, hexpr};
 /// let info = ValueInfo::new(0usize);
 /// let low = expr!({ lambda x: &info => in (x) });
-/// let _ = hexpr!({ lambda x: &info => y: &info = builtins::call[low => ()] x; in (y) });
+/// let _ = hexpr!({ lambda x: &info => y: &info = test::region[low => ()] x; in (y) });
 /// ```
 #[macro_export]
 macro_rules! hexpr {
+    (|| $($body:tt)*) => { $crate::hexpr!(| | $($body)*) };
+    (| $($body:tt)*) => {{
+        let mut __builder = $crate::util::hexpr_macro::HExprBuilder::new(None);
+        $crate::__typed_lambda!(__builder, __hexpr_typed_params, __hexpr_body; [|] first [] $($body)*)
+    }};
+    ({ || $($body:tt)* }) => { $crate::hexpr!(|| $($body)*) };
+    ({ | $($body:tt)* }) => { $crate::hexpr!(| $($body)*) };
+    (lambda $($body:tt)*) => {
+        $crate::hexpr!({ lambda $($body)* })
+    };
     ({ lambda $($body:tt)* }) => {{
         let mut __builder = $crate::util::hexpr_macro::HExprBuilder::new(None);
-        $crate::__typed_lambda!(__builder, __hexpr_typed_params, __hexpr_body; first [] $($body)*)
+        $crate::__typed_lambda!(__builder, __hexpr_typed_params, __hexpr_body; [] first [] $($body)*)
     }};
+    ($name:ident = $($tail:tt)*) => {
+        $crate::__expr_named!(hexpr, []; $name = $($tail)*)
+    };
+    ($info:expr; $name:ident = $($tail:tt)*) => {{
+        let __default = $crate::ValueInfo::from($info);
+        $crate::__expr_named!(hexpr, [&__default;]; $name = $($tail)*)
+    }};
+    ($info:expr; || $($body:tt)*) => { $crate::hexpr!($info; | | $($body)*) };
+    ($info:expr; { || $($body:tt)* }) => { $crate::hexpr!($info; || $($body)*) };
+    ($info:expr; { | $($body:tt)* }) => { $crate::hexpr!($info; | $($body)*) };
+    ($info:expr; | $($body:tt)*) => {{
+        let mut __builder = $crate::util::hexpr_macro::HExprBuilder::new(Some($crate::ValueInfo::from($info)));
+        $crate::__typed_lambda!(__builder, __hexpr_typed_params, __hexpr_body; [|] first [] $($body)*)
+    }};
+    ($info:expr; lambda $($body:tt)*) => {
+        $crate::hexpr!($info; { lambda $($body)* })
+    };
     ($info:expr; { lambda
         $($input:ident $([$icell:tt])? $(($iinfo:expr))?),* $(,)? =>
         $($body:tt)*
@@ -279,11 +333,16 @@ macro_rules! __hexpr_typed_params {
             Some($crate::ValueInfo::from($info)));
         $crate::__hexpr_typed_params!($builder, $closure; $($rest)*);
     }};
+    ($builder:ident, $closure:expr; $name:ident $([$cell:tt])?, $($rest:tt)*) => {{
+        $builder.parameter($closure, stringify!($name), $crate::__hexpr_cell!($($cell)?), None);
+        $crate::__hexpr_typed_params!($builder, $closure; $($rest)*);
+    }};
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __hexpr_body {
+    ($builder:ident; { $($body:tt)* }) => { $crate::__hexpr_body!($builder; $($body)*) };
     ($builder:ident; $out:tt : $($tail:tt)*) => {
         $crate::__typed_eqn!($builder, __hexpr_body; [$out :] $($tail)*)
     };

@@ -135,11 +135,6 @@ impl Capture {
         &self.outputs
     }
 
-    /// Bind arguments without lowering; cell outputs and writes remain projections.
-    pub fn call(&self, inputs: &[ObjectTracer]) -> Vec<ObjectTracer> {
-        Invocation::defer_call(Arc::new(self.expr.clone()), self.closure(), inputs)
-    }
-
     pub fn into_parts(
         self,
     ) -> (
@@ -367,6 +362,7 @@ impl Emitter {
                 inputs: input_params,
                 instructions: self.instructions,
                 outputs: output_vars,
+                name_hint: None,
             },
             closure,
             inputs,
@@ -479,7 +475,7 @@ impl Emitter {
                     self.define_results(inv),
                 ))
             }
-            Invocation::DeferredCall(call) => return self.emit_call(inv.into(), call),
+            Invocation::DeferredApply(apply) => return self.emit_deferred(inv.into(), apply),
             Invocation::ReadCell { cell, .. } => {
                 let cell = self.cell(cell)?;
                 let (output, kind) = self
@@ -497,40 +493,48 @@ impl Emitter {
         Ok(())
     }
 
-    fn emit_call(&mut self, key: InvKey, call: &super::DeferredCall) -> Result<(), CaptureError> {
-        let captures = self.object_args(&call.closure)?;
-        let inputs = self.object_args(&call.inputs)?;
-        let results: Vec<_> = call
-            .body
-            .outputs()
+    fn emit_deferred(
+        &mut self,
+        key: InvKey,
+        apply: &super::DeferredApply,
+    ) -> Result<(), CaptureError> {
+        use super::DeferredProjection::{CellContents, Value};
+        let regions = apply
+            .regions
             .iter()
-            .map(|var| {
-                (
-                    self.vars.create_var(),
-                    call.body.kind(var).expect("call result kind").clone(),
-                )
+            .map(|region| {
+                Ok(HSubExpr::new(
+                    region.body.clone(),
+                    self.object_args(&region.captures)?,
+                ))
             })
+            .collect::<Result<_, CaptureError>>()?;
+        let inputs = self.object_args(&apply.inputs)?;
+        let results: Vec<_> = apply
+            .kinds
+            .iter()
+            .map(|kind| (self.vars.create_var(), kind.clone()))
             .collect();
         self.instructions.push(HInstr::Apply(HEqn::new(
-            crate::builtins::call_op(),
-            vec![HSubExpr::new(call.body.clone(), captures)],
+            apply.op.clone(),
+            regions,
             inputs,
             results.clone(),
         )));
-        for (index, projection) in call.results.iter().enumerate() {
+        for (index, projection) in apply.results.iter().enumerate() {
             let var = match projection {
-                Projection::Value(result) => results[*result].0,
+                Projection::Output(Value(result)) => results[*result].0,
                 projection => {
                     let cell = match projection {
-                        Projection::CellContents(result) => results[*result].0,
+                        Projection::Output(CellContents(result)) => results[*result].0,
                         Projection::LocalUpdate(cell) => self.cell(cell)?,
-                        Projection::Value(_) => unreachable!(),
+                        Projection::Output(Value(_)) => unreachable!(),
                     };
                     let output = self.vars.create_var();
                     self.instructions.push(HInstr::ReadCell {
                         cell,
                         output,
-                        kind: Kind::Value(call.outputs[index].clone()),
+                        kind: Kind::Value(apply.outputs[index].clone()),
                     });
                     output
                 }

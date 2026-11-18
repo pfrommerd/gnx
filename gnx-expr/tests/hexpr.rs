@@ -1,7 +1,7 @@
 use gnx_expr::{
-    CaptureError, CellAccess, CellTrace, Dialect, Generic, HInstr, InputId, InputSpec, Invocation,
-    Kind, LoweringError, Op, Operation, Ownership, TraceContext, Capture, Tracer, TracerKey,
-    ValueInfo, lower,
+    Capture, CaptureError, CellAccess, CellTrace, Dialect, Generic, HInstr, InputId, InputSpec,
+    Invocation, Kind, LoweringError, Op, Operation, TraceContext, Tracer, TracerKey, ValueInfo,
+    lower,
 };
 
 // Test shorthand for specifying only aliases while borrowing every argument.
@@ -11,14 +11,14 @@ struct CellAliases {
     inputs: Vec<InputId>,
 }
 
-trait BorrowedLowering {
-    fn lower_borrowed(
+trait AliasLowering {
+    fn lower_with_aliases(
         &self,
         bindings: &CellAliases,
     ) -> Result<gnx_expr::LoweredExpr, LoweringError>;
 }
-impl BorrowedLowering for gnx_expr::HExpr {
-    fn lower_borrowed(
+impl AliasLowering for gnx_expr::HExpr {
+    fn lower_with_aliases(
         &self,
         bindings: &CellAliases,
     ) -> Result<gnx_expr::LoweredExpr, LoweringError> {
@@ -44,7 +44,7 @@ impl BorrowedLowering for gnx_expr::HExpr {
                         }
                         Kind::Cell(_) => *ids.next().expect("test cell alias missing"),
                     };
-                    (id, param.1.clone(), Ownership::Borrow)
+                    (id, param.1.clone())
                 })
                 .collect()
         };
@@ -111,36 +111,22 @@ fn captured_equation_result_keeps_its_kind_at_the_definition() {
     let (var, kind) = &body.instructions()[0].as_apply().unwrap().outputs()[0];
     assert_eq!(kind, &Kind::Value(result_info.clone()));
     assert_eq!(body.kind(var), Some(kind));
-    let lowered = body.lower_borrowed(&CellAliases::default()).unwrap();
-    assert_eq!(
-        lowered.expr.eqns()[0].outputs()[0].1,
-        Kind::Value(result_info.clone())
-    );
+    let lowered = body.lower_with_aliases(&CellAliases::default()).unwrap();
+    assert_eq!(lowered.expr.eqns()[0].outputs()[0].1, result_info.clone());
     assert_eq!(lowered.output_infos, vec![result_info]);
 }
 
 fn value_var(lowered: &gnx_expr::LoweredExpr, output: &lower::Output) -> gnx_expr::Var {
-    match *output {
-        lower::Output::OutputValue { output_idx } => lowered.expr.outputs()[output_idx],
-        lower::Output::InputValue { input_id } => {
-            lowered
-                .closure
-                .iter()
-                .chain(&lowered.inputs)
-                .zip(lowered.expr.closure().iter().chain(lowered.expr.inputs()))
-                .find(|(id, _)| **id == input_id)
-                .unwrap()
-                .1
-                .0
-        }
-        _ => panic!("expected value descriptor"),
-    }
+    let lower::Output::Value { result_idx } = *output else {
+        panic!("expected immutable result")
+    };
+    lowered.expr.outputs()[result_idx]
 }
 fn result_var(lowered: &gnx_expr::LoweredExpr, index: usize) -> gnx_expr::Var {
     value_var(lowered, &lowered.results()[index])
 }
 fn state_var(lowered: &gnx_expr::LoweredExpr, index: usize) -> gnx_expr::Var {
-    value_var(lowered, &lowered.outputs[lowered.updates[index].1])
+    lowered.expr.outputs()[lowered.updates[index].1]
 }
 
 #[test]
@@ -196,28 +182,22 @@ fn concrete_cell_bindings_detect_cloned_handles_across_captures_and_inputs() {
     let _guard = TraceContext::enter();
     let a = cell();
     let b = cell();
-    let spec = InputSpec::from_args(
-        &[(a.clone().into(), Ownership::Borrow)],
-        &[(b.into(), Ownership::Move), (a.into(), Ownership::Borrow)],
-    );
-    assert_eq!(
-        spec.closure,
-        vec![(InputId::Input(1), Kind::Cell(info()), Ownership::Borrow)]
-    );
+    let spec = InputSpec::from_args(&[a.clone().into()], &[b.into(), a.into()]);
+    assert_eq!(spec.closure, vec![(InputId::Input(1), Kind::Cell(info()))]);
     assert_eq!(
         spec.inputs,
         vec![
-            (InputId::Input(0), Kind::Cell(info()), Ownership::Move),
-            (InputId::Input(1), Kind::Cell(info()), Ownership::Borrow),
+            (InputId::Input(0), Kind::Cell(info())),
+            (InputId::Input(1), Kind::Cell(info())),
         ]
     );
 }
 
 #[test]
 fn cell_actions_are_not_dialect_operations() {
-    let builtins = gnx_expr::builtins::BuiltinsDialect;
+    let cf = gnx_transforms::control_flow::ControlFlowDialect;
     for name in ["read", "update", "create_cell"] {
-        assert!(builtins.create(name).is_none());
+        assert!(cf.create(name).is_none());
     }
 }
 
@@ -226,15 +206,14 @@ fn read_only_input_is_not_marked_writable() {
     let guard = TraceContext::enter();
     let cell = cell();
     let read = cell.get();
-    let captured =
-        Capture::from_context(guard.context(), &[cell.into()], &[read.into()]).unwrap();
+    let captured = Capture::from_context(guard.context(), &[cell.into()], &[read.into()]).unwrap();
     assert_eq!(
         captured.expr().cell_access(&captured.expr().inputs()[0].0),
         Some(CellAccess::Read)
     );
     let lowered = captured
         .expr()
-        .lower_borrowed(&CellAliases {
+        .lower_with_aliases(&CellAliases {
             inputs: vec![InputId::Input(0)],
             ..Default::default()
         })
@@ -260,7 +239,7 @@ fn the_same_hexpr_lowers_differently_for_aliased_and_distinct_inputs() {
     .unwrap();
     let shared = captured
         .expr()
-        .lower_borrowed(&CellAliases {
+        .lower_with_aliases(&CellAliases {
             inputs: vec![InputId::Input(0), InputId::Input(0)],
             ..Default::default()
         })
@@ -272,7 +251,7 @@ fn the_same_hexpr_lowers_differently_for_aliased_and_distinct_inputs() {
 
     let distinct = captured
         .expr()
-        .lower_borrowed(&CellAliases {
+        .lower_with_aliases(&CellAliases {
             inputs: vec![InputId::Input(0), InputId::Input(1)],
             ..Default::default()
         })
@@ -301,7 +280,7 @@ fn read_before_write_keeps_old_value_and_read_after_write_sees_new_value() {
     .unwrap();
     let lowered = captured
         .expr()
-        .lower_borrowed(&CellAliases {
+        .lower_with_aliases(&CellAliases {
             inputs: vec![InputId::Input(7), InputId::Input(7)],
             ..Default::default()
         })
@@ -328,7 +307,7 @@ fn captured_and_explicit_cells_can_alias() {
     .unwrap();
     let lowered = captured
         .expr()
-        .lower_borrowed(&CellAliases {
+        .lower_with_aliases(&CellAliases {
             closure: vec![InputId::Input(3)],
             inputs: vec![InputId::Input(3)],
         })
@@ -357,15 +336,18 @@ fn escaping_local_cell_keeps_identity_and_final_contents() {
     ));
     let lowered = captured
         .expr()
-        .lower_borrowed(&CellAliases::default())
+        .lower_with_aliases(&CellAliases::default())
         .unwrap();
     assert_eq!(lowered.expr.eqns().len(), 1);
-    assert_eq!(lowered.results()[0], lowered.results()[1]);
+    assert!(matches!(
+        lowered.results()[1],
+        lower::Output::NewCell { id: 0, .. }
+    ));
     assert!(matches!(
         lowered.results()[0],
-        lower::Output::NewOutputCell {
+        lower::Output::NewCell {
             id: 0,
-            output_idx: 0
+            result_idx: 0
         }
     ));
     assert!(lowered.updates.is_empty());
@@ -385,16 +367,16 @@ fn equal_contents_do_not_merge_distinct_local_cells() {
         Capture::from_context(guard.context(), &[x.into()], &[a.into(), b.into()]).unwrap();
     let lowered = captured
         .expr()
-        .lower_borrowed(&CellAliases::default())
+        .lower_with_aliases(&CellAliases::default())
         .unwrap();
     assert!(lowered.updates.is_empty());
     assert!(matches!(
         lowered.results()[0],
-        lower::Output::NewInputCell { id: 0, .. }
+        lower::Output::NewCell { id: 0, .. }
     ));
     assert!(matches!(
         lowered.results()[1],
-        lower::Output::NewInputCell { id: 1, .. }
+        lower::Output::NewCell { id: 1, .. }
     ));
     assert_ne!(lowered.results()[0], lowered.results()[1]);
 }
@@ -405,11 +387,10 @@ fn escaping_write_retains_its_computation_but_no_cell_equations_reach_expr() {
     let cell = cell();
     let x = value();
     cell.set(neg(x.clone()).into_trace_ref());
-    let captured =
-        Capture::from_context(guard.context(), &[cell.into(), x.into()], &[]).unwrap();
+    let captured = Capture::from_context(guard.context(), &[cell.into(), x.into()], &[]).unwrap();
     let lowered = captured
         .expr()
-        .lower_borrowed(&CellAliases {
+        .lower_with_aliases(&CellAliases {
             inputs: vec![InputId::Input(0)],
             ..Default::default()
         })
@@ -480,10 +461,9 @@ fn alias_bindings_must_have_compatible_cell_types() {
     let guard = TraceContext::enter();
     let a = cell();
     let b = CellTrace::placeholder(ValueInfo::new(1usize));
-    let captured =
-        Capture::from_context(guard.context(), &[a.into(), b.into()], &[]).unwrap();
+    let captured = Capture::from_context(guard.context(), &[a.into(), b.into()], &[]).unwrap();
     assert!(matches!(
-        captured.expr().lower_borrowed(&CellAliases {
+        captured.expr().lower_with_aliases(&CellAliases {
             inputs: vec![InputId::Input(0), InputId::Input(0)],
             ..Default::default()
         }),
@@ -501,17 +481,21 @@ fn immutable_calls_preserve_the_boundary_without_duplicating_captures_as_argumen
     let guard = TraceContext::enter();
     let x = value();
     let y = value();
-    let result = gnx_expr::builtins::call(
+    let result = gnx_transforms::control_flow::call_immutable(
         std::sync::Arc::new(body),
         [x.clone()],
         [y.clone()],
         vec![info()],
     );
-    let captured =
-        Capture::from_context(guard.context(), &[x.into(), y.into()], &result).unwrap();
+    let captured = Capture::from_context(
+        guard.context(),
+        &[x.into(), y.into()],
+        &result.into_iter().map(Into::into).collect::<Vec<_>>(),
+    )
+    .unwrap();
     let lowered = captured
         .expr()
-        .lower_borrowed(&CellAliases::default())
+        .lower_with_aliases(&CellAliases::default())
         .unwrap();
     let call = &lowered.expr.eqns()[0];
     assert_eq!(
@@ -519,14 +503,14 @@ fn immutable_calls_preserve_the_boundary_without_duplicating_captures_as_argumen
         1,
         "captures must not be duplicated as ordinary call arguments"
     );
-    assert_eq!(call.op().to_string(), "builtins.call");
+    assert_eq!(call.op().to_string(), "cf.call");
     assert_eq!(call.subexprs().len(), 1);
     assert_eq!(call.subexprs()[0].closure().len(), 1);
     assert_eq!(
         call.subexprs()[0].expr().eqns()[0].op().to_string(),
         "test.neg"
     );
-    assert_eq!(call.inputs()[0].0, lowered.expr.inputs()[1].0);
+    assert_eq!(call.inputs()[0], lowered.expr.inputs()[1].0);
 }
 
 #[test]
@@ -581,8 +565,7 @@ fn applying_a_mutable_body_updates_caller_local_cells_without_read_nodes() {
         TracerKey::from(&results[0].resolve()),
         TracerKey::from(replacement.trace_ref())
     );
-    let caller =
-        Capture::from_context(outer.context(), &[replacement.into()], &results).unwrap();
+    let caller = Capture::from_context(outer.context(), &[replacement.into()], &results).unwrap();
     assert!(caller.expr().instructions().is_empty());
 }
 
@@ -613,8 +596,7 @@ fn lowered_calls_specialize_aliases_before_snapshotting_cells() {
         TracerKey::from(&results[0].resolve()),
         TracerKey::from(x.trace_ref())
     );
-    let caller =
-        Capture::from_context(outer.context(), &[a.into(), x.into()], &results).unwrap();
+    let caller = Capture::from_context(outer.context(), &[a.into(), x.into()], &results).unwrap();
     assert_eq!(caller.expr().instructions().len(), 1);
     assert!(matches!(
         caller.expr().instructions()[0],
@@ -649,7 +631,7 @@ fn repeated_application_returns_fresh_cells_but_preserves_returned_aliases() {
     let caller = Capture::from_context(outer.context(), &[x.into()], &results).unwrap();
     let lowered = caller
         .expr()
-        .lower_borrowed(&CellAliases::default())
+        .lower_with_aliases(&CellAliases::default())
         .unwrap();
     assert_eq!(lowered.results()[0], lowered.results()[1]);
     assert_ne!(lowered.results()[0], lowered.results()[2]);
@@ -682,8 +664,7 @@ fn returning_an_input_cell_does_not_read_its_contents() {
     let guard = TraceContext::enter();
     let input = cell();
     let captured =
-        Capture::from_context(guard.context(), &[input.clone().into()], &[input.into()])
-            .unwrap();
+        Capture::from_context(guard.context(), &[input.clone().into()], &[input.into()]).unwrap();
     assert_eq!(
         captured.expr().cell_access(&captured.expr().inputs()[0].0),
         Some(CellAccess::Unused)
@@ -691,7 +672,7 @@ fn returning_an_input_cell_does_not_read_its_contents() {
     assert!(captured.expr().instructions().is_empty());
     let lowered = captured
         .expr()
-        .lower_borrowed(&CellAliases {
+        .lower_with_aliases(&CellAliases {
             inputs: vec![InputId::Input(5)],
             ..Default::default()
         })
@@ -717,17 +698,7 @@ impl CallLowered for gnx_expr::HExpr {
         closure: &[gnx_expr::ObjectTracer],
         inputs: &[gnx_expr::ObjectTracer],
     ) -> Result<Vec<gnx_expr::ObjectTracer>, gnx_expr::lower::CallError> {
-        let closure_specs = closure
-            .iter()
-            .cloned()
-            .map(|v| (v, Ownership::Borrow))
-            .collect::<Vec<_>>();
-        let input_specs = inputs
-            .iter()
-            .cloned()
-            .map(|v| (v, Ownership::Borrow))
-            .collect::<Vec<_>>();
-        let spec = InputSpec::from_args(&closure_specs, &input_specs);
-        self.lower(&spec).unwrap().call(closure, inputs)
+        let spec = InputSpec::from_args(closure, inputs);
+        gnx_transforms::control_flow::call_lowered(&self.lower(&spec).unwrap(), closure, inputs)
     }
 }

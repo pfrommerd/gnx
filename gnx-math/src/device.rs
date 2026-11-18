@@ -11,8 +11,8 @@ pub struct ExecOpts {
 }
 
 /// Executes a lowered expression. Arguments are captures followed by explicit
-/// inputs; results follow `Expr::outputs()`. This interface does not apply cell
-/// updates or reconstruct boundary passthroughs.
+/// inputs; values are returned in `Expr::outputs()` order, including forwarded
+/// parameters. This interface does not apply cell updates or reconstruct cell handles.
 pub trait Device: Send + Sync {
     type Outputs: IntoIterator<Item = Value>;
 

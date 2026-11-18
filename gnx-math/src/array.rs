@@ -263,7 +263,23 @@ impl ArrayInfo {
 
 impl Display for ArrayInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{}", self.shape, self.dtype)
+        let dtype = match self.dtype {
+            DType::Bool => "bool",
+            DType::U8 => "u8",
+            DType::U16 => "u16",
+            DType::U32 => "u32",
+            DType::U64 => "u64",
+            DType::I8 => "i8",
+            DType::I16 => "i16",
+            DType::I32 => "i32",
+            DType::I64 => "i64",
+            DType::F16 => "f16",
+            DType::F32 => "f32",
+            DType::F64 => "f64",
+            DType::C64 => "c64",
+            DType::C128 => "c128",
+        };
+        write!(f, "<{dtype}>{}", self.shape)
     }
 }
 

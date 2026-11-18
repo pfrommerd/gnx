@@ -12,7 +12,8 @@ def test_expr_captures_graph_and_cell_home_without_executing():
     assert len(capture.closure) == len(capture.outputs) == 1
     assert isinstance(capture.outputs[0], gnxlib.array.Array)
     assert capture.outputs[0].shape == (2,)
-    assert "float32" in str(capture)
+    assert capture.outputs[0].dtype == "float32"
+    assert "<f32>(2)" in str(capture)
     assert str(gnxlib.expr(gnxlib.Graph.from_value(roots))) == str(capture)
 
 

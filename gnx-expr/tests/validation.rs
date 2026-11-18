@@ -1,4 +1,4 @@
-use gnx_expr::{Dialect, Expr, LoweringError, Operation, Ownership, Var, expr, register_dialect};
+use gnx_expr::{Dialect, Expr, LoweringError, Operation, Var, expr, register_dialect};
 use std::sync::Arc;
 
 struct TestDialect;
@@ -26,7 +26,7 @@ impl Operation for TestOperation {
 fn check_rejects_undefined_operands() {
     let expr =
         expr!(gnx_expr::ValueInfo::new(0usize); { lambda: out = validation::op missing; in (out) });
-    let missing = expr.eqns()[0].inputs()[0].0;
+    let missing = expr.eqns()[0].inputs()[0];
     assert_eq!(expr.check(), Err(LoweringError::UndefinedVariable(missing)));
 }
 
@@ -42,11 +42,7 @@ fn check_rejects_duplicate_and_hole_definitions() {
     assert_eq!(expr.check(), Err(LoweringError::DuplicateDefinition(out)));
     let expr = Expr::new(
         vec![],
-        vec![(
-            Var::hole(),
-            Ownership::Move,
-            gnx_expr::ValueInfo::new(0usize),
-        )],
+        vec![(Var::hole(), gnx_expr::ValueInfo::new(0usize))],
         vec![],
         vec![],
     );
@@ -66,21 +62,36 @@ fn check_validates_subexpression_capture_arity_and_bindings() {
         })
     );
     let expr = expr!(gnx_expr::ValueInfo::new(0usize); { lambda outer;: out = validation::op[inner.clone() => (missing)]; in (out) });
-    let missing = expr.eqns()[0].subexprs()[0].captures[0].0;
+    let missing = expr.eqns()[0].subexprs()[0].captures[0];
     assert_eq!(expr.check(), Err(LoweringError::UndefinedVariable(missing)));
     let expr = expr!(gnx_expr::ValueInfo::new(0usize); { lambda outer;: out = validation::op[inner => (outer)]; in (out) });
     expr.check().unwrap();
 }
 
 #[test]
-fn check_enforces_owned_returns_and_move_lifetimes() {
-    let borrowed = expr!(gnx_expr::ValueInfo::new(0usize); { lambda &x: in (x) });
-    let x = borrowed.inputs()[0].0;
-    assert_eq!(borrowed.check(), Err(LoweringError::BorrowedOutput(x)));
-    let moved_twice = expr!(gnx_expr::ValueInfo::new(0usize); { lambda x: in (x, x) });
-    let x = moved_twice.inputs()[0].0;
+fn check_accepts_returning_parameters_and_reusing_values() {
+    let expr = expr!(gnx_expr::ValueInfo::new(0usize); {
+        lambda captured; x:
+        out = validation::op x x;
+        in (x, captured, out, out)
+    });
+    expr.check().unwrap();
     assert_eq!(
-        moved_twice.check(),
-        Err(LoweringError::UndefinedVariable(x))
+        expr.outputs(),
+        &[
+            expr.inputs()[0].0,
+            expr.closure()[0].0,
+            expr.eqns()[0].outputs()[0].0,
+            expr.eqns()[0].outputs()[0].0
+        ]
+    );
+}
+
+#[test]
+fn check_rejects_undefined_results() {
+    let expr = expr!(gnx_expr::ValueInfo::new(0usize); { lambda: in (missing) });
+    assert_eq!(
+        expr.check(),
+        Err(LoweringError::UndefinedVariable(expr.outputs()[0]))
     );
 }

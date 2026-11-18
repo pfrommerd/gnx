@@ -198,7 +198,10 @@ fn pure_traced_calls_keep_only_outside_results_live() {
         gnx_expr::Capture::from_context(guard.context(), &[input.into()], &[output.into()]).unwrap()
     };
     let z = op(vec![concrete(1)], 1).pop().unwrap();
-    let gnx_expr::ObjectTracer::Ref(x) = traced.call(&[z.into()]).pop().unwrap() else {
+    let gnx_expr::ObjectTracer::Ref(x) = gnx_transforms::control_flow::call(&traced, &[z.into()])
+        .pop()
+        .unwrap()
+    else {
         panic!("expected one value result");
     };
     let capture = Capture::from_roots([&x]).unwrap();
@@ -294,7 +297,9 @@ fn nested_cell_updates_and_cell_results_lower_to_value_results() {
         Capture::from_context(scope.context(), &[input.into()], &[fresh.into()]).unwrap()
     };
     let original = CellTrace::new(op(vec![concrete(2)], 1).pop().unwrap());
-    let result = traced.call(&[original.clone().into()]).pop().unwrap();
+    let result = gnx_transforms::control_flow::call(&traced, &[original.clone().into()])
+        .pop()
+        .unwrap();
     let fresh_home = result.resolve();
     let original_home = original.read_home();
     let capture = Capture::from_roots([&fresh_home]).unwrap();

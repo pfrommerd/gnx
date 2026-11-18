@@ -1,0 +1,350 @@
+//! Fixed region signatures for control flow. Ordinary calls can forward a
+//! result statically; a control-flow join or backedge needs a logical slot.
+
+use super::*;
+
+/// A canonical cell identity in the parent region. The handle never reaches Expr.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RegionCell(CellBinding);
+
+/// An explicit region parameter is either a distinct runtime argument or a
+/// statically bound cell. Captures are bound separately by HSubExpr.
+#[derive(Clone, Copy)]
+pub enum RegionArgument {
+    Value,
+    Cell(Var),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Slot {
+    Argument(usize),
+    Capture(Var),
+    Cell(RegionCell),
+}
+
+pub struct StructuredRegion {
+    program: LoweredExpr,
+    slots: BTreeMap<InputId, Slot>,
+    num_arguments: usize,
+}
+
+pub struct FixedRegion {
+    expr: Arc<Expr>,
+    trace_body: Arc<HExpr>,
+    captures: Vec<Var>,
+}
+
+impl FixedRegion {
+    pub fn subexpr(&self) -> RegionUse {
+        RegionUse {
+            expr: self.expr.clone(),
+            trace_body: self.trace_body.clone(),
+            captures: self.captures.clone(),
+        }
+    }
+}
+
+impl LoweringContext<'_> {
+    fn ssa_info(&self, var: Var) -> Result<ValueInfo, LoweringError> {
+        self.lowerer
+            .bound_inputs
+            .values()
+            .find_map(|(kind, v)| (*v == var).then(|| value_info(kind).clone()))
+            .or_else(|| {
+                self.lowerer
+                    .eqns
+                    .iter()
+                    .rev()
+                    .flat_map(Eqn::outputs)
+                    .find_map(|(v, info)| (*v == var).then(|| info.clone()))
+            })
+            .ok_or(LoweringError::UndefinedVariable(var))
+    }
+
+    pub fn value_operand(&self, var: Var) -> Result<(Var, ValueInfo), LoweringError> {
+        let var = self.lowerer.value(var)?;
+        Ok((var, self.ssa_info(var)?))
+    }
+
+    pub fn cell_state(&self, cell: RegionCell) -> Result<(Var, ValueInfo), LoweringError> {
+        let var = self.lowerer.states[&cell.0];
+        Ok((var, self.ssa_info(var)?))
+    }
+
+    /// Compile the region with the parent's cell aliases, but don't deduplicate
+    /// dynamic arguments even if their initial SSA values happen to be equal.
+    pub fn lower_structured_region(
+        &self,
+        sub: &HSubExpr,
+        arguments: &[RegionArgument],
+        argument_infos: &[ValueInfo],
+    ) -> Result<StructuredRegion, LoweringError> {
+        let body = sub.expr();
+        if sub.closure().len() != body.closure().len() || arguments.len() != body.inputs().len() {
+            return Err(LoweringError::RegionSignature("region binding arity"));
+        }
+        let mut identities = BTreeMap::new();
+        let mut slots = BTreeMap::new();
+        let mut spec_binding = |slot, id, kind: &Kind| {
+            let id = *identities.entry(slot).or_insert(id);
+            slots.insert(id, slot);
+            (id, kind.clone())
+        };
+        let mut num_arguments = 0;
+        let mut inputs = Vec::new();
+        for (index, (argument, (_, kind))) in arguments.iter().zip(body.inputs()).enumerate() {
+            let slot = match (argument, kind) {
+                (RegionArgument::Value, Kind::Value(info))
+                    if argument_infos.get(num_arguments) == Some(info) =>
+                {
+                    let slot = Slot::Argument(num_arguments);
+                    num_arguments += 1;
+                    slot
+                }
+                (RegionArgument::Cell(var), Kind::Cell(info)) => {
+                    let cell = RegionCell(self.lowerer.cell(*var)?);
+                    if &self.cell_state(cell)?.1 != info {
+                        return Err(LoweringError::RegionSignature("region cell metadata"));
+                    }
+                    Slot::Cell(cell)
+                }
+                _ => return Err(LoweringError::RegionSignature("region argument metadata")),
+            };
+            inputs.push(spec_binding(slot, InputId::Input(index), kind));
+        }
+        if num_arguments != argument_infos.len() {
+            return Err(LoweringError::RegionSignature("region argument arity"));
+        }
+        let mut closure = Vec::new();
+        for (index, (&var, (_, kind))) in sub.closure().iter().zip(body.closure()).enumerate() {
+            let slot = match kind {
+                Kind::Value(info) => {
+                    let (var, actual) = self.value_operand(var)?;
+                    if actual != *info {
+                        return Err(LoweringError::RegionSignature("region capture metadata"));
+                    }
+                    Slot::Capture(var)
+                }
+                Kind::Cell(info) => {
+                    let cell = RegionCell(self.lowerer.cell(var)?);
+                    if &self.cell_state(cell)?.1 != info {
+                        return Err(LoweringError::RegionSignature(
+                            "region capture cell metadata",
+                        ));
+                    }
+                    Slot::Cell(cell)
+                }
+            };
+            closure.push(spec_binding(slot, InputId::Closure(index), kind));
+        }
+        let program = body.lower(&InputSpec { closure, inputs })?;
+        Ok(StructuredRegion {
+            program,
+            slots,
+            num_arguments,
+        })
+    }
+
+    /// Bind a region operation's joined results and advance the chosen parent
+    /// cell states. State slots are interleaved at `position` in physical results.
+    pub fn bind_structured_results(
+        &mut self,
+        logical: &[(Var, Kind)],
+        cells: &[RegionCell],
+        position: usize,
+        physical: &[(Var, ValueInfo)],
+    ) -> Result<(), LoweringError> {
+        if position > logical.len() || physical.len() != logical.len() + cells.len() {
+            return Err(LoweringError::RegionSignature("structured result arity"));
+        }
+        let (before, rest) = physical.split_at(position);
+        let (states, after) = rest.split_at(cells.len());
+        for ((var, kind), (value, actual)) in logical.iter().zip(before.iter().chain(after)) {
+            if !matches!(kind, Kind::Value(info) if info == actual) {
+                return Err(LoweringError::RegionSignature("structured result metadata"));
+            }
+            self.lowerer.values.insert(*var, *value);
+        }
+        for (&cell, (value, info)) in cells.iter().zip(states) {
+            if *info != self.cell_state(cell)?.1 {
+                return Err(LoweringError::RegionSignature("structured state metadata"));
+            }
+            self.lowerer.states.insert(cell.0, *value);
+            self.lowerer.written.insert(cell.0);
+        }
+        Ok(())
+    }
+}
+
+impl StructuredRegion {
+    pub fn writes(&self) -> impl Iterator<Item = RegionCell> + '_ {
+        self.program
+            .updates
+            .iter()
+            .map(|(id, _)| match self.slots[id] {
+                Slot::Cell(cell) => cell,
+                _ => unreachable!("updates are only defined for cells"),
+            })
+    }
+
+    /// Fix argument and result arities across regions. Unwritten cells yield
+    /// their incoming contents; read-only cells outside this layout stay
+    /// captured. Borrowed results forward their parameters without an equation.
+    pub fn fix(
+        &self,
+        ctx: &LoweringContext<'_>,
+        states: &[(RegionCell, ValueInfo)],
+        input_position: usize,
+        output_position: Option<usize>,
+        expected_results: &[ValueInfo],
+    ) -> Result<FixedRegion, LoweringError> {
+        let original = &self.program.expr;
+        if input_position > self.num_arguments
+            || expected_results.len() != self.program.results().len()
+            || output_position.is_some_and(|p| p > expected_results.len())
+            || (output_position.is_none() && self.writes().next().is_some())
+            || self
+                .writes()
+                .any(|cell| !states.iter().any(|(slot, _)| *slot == cell))
+        {
+            return Err(LoweringError::RegionSignature(
+                "incompatible fixed region layout",
+            ));
+        }
+        let id_params: BTreeMap<_, _> = self
+            .program
+            .closure
+            .iter()
+            .chain(&self.program.inputs)
+            .copied()
+            .zip(original.closure().iter().chain(original.inputs()).cloned())
+            .collect();
+        let mut slot_params: BTreeMap<_, _> = self
+            .slots
+            .iter()
+            .map(|(id, slot)| (*slot, id_params[id].clone()))
+            .collect();
+        let mut scope = VarScope {
+            next_id: id_params
+                .values()
+                .map(|(var, _)| *var)
+                .chain(
+                    original
+                        .eqns()
+                        .iter()
+                        .flat_map(|eqn| eqn.outputs().iter().map(|(var, _)| *var)),
+                )
+                .filter_map(|var| var.id())
+                .max()
+                .map_or(0, |max| max + 1),
+        };
+        let mut inputs: Vec<_> = (0..self.num_arguments)
+            .map(|idx| {
+                slot_params
+                    .remove(&Slot::Argument(idx))
+                    .expect("runtime argument parameter")
+            })
+            .collect();
+        let mut state_params = BTreeMap::new();
+        let mut state_inputs = Vec::new();
+        for (cell, info) in states {
+            let parameter = slot_params
+                .remove(&Slot::Cell(*cell))
+                .unwrap_or_else(|| (scope.create_var(), info.clone()));
+            if parameter.1 != *info || state_params.insert(*cell, parameter.0).is_some() {
+                return Err(LoweringError::RegionSignature("incompatible state slots"));
+            }
+            state_inputs.push(parameter);
+        }
+        inputs.splice(input_position..input_position, state_inputs);
+
+        let mut closure = Vec::new();
+        let mut captures = Vec::new();
+        for id in self.program.closure.iter().chain(&self.program.inputs) {
+            let slot = self.slots[id];
+            let Some(parameter) = slot_params.remove(&slot) else {
+                continue;
+            };
+            let outer = match slot {
+                Slot::Argument(_) => unreachable!(),
+                Slot::Capture(value) => value,
+                Slot::Cell(cell) => ctx.cell_state(cell)?.0,
+            };
+            closure.push(parameter);
+            captures.push(outer);
+        }
+        let source = |output: &Output| match *output {
+            Output::Value { result_idx } => original
+                .outputs()
+                .get(result_idx)
+                .copied()
+                .ok_or(LoweringError::InvalidResultIndex(result_idx)),
+            _ => Err(LoweringError::RegionSignature(
+                "control flow cannot return cell handles",
+            )),
+        };
+        let mut results = Vec::new();
+        for (output, expected) in self.program.results().iter().zip(expected_results) {
+            let var = source(output)?;
+            if original.value_info(&var) != Some(expected) {
+                return Err(LoweringError::RegionSignature(
+                    "incompatible region result metadata",
+                ));
+            }
+            results.push(var);
+        }
+        if let Some(position) = output_position {
+            let updates: BTreeMap<_, _> = self
+                .writes()
+                .zip(self.program.updates.iter().map(|(_, idx)| *idx))
+                .collect();
+            let mut state_results = Vec::new();
+            for (cell, info) in states {
+                let var = if let Some(&idx) = updates.get(cell) {
+                    let var = original
+                        .outputs()
+                        .get(idx)
+                        .copied()
+                        .ok_or(LoweringError::InvalidResultIndex(idx))?;
+                    if original.value_info(&var) != Some(info) {
+                        return Err(LoweringError::RegionSignature(
+                            "incompatible region state result",
+                        ));
+                    }
+                    var
+                } else {
+                    state_params[cell]
+                };
+                state_results.push(var);
+            }
+            results.splice(position..position, state_results);
+        }
+
+        let trace_params = |params: &[(Var, ValueInfo)]| {
+            params
+                .iter()
+                .map(|(var, info)| (*var, Kind::Value(info.clone())))
+                .collect()
+        };
+        let trace_body = Arc::new(HExpr {
+            closure: trace_params(&closure),
+            inputs: trace_params(&inputs),
+            instructions: self.program.trace_body.instructions.clone(),
+            outputs: results.clone(),
+            name_hint: original.name_hint.clone(),
+        });
+        let expr = Expr {
+            closure,
+            inputs,
+            eqns: original.eqns.clone(),
+            outputs: results,
+            name_hint: original.name_hint.clone(),
+        };
+        expr.check()?;
+        Ok(FixedRegion {
+            expr: Arc::new(expr),
+            trace_body,
+            captures,
+        })
+    }
+}

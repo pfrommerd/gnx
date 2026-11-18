@@ -7,7 +7,9 @@ mod trace_ref;
 pub use capture::{Capture, CaptureError, TracerKey};
 pub use cell::{CellKey, CellTrace, CellTracer, TraceCell};
 pub use context::{ContextID, TraceContext, TraceContextGuard};
-pub use deferred::DeferredCall;
+pub use deferred::{
+    DeferredApply, DeferredApplyPlan, DeferredLocal, DeferredProjection, DeferredRegion,
+};
 pub use trace_ref::{Trace, TraceData, Tracer};
 
 use std::fmt::Debug;
@@ -120,7 +122,7 @@ pub enum TraceOutput {
 /// A node in the trace DAG. Nested bodies are always high-level expressions.
 /// Cell effects have typed operands and ordering edges.
 pub enum Invocation {
-    DeferredCall(DeferredCall),
+    DeferredApply(DeferredApply),
     Apply {
         context_id: ContextID,
         op: Op,
@@ -146,9 +148,10 @@ pub enum Invocation {
 impl Debug for Invocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DeferredCall(call) => f
-                .debug_struct("DeferredCall")
-                .field("ctx", &call.context_id)
+            Self::DeferredApply(apply) => f
+                .debug_struct("DeferredApply")
+                .field("op", &apply.op)
+                .field("ctx", &apply.context_id)
                 .finish(),
             Self::Apply { context_id, op, .. } => f
                 .debug_struct("Apply")
@@ -172,7 +175,7 @@ impl Invocation {
             Self::Apply { result_slots, .. } | Self::ReadCell { result_slots, .. } => {
                 Some(result_slots)
             }
-            Self::DeferredCall(call) => Some(&call.result_slots),
+            Self::DeferredApply(apply) => Some(&apply.result_slots),
             _ => None,
         }
     }
@@ -194,7 +197,7 @@ impl Invocation {
             Self::Apply { context_id, .. }
             | Self::ReadCell { context_id, .. }
             | Self::WriteCell { context_id, .. } => context_id,
-            Self::DeferredCall(call) => &call.context_id,
+            Self::DeferredApply(apply) => &apply.context_id,
         }
     }
     pub fn subexprs(&self) -> &[(Arc<HExpr>, Vec<Trace>)] {
@@ -220,7 +223,7 @@ impl Invocation {
             .chain(self.subexprs().iter().flat_map(|(_, captures)| captures))
             .chain(value)
             .chain(match self {
-                Self::DeferredCall(call) => call.value_parents.as_slice(),
+                Self::DeferredApply(apply) => apply.value_parents.as_slice(),
                 _ => &[],
             })
     }
@@ -233,7 +236,7 @@ impl Invocation {
                 aliasing_parents, ..
             } => aliasing_parents,
             Self::Apply { .. } => &[],
-            Self::DeferredCall(call) => &call.aliasing_parents,
+            Self::DeferredApply(apply) => &apply.aliasing_parents,
         }
     }
     pub fn outputs(&self) -> &[ValueInfo] {
@@ -241,7 +244,7 @@ impl Invocation {
             Self::Apply { outputs, .. } => outputs,
             Self::ReadCell { cell, .. } => std::slice::from_ref(cell.type_info()),
             Self::WriteCell { .. } => &[],
-            Self::DeferredCall(call) => &call.outputs,
+            Self::DeferredApply(apply) => &apply.outputs,
         }
     }
 

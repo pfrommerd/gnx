@@ -1,11 +1,14 @@
 //! Trace lowered GNX expressions with JAX and inspect the resulting JAXPR.
 
+mod control_flow;
+
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-use gnx_expr::{Eqn as GnxEqn, Expr, Kind, Op, Operation, ValueInfo, Var, builtins::CallOperation};
+use gnx_expr::{Eqn as GnxEqn, Expr, Op, Operation, ValueInfo, Var};
 use gnx_math::{ArrayInfo, DType, Dim, Shape, ops::AddOperation};
+use gnx_transforms::control_flow::CallOperation;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyCFunction, PyDict, PyModule, PyTuple};
@@ -409,7 +412,7 @@ fn trace_body<'py>(
 ) -> Result<Vec<TraceValue<'py>>> {
     let mut args = args.into_iter();
     let mut values = HashMap::<Var, TraceValue<'py>>::new();
-    for (var, _, info) in expr.closure().iter().chain(expr.inputs()) {
+    for (var, info) in expr.closure().iter().chain(expr.inputs()) {
         let value = args
             .next()
             .ok_or_else(|| invalid("too few arguments for the expression"))?;
@@ -421,11 +424,7 @@ fn trace_body<'py>(
     }
     for (index, eqn) in expr.eqns().iter().enumerate() {
         (|| {
-            let operands: Vec<_> = eqn
-                .inputs()
-                .iter()
-                .map(|(var, _)| values[var].clone())
-                .collect();
+            let operands: Vec<_> = eqn.inputs().iter().map(|var| values[var].clone()).collect();
             let children = eqn
                 .subexprs()
                 .iter()
@@ -434,7 +433,7 @@ fn trace_body<'py>(
                     captures: child
                         .captures
                         .iter()
-                        .map(|(var, _)| values[var].clone())
+                        .map(|var| values[var].clone())
                         .collect(),
                 })
                 .collect();
@@ -447,10 +446,7 @@ fn trace_body<'py>(
                     eqn.outputs().len()
                 )));
             }
-            for ((var, kind), value) in eqn.outputs().iter().zip(outputs) {
-                let Kind::Value(info) = kind else {
-                    unreachable!("validated Expr");
-                };
+            for ((var, info), value) in eqn.outputs().iter().zip(outputs) {
                 check_value(&value, info)?;
                 values.insert(*var, value);
             }
@@ -461,7 +457,7 @@ fn trace_body<'py>(
     Ok(expr
         .outputs()
         .iter()
-        .map(|var| values.remove(var).expect("validated Expr output"))
+        .map(|var| values[var].clone())
         .collect())
 }
 
@@ -480,16 +476,13 @@ fn validate(jax: &Bound<'_, PyModule>, expr: &Expr) -> Result<()> {
         }
         Ok(())
     };
-    for (_, _, info) in expr.closure().iter().chain(expr.inputs()) {
+    for (_, info) in expr.closure().iter().chain(expr.inputs()) {
         check(info)?;
     }
     for (index, eqn) in expr.eqns().iter().enumerate() {
         (|| {
             rule(eqn.op().operation())?;
-            for (_, kind) in eqn.outputs() {
-                let Kind::Value(info) = kind else {
-                    unreachable!("validated Expr");
-                };
+            for (_, info) in eqn.outputs() {
                 check(info)?;
             }
             for child in eqn.subexprs() {
@@ -531,7 +524,7 @@ pub fn trace_expr<'py>(py: Python<'py>, expr: &Expr) -> Result<ClosedJaxpr<'py>>
         .closure()
         .iter()
         .chain(expr.inputs())
-        .map(|(_, _, info)| {
+        .map(|(_, info)| {
             let info = expected(info)?;
             let dtype: &'static str = info.dtype().into();
             Ok(jax.call_method1(

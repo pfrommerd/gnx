@@ -35,13 +35,10 @@ impl Operation for TestOperation {
 fn dialects_returns_registered_dialects() {
     let dialects = gnx_expr::dialects();
 
-    assert!(dialects.get("builtins").is_some());
-
     let test = dialects.get("test").expect("test dialect is registered");
     assert_eq!(test.name(), "test");
     assert!(test.create("op").is_some());
 
     let names = dialects.iter().map(|(name, _)| name).collect::<Vec<_>>();
-    assert!(names.contains(&"builtins"));
     assert!(names.contains(&"test"));
 }

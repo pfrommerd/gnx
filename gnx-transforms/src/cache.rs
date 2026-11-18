@@ -1,10 +1,9 @@
+use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 
 use dashmap::DashMap;
-use gnx_expr::{
-    Capture, CellTrace, ContextID, HExpr, Invocation, Kind, ObjectTracer, Trace, TraceContext,
-};
+use gnx_expr::{Capture, CellTrace, ContextID, HExpr, Kind, ObjectTracer, Trace, TraceContext};
 use gnx_graph::anyhash::HasherWrite;
 use gnx_graph::util::{GraphExt, IterSource};
 use gnx_graph::{
@@ -36,27 +35,30 @@ where
     pub(super) fn invoke<A, E>(
         &self,
         input: A,
+        name_hint: Option<&Cow<'static, str>>,
         body: impl FnOnce(I::Owned) -> Result<O, E>,
     ) -> Result<O, E>
     where
         A: Graph<Owned = I::Owned, Builder<ObjectTracer> = TracerBuilder<I>>,
     {
-        let (entry, arguments) = self.get_or_trace(input, body)?;
+        let (entry, arguments) = self.get_or_trace(input, name_hint, body)?;
         Ok(entry.call(&arguments))
     }
 
     pub(super) fn trace<E>(
         &self,
         input: I,
+        name_hint: Option<&Cow<'static, str>>,
         body: impl FnOnce(I::Owned) -> Result<O, E>,
     ) -> Result<Arc<HExpr>, E> {
-        let (entry, _) = self.get_or_trace(input, body)?;
+        let (entry, _) = self.get_or_trace(input, name_hint, body)?;
         Ok(entry.expr.clone())
     }
 
     fn get_or_trace<A, E>(
         &self,
         input: A,
+        name_hint: Option<&Cow<'static, str>>,
         body: impl FnOnce(I::Owned) -> Result<O, E>,
     ) -> Result<(Arc<TraceEntry<O>>, Vec<ObjectTracer>), E>
     where
@@ -66,7 +68,8 @@ where
         let kinds = arguments.iter().map(kind).collect();
         let key: Arc<TraceKey<I::Owned>> = Arc::new(TraceKey { builder, kinds });
         let slot = self.slot(&key);
-        let entry = slot.get_or_trace(|| TraceEntry::trace(&key.builder, &key.kinds, body))?;
+        let entry =
+            slot.get_or_trace(|| TraceEntry::trace(&key.builder, &key.kinds, name_hint, body))?;
         Ok((entry, arguments))
     }
 
@@ -135,6 +138,7 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
     fn trace<B: Builder<ObjectTracer>, E>(
         input_builder: &B,
         kinds: &[Kind],
+        name_hint: Option<&Cow<'static, str>>,
         body: impl FnOnce(B::Graph) -> Result<O, E>,
     ) -> Result<Self, E> {
         let guard = TraceContext::enter();
@@ -145,6 +149,10 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
         let capture = Capture::from_context(guard.context(), &placeholders, &outputs)
             .expect("JIT could not capture traced function");
         let (expr, closure, ..) = capture.into_parts();
+        let expr = match name_hint {
+            Some(hint) => expr.with_name_hint(hint.clone()),
+            None => expr,
+        };
         Ok(Self {
             expr: Arc::new(expr),
             closure,
@@ -155,7 +163,7 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
     fn call(&self, arguments: &[ObjectTracer]) -> O {
         rebuild_graph(
             &self.output_builder,
-            Invocation::defer_call(self.expr.clone(), &self.closure, arguments),
+            crate::control_flow::defer_call(self.expr.clone(), &self.closure, arguments),
         )
     }
 }

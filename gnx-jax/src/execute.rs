@@ -56,7 +56,7 @@ impl JaxDevice {
             ));
         }
         let mut inputs = Vec::with_capacity(count);
-        for (index, ((_, _, expected), value)) in expected.zip(args).enumerate() {
+        for (index, ((_, expected), value)) in expected.zip(args).enumerate() {
             let expected = jaxpr::expected(expected).map_err(io::Error::other)?;
             let data = value.downcast::<DataHandle>().cloned().map_err(|_| {
                 io::Error::new(

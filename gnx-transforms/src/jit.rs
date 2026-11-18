@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -45,8 +46,29 @@ pub use gnx_derive::{jit, jit_fn, jittable, try_jit_fn};
 /// ```
 pub struct Jit<I: Graph, F: Function<I>> {
     func: F,
+    name_hint: Option<Cow<'static, str>>,
     traces: TraceCache<I, F::Output>,
     try_traces: TraceCache<I, F::Output>,
+}
+
+impl<I: Graph, F: Function<I>> Jit<I, F> {
+    const fn new(func: F, name_hint: Option<Cow<'static, str>>) -> Self {
+        Self {
+            func,
+            name_hint,
+            traces: TraceCache::new(),
+            try_traces: TraceCache::new(),
+        }
+    }
+
+    /// Wrap a function and label its traces for display.
+    pub const fn new_with_hint(func: F, name_hint: Cow<'static, str>) -> Self {
+        Self::new(func, Some(name_hint))
+    }
+
+    pub fn name_hint(&self) -> Option<&str> {
+        self.name_hint.as_deref()
+    }
 }
 
 impl<I: Graph, F: Function<I>> Function<I> for Jit<I, F> {
@@ -74,7 +96,7 @@ where
 {
     fn invoke(&self, input: I) -> Self::Output {
         self.traces
-            .invoke(input, |input| {
+            .invoke(input, self.name_hint.as_ref(), |input| {
                 Ok::<_, Infallible>(self.func.invoke_owned(input))
             })
             .unwrap_or_else(|never| match never {})
@@ -95,7 +117,9 @@ where
         F: TryJitable<I>,
     {
         self.try_traces
-            .trace(input, |input| self.func.try_invoke_owned(input))
+            .trace(input, self.name_hint.as_ref(), |input| {
+                self.func.try_invoke_owned(input)
+            })
     }
 
     // An attribute-generated static can accept shorter borrows because
@@ -107,7 +131,9 @@ where
         A: Graph<Owned = I::Owned, Builder<ObjectTracer> = TracerBuilder<I>>,
     {
         self.try_traces
-            .invoke(input, |input| self.func.try_invoke_owned(input))
+            .invoke(input, self.name_hint.as_ref(), |input| {
+                self.func.try_invoke_owned(input)
+            })
     }
 }
 
@@ -116,9 +142,5 @@ where
 /// traces a `TryJitable` body. They cache separately because the body can
 /// implement each interface differently. Body errors aren't cached.
 pub const fn jit<I: Graph, F: Function<I>>(func: F) -> Jit<I, F> {
-    Jit {
-        func,
-        traces: TraceCache::new(),
-        try_traces: TraceCache::new(),
-    }
+    Jit::new(func, None)
 }

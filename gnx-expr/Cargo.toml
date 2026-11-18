@@ -7,3 +7,6 @@ edition = "2024"
 castaway = "0.2.4"
 inventory = "0.3"
 thiserror = "2"
+
+[dev-dependencies]
+gnx-transforms = { path = "../gnx-transforms" }

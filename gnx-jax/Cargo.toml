@@ -13,10 +13,15 @@ jax-tests = []
 name = "execute"
 required-features = ["jax-tests"]
 
+[[test]]
+name = "control_flow"
+required-features = ["jax-tests"]
+
 [dependencies]
 futures-channel = "0.3"
 gnx-expr = { path = "../gnx-expr" }
 gnx-math = { path = "../gnx-math" }
+gnx-transforms = { path = "../gnx-transforms" }
 inventory = "0.3"
 pyo3 = { version = "0.28.3", features = ["abi3-py310"] }
 thiserror = "2"

@@ -276,6 +276,7 @@ name = "gnx-expr"
 version = "0.1.0"
 dependencies = [
  "castaway",
+ "gnx-transforms",
  "inventory",
  "thiserror",
 ]
@@ -315,6 +316,7 @@ dependencies = [
  "gnx",
  "gnx-expr",
  "gnx-math",
+ "gnx-transforms",
  "inventory",
  "pyo3",
  "thiserror",

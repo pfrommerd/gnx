@@ -1,30 +1,31 @@
 //! Immutable low-level IR. Cell actions and boundary mappings live in HExpr and
 //! the lower module, respectively.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::borrow::Cow;
+use std::collections::BTreeSet;
 
 use crate::lower::LoweringError;
 use crate::util::pretty;
-use crate::{Kind, Op, Ownership, ValueInfo, Var};
+use crate::{Op, ValueInfo, Var};
 use std::fmt;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Eqn {
     pub(crate) op: Op,
-    pub(crate) inputs: Vec<(Var, Ownership)>,
-    pub(crate) outputs: Vec<(Var, Kind)>,
+    pub(crate) inputs: Vec<Var>,
+    pub(crate) outputs: Vec<(Var, ValueInfo)>,
     pub(crate) subexprs: Vec<SubExpr>,
 }
 impl Eqn {
-    pub fn new(op: Op, inputs: Vec<(Var, Ownership)>, outputs: Vec<(Var, Kind)>) -> Self {
+    pub fn new(op: Op, inputs: Vec<Var>, outputs: Vec<(Var, ValueInfo)>) -> Self {
         Self::new_with_subexprs(op, vec![], inputs, outputs)
     }
     pub fn new_with_subexprs(
         op: Op,
         subexprs: Vec<SubExpr>,
-        inputs: Vec<(Var, Ownership)>,
-        outputs: Vec<(Var, Kind)>,
+        inputs: Vec<Var>,
+        outputs: Vec<(Var, ValueInfo)>,
     ) -> Self {
         Self {
             op,
@@ -36,10 +37,10 @@ impl Eqn {
     pub fn op(&self) -> &Op {
         &self.op
     }
-    pub fn inputs(&self) -> &[(Var, Ownership)] {
+    pub fn inputs(&self) -> &[Var] {
         &self.inputs
     }
-    pub fn outputs(&self) -> &[(Var, Kind)] {
+    pub fn outputs(&self) -> &[(Var, ValueInfo)] {
         &self.outputs
     }
     pub fn subexprs(&self) -> &[SubExpr] {
@@ -50,39 +51,35 @@ impl Eqn {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SubExpr {
     pub expr: Arc<Expr>,
-    pub captures: Vec<(Var, Ownership)>,
+    pub captures: Vec<Var>,
 }
 
 impl SubExpr {
-    pub fn new(expr: Arc<Expr>, captures: Vec<(Var, Ownership)>) -> Self {
+    pub fn new(expr: Arc<Expr>, captures: Vec<Var>) -> Self {
         Self { expr, captures }
     }
     pub fn expr(&self) -> &Arc<Expr> {
         &self.expr
     }
-    pub fn closure(&self) -> &[(Var, Ownership)] {
+    pub fn closure(&self) -> &[Var] {
         &self.captures
     }
 }
 
-/// Pure immutable IR. Parameters carry ownership and metadata. Operands and
-/// capture bindings carry ownership. Equations define owned values as `(Var, Kind)` pairs. Expression
-/// returns are owned and refer to existing values by `Var`.
-/// Borrowed input passthroughs are removed during lowering and represented in
-/// boundary metadata, never in this expression's outputs. Unused moved inputs
-/// are dropped by the callee. Moving does not imply unique storage.
+/// Pure immutable SSA. Results refer to parameters or equation results by
+/// variable. A value can be used or returned any number of times.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Expr {
-    pub(crate) closure: Vec<(Var, Ownership, ValueInfo)>,
-    pub(crate) inputs: Vec<(Var, Ownership, ValueInfo)>,
+    pub(crate) closure: Vec<(Var, ValueInfo)>,
+    pub(crate) inputs: Vec<(Var, ValueInfo)>,
     pub(crate) eqns: Vec<Eqn>,
     pub(crate) outputs: Vec<Var>,
-    pub(crate) name_hint: Option<String>,
+    pub(crate) name_hint: Option<Cow<'static, str>>,
 }
 impl Expr {
     pub fn new(
-        closure: Vec<(Var, Ownership, ValueInfo)>,
-        inputs: Vec<(Var, Ownership, ValueInfo)>,
+        closure: Vec<(Var, ValueInfo)>,
+        inputs: Vec<(Var, ValueInfo)>,
         eqns: Vec<Eqn>,
         outputs: Vec<Var>,
     ) -> Self {
@@ -95,28 +92,29 @@ impl Expr {
         }
     }
     pub fn new_with_hint(
-        closure: Vec<(Var, Ownership, ValueInfo)>,
-        inputs: Vec<(Var, Ownership, ValueInfo)>,
+        closure: Vec<(Var, ValueInfo)>,
+        inputs: Vec<(Var, ValueInfo)>,
         eqns: Vec<Eqn>,
         outputs: Vec<Var>,
-        name_hint: impl Into<String>,
+        name_hint: impl Into<Cow<'static, str>>,
     ) -> Self {
         Self::new(closure, inputs, eqns, outputs).with_name_hint(name_hint)
     }
-    pub fn with_name_hint(mut self, hint: impl Into<String>) -> Self {
+    pub fn with_name_hint(mut self, hint: impl Into<Cow<'static, str>>) -> Self {
         self.name_hint = Some(hint.into());
         self
     }
     pub fn name_hint(&self) -> Option<&str> {
         self.name_hint.as_deref()
     }
+
     pub fn pretty(&self) -> pretty::PrettyExpr<'_> {
         pretty::PrettyExpr::new(self)
     }
-    pub fn closure(&self) -> &[(Var, Ownership, ValueInfo)] {
+    pub fn closure(&self) -> &[(Var, ValueInfo)] {
         &self.closure
     }
-    pub fn inputs(&self) -> &[(Var, Ownership, ValueInfo)] {
+    pub fn inputs(&self) -> &[(Var, ValueInfo)] {
         &self.inputs
     }
     /// Find an immutable value's metadata at its definition site.
@@ -124,41 +122,40 @@ impl Expr {
         self.closure
             .iter()
             .chain(&self.inputs)
-            .find_map(|(defined, _, info)| (defined == var).then_some(info))
+            .find_map(|(defined, info)| (defined == var).then_some(info))
             .or_else(|| {
                 self.eqns
                     .iter()
                     .rev()
                     .flat_map(Eqn::outputs)
-                    .find_map(|(defined, kind)| match kind {
-                        Kind::Value(info) if defined == var => Some(info),
-                        _ => None,
-                    })
+                    .find_map(|(defined, info)| (defined == var).then_some(info))
             })
     }
     pub fn eqns(&self) -> &[Eqn] {
         &self.eqns
     }
+    /// Results in order, including any inputs or repeated values.
     pub fn outputs(&self) -> &[Var] {
         &self.outputs
     }
 
-    /// Verify definition order, ownership transfers, and owned-only returns.
+    /// Verify definition order, nested capture bindings, and result sources.
     pub fn check(&self) -> Result<(), LoweringError> {
-        let mut available = BTreeMap::new();
-        for &(var, ownership, _) in self.closure.iter().chain(&self.inputs) {
-            if var.id().is_none() || available.insert(var, ownership).is_some() {
+        let mut defined = BTreeSet::new();
+        for &(var, _) in self.closure.iter().chain(&self.inputs) {
+            if var.id().is_none() || !defined.insert(var) {
                 return Err(LoweringError::InvalidComputation);
             }
         }
-        let mut defined: BTreeSet<_> = available.keys().copied().collect();
         for eqn in &self.eqns {
-            for input in eqn
+            for &input in eqn
                 .inputs
                 .iter()
-                .chain(eqn.subexprs.iter().flat_map(|s| &s.captures))
+                .chain(eqn.subexprs.iter().flat_map(|sub| &sub.captures))
             {
-                check_use(*input, &mut available)?;
+                if !defined.contains(&input) {
+                    return Err(LoweringError::UndefinedVariable(input));
+                }
             }
             for sub in &eqn.subexprs {
                 if sub.captures.len() != sub.expr.closure.len() {
@@ -167,86 +164,24 @@ impl Expr {
                         actual: sub.captures.len(),
                     });
                 }
-                for ((var, actual), (_, required, _)) in sub.captures.iter().zip(sub.expr.closure())
-                {
-                    if *required == Ownership::Move && *actual != Ownership::Move {
-                        return Err(LoweringError::CaptureOwnership(*var));
-                    }
-                }
                 sub.expr.check()?;
             }
-            if eqn.op() == &crate::builtins::call_op() {
-                if eqn.subexprs.len() != 1 {
-                    return Err(LoweringError::CallArity);
-                }
-                let body = &eqn.subexprs[0].expr;
-                if eqn.inputs.len() != body.inputs.len() || eqn.outputs.len() != body.outputs.len()
-                {
-                    return Err(LoweringError::CallArity);
-                }
-                for ((var, actual), (_, required, _)) in eqn.inputs.iter().zip(body.inputs()) {
-                    if *required == Ownership::Move && *actual != Ownership::Move {
-                        return Err(LoweringError::MoveBorrowed(*var));
-                    }
-                }
-            }
-            for (output, kind) in &eqn.outputs {
-                let output = *output;
-                if !matches!(kind, Kind::Value(_)) {
-                    return Err(LoweringError::ExpectedValue(output));
-                }
+            eqn.op().operation().check_expr(eqn)?;
+            for &(output, _) in &eqn.outputs {
                 if output.id().is_none() {
                     return Err(LoweringError::InvalidComputation);
                 }
                 if !defined.insert(output) {
                     return Err(LoweringError::DuplicateDefinition(output));
                 }
-                available.insert(output, Ownership::Move);
             }
         }
         for &output in &self.outputs {
-            if available.get(&output) == Some(&Ownership::Borrow) {
-                return Err(LoweringError::BorrowedOutput(output));
+            if !defined.contains(&output) {
+                return Err(LoweringError::UndefinedVariable(output));
             }
-            check_use((output, Ownership::Move), &mut available)?;
         }
         Ok(())
-    }
-}
-
-fn check_use(
-    (var, mode): (Var, Ownership),
-    available: &mut BTreeMap<Var, Ownership>,
-) -> Result<(), LoweringError> {
-    let ownership = available
-        .get(&var)
-        .ok_or(LoweringError::UndefinedVariable(var))?;
-    if mode == Ownership::Move {
-        if *ownership != Ownership::Move {
-            return Err(LoweringError::MoveBorrowed(var));
-        }
-        available.remove(&var);
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::LoweringError;
-
-    #[test]
-    fn validator_rejects_borrowed_outputs() {
-        let expr = crate::expr!(crate::ValueInfo::new(0usize); { lambda ; &value . in (value) });
-        let var = expr.inputs()[0].0;
-        assert_eq!(expr.check(), Err(LoweringError::BorrowedOutput(var)));
-    }
-
-    #[test]
-    fn validator_rejects_use_after_move() {
-        let expr =
-            crate::expr!(crate::ValueInfo::new(0usize); { lambda ; value . in (value, value) });
-        let var = expr.inputs()[0].0;
-        assert_eq!(expr.check(), Err(LoweringError::UndefinedVariable(var)));
     }
 }
 
