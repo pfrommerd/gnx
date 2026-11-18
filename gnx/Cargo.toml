@@ -11,3 +11,4 @@ gnx-expr = { version = "0.1.0", path = "../gnx-expr" }
 gnx-math = { version = "0.1.0", path = "../gnx-math" }
 gnx-io = { version = "0.1.0", path = "../gnx-io" }
 ordered-float = "5.1.0"
+thiserror = "2"

@@ -1,5 +1,6 @@
 use gnx_expr::{
-    Capture, CellKey, HInstr, Invocation, ObjectTracer, TraceContext, Tracer, TracerKey, ValueInfo,
+    CellKey, HInstr, Invocation, ObjectTracer, TraceContext, Capture, Tracer, TracerKey,
+    ValueInfo,
 };
 use gnx_math::{Array, ArrayInfo, ArrayRef, DType, Shape};
 use gnx_transforms::{Callable, TryCallable, jit};
@@ -109,7 +110,7 @@ fn replays_aliasing_reads_and_writes_on_root_cells() {
     });
     let result = function.invoke((target.clone(), target.clone(), replacement.clone()));
     assert_same_call(&result.0, &target.get());
-    same(&argument(call(&result.0).1, 2), &replacement);
+    same(&argument(&call(&result.0), 2), &replacement);
     same_cell(&result.1, &target);
     same_cell(&result.2, &target);
     assert_eq!(calls.get(), 1);
@@ -131,7 +132,7 @@ fn captured_cells_are_only_mutated_by_replay_and_can_alias_arguments() {
     });
     let result = function.invoke((target.clone(), replacement.clone()));
     assert_same_call(&result.0, &target.get());
-    same(&argument(call(&result.0).1, 1), &replacement);
+    same(&argument(&call(&result.0), 1), &replacement);
     same_cell(&result.1, &target);
 }
 
@@ -150,7 +151,7 @@ fn fresh_returned_cells_keep_aliases_but_are_fresh_per_call() {
         CellKey::from(first.0.tracer().cell_ref()),
         CellKey::from(second.0.tracer().cell_ref())
     );
-    same(&argument(call(&first.0.get()).1, 0), &value);
+    same(&argument(&call(&first.0.get()), 0), &value);
 }
 
 #[test]
@@ -220,12 +221,21 @@ fn compute(value: Array) -> Array {
     Array::from(result.try_cast::<Array>().ok().unwrap())
 }
 
-fn call(value: &Array) -> (&Arc<Invocation>, &gnx_expr::DeferredCall) {
-    let (invocation, _) = value.tracer().trace_ref().producer_with_index().unwrap();
-    let Invocation::DeferredCall(call) = invocation.as_ref() else {
-        panic!("expected a high-level call")
-    };
-    (invocation, call)
+struct Call(Arc<Invocation>);
+
+impl std::ops::Deref for Call {
+    type Target = gnx_expr::DeferredCall;
+
+    fn deref(&self) -> &Self::Target {
+        let Invocation::DeferredCall(call) = self.0.as_ref() else {
+            panic!("expected a high-level call")
+        };
+        call
+    }
+}
+
+fn call(value: &Array) -> Call {
+    Call(value.tracer().trace_ref().producer_with_index().unwrap().0)
 }
 
 fn argument(call: &gnx_expr::DeferredCall, index: usize) -> Array {
@@ -248,7 +258,7 @@ fn cell_key(object: &ObjectTracer) -> CellKey {
 }
 
 fn assert_same_call(a: &Array, b: &Array) {
-    assert!(Arc::ptr_eq(call(a).0, call(b).0));
+    assert!(Arc::ptr_eq(&call(a).0, &call(b).0));
 }
 
 #[test]
@@ -275,7 +285,7 @@ fn threads_share_a_cold_trace_across_alias_patterns() {
                     };
                     start.wait();
                     let result = f.invoke((a.clone(), b.clone(), array()));
-                    let invocation = call(&result).1;
+                    let invocation = call(&result);
                     assert_eq!(
                         cell_key(&invocation.inputs()[0]) == cell_key(&invocation.inputs()[1]),
                         i % 2 == 0
@@ -307,13 +317,13 @@ fn high_level_call_preserves_aliases_between_captures_and_inputs() {
         input.get()
     });
     let first = f.invoke((ArrayRef::new(array().into_tracer()), array()));
-    let first_call = call(&first).1;
+    let first_call = call(&first);
     assert_ne!(
         cell_key(&first_call.captures()[0]),
         cell_key(&first_call.inputs()[0])
     );
     let second = f.invoke((captured.clone(), array()));
-    let second_call = call(&second).1;
+    let second_call = call(&second);
     assert_eq!(
         cell_key(&second_call.captures()[0]),
         cell_key(&second_call.inputs()[0])
@@ -337,7 +347,8 @@ fn nested_jit_threads_local_cell_state_and_retains_update_only_calls() {
     same_cell(&first, &second);
     assert_same_call(&first.get(), &local_value);
     assert_same_call(&external.get(), &local_value);
-    let body = call(&local_value).1.body();
+    let local_call = call(&local_value);
+    let body = local_call.body();
     assert_eq!(
         body.instructions()
             .iter()
@@ -437,7 +448,7 @@ fn operation_results_are_replayed_with_actual_inputs_not_placeholders() {
         let result = function.invoke((value.clone(),));
         let trace = result.tracer().trace_ref();
         assert!(trace.context_id().is_current());
-        let invocation = call(&result).1;
+        let invocation = call(&result);
         let body = invocation.body();
         assert_eq!(
             body.instructions()[0].as_apply().unwrap().op().to_string(),
@@ -450,7 +461,7 @@ fn operation_results_are_replayed_with_actual_inputs_not_placeholders() {
             TracerKey::from(captured),
             TracerKey::from(captured_value.tracer().trace_ref())
         );
-        same(&argument(invocation, 0), &value);
+        same(&argument(&invocation, 0), &value);
     }
     assert_eq!(calls.get(), 1, "the second call reuses the trace");
 }
@@ -473,7 +484,7 @@ fn nested_computation_calls_keep_both_function_boundaries() {
     });
     let outer = jit(|value: Array| inner.invoke((value,)));
     let result = outer.invoke((input.clone(),));
-    let outer_call = call(&result).1;
+    let outer_call = call(&result);
     let outer_body = outer_call.body();
     assert_eq!(outer_body.instructions().len(), 1);
     assert_eq!(
@@ -494,7 +505,7 @@ fn nested_computation_calls_keep_both_function_boundaries() {
             .to_string(),
         "jit_test.identity"
     );
-    same(&argument(outer_call, 0), &input);
+    same(&argument(&outer_call, 0), &input);
 }
 
 #[test]
@@ -516,7 +527,7 @@ fn update_only_computations_retain_the_call_and_update_the_original_cell() {
     });
     function.invoke((target.clone(), input.clone()));
     let home = target.get();
-    let update = call(&home).1;
+    let update = call(&home);
     assert!(
         update
             .body()
@@ -524,7 +535,7 @@ fn update_only_computations_retain_the_call_and_update_the_original_cell() {
             .iter()
             .any(|instr| matches!(instr, HInstr::WriteCell { .. }))
     );
-    same(&argument(update, 1), &input);
+    same(&argument(&update, 1), &input);
 }
 
 #[test]
@@ -544,5 +555,5 @@ fn writes_are_replayed_even_with_no_dynamic_outputs() {
     let target = ArrayRef::new(array().into_tracer());
     let function = jit(|cell: ArrayRef, value: Array| cell.set(value.into_tracer()));
     function.invoke((target.clone(), value.clone()));
-    same(&argument(call(&target.get()).1, 1), &value);
+    same(&argument(&call(&target.get()), 1), &value);
 }

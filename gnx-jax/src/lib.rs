@@ -1,4 +1,21 @@
 //! JAX-specific device discovery, without a shared backend registry.
+//!
+//! Rust embedders initialize Python before discovery. Await `Device::execute`
+//! outside an attached Python scope (or detach before blocking on it).
+//! The optional `jax-tests` feature exercises a real CPU installation of JAX.
+//! Run that integration test from outside the repository with
+//! `cargo test --manifest-path /path/to/gnx/Cargo.toml -p gnx-jax --features jax-tests`
+//! so the workspace's extension-only PyO3 configuration does not disable
+//! linking to libpython. Select the interpreter with `PYO3_PYTHON` and make
+//! its JAX installation visible to embedded Python via `PYTHONPATH` if needed.
+
+mod buffer;
+pub mod dlpack;
+mod execute;
+pub mod jaxpr;
+
+pub use buffer::JaxBuffer;
+pub use jaxpr::{JaxLowering, JaxLoweringError};
 
 use std::fmt;
 use std::hash::{Hash, Hasher};

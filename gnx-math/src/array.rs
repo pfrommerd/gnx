@@ -1,7 +1,9 @@
 use ordered_float::OrderedFloat;
 use std::fmt::{Debug, Display};
 
-use gnx_expr::{CellTracer, ConcreteValue, Traceable, Tracer, ValueInfo};
+use gnx_expr::{CellTracer, ConcreteValue, Trace, Traceable, Tracer, Value};
+
+pub use crate::buffer::{DataHandle, DataImpl};
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Dim {
@@ -239,17 +241,6 @@ impl std::fmt::Display for DType {
     }
 }
 
-pub trait DataImpl: Send + Sync + Debug + Display {
-    fn info(&self) -> ArrayInfo;
-}
-pub type DataHandle = Box<dyn DataImpl>;
-
-impl ConcreteValue for DataHandle {
-    fn to_info(&self) -> ValueInfo {
-        ValueInfo::new(self.info())
-    }
-}
-
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ArrayInfo {
     shape: Shape,
@@ -304,6 +295,18 @@ impl Traceable for Array {
 }
 
 impl Array {
+    /// Wrap an owned concrete buffer without copying its storage.
+    pub fn from_data(data: DataHandle) -> Self {
+        let info = data.to_info();
+        let trace = Trace::concrete(Value::new(data), info);
+        // SAFETY: both the value type and its metadata came from this array buffer.
+        Self(unsafe { Tracer::unchecked_new(trace) })
+    }
+
+    pub fn data(&self) -> Option<&DataHandle> {
+        self.0.try_concrete()
+    }
+
     pub fn dtype(&self) -> DType {
         self.0.info().dtype
     }

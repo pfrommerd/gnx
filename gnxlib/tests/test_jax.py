@@ -1,10 +1,11 @@
+import asyncio
 import sys
 from types import ModuleType, SimpleNamespace
 from uuid import UUID
 
 import pytest
 
-from gnxlib import jax
+from gnxlib import Graph, array, jax
 
 
 def native_device(*, process_index=0, local_hardware_id=2):
@@ -56,3 +57,15 @@ def test_jax_is_optional_until_discovery(monkeypatch):
     monkeypatch.setitem(sys.modules, "jax", None)
     with pytest.raises(ModuleNotFoundError):
         jax.devices()
+
+
+def test_eval_accepts_graphs_and_rejects_unbound_placeholders():
+    device = jax.JaxDevice.from_native(native_device())
+    roots = Graph.from_value({"cell": array.new_ref(array.placeholder((2,)))})
+
+    async def evaluate():
+        assert await device.eval({"static": 1}) is None
+        with pytest.raises(ValueError, match="unbound placeholder"):
+            await device.eval(roots, allow_copy=True)
+
+    asyncio.run(evaluate())

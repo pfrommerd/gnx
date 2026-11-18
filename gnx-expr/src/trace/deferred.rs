@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 
 use crate::{CellAccess, HExpr, Kind};
 
 use super::{
-    CellKey, CellTrace, ContextID, Invocation, ObjectTracer, Trace, TraceContext, ValueInfo,
+    CellKey, CellTrace, ContextID, Invocation, ObjectTracer, Trace, TraceContext, TraceData,
+    ValueInfo,
 };
 
 /// Trace representation of a call awaiting the caller's alias specialization.
@@ -17,6 +18,7 @@ pub struct DeferredCall {
     pub(super) value_parents: Vec<Trace>,
     pub(super) aliasing_parents: Vec<Arc<Invocation>>,
     pub(super) outputs: Vec<ValueInfo>,
+    pub(super) result_slots: OnceLock<Box<[Weak<TraceData>]>>,
 }
 
 impl DeferredCall {
@@ -40,7 +42,7 @@ pub(super) enum Projection {
 impl Invocation {
     /// Record a high-level call in the active trace without resolving external
     /// cell aliases. Known caller-local cells use SSA snapshots and writebacks.
-    pub(crate) fn defer_call(
+    pub fn defer_call(
         body: Arc<HExpr>,
         closure: &[ObjectTracer],
         inputs: &[ObjectTracer],
@@ -54,12 +56,16 @@ impl Invocation {
         let mut external_write = false;
         let mut capture_operand = |((var, _), object): (&(_, _), &ObjectTracer)| {
             match object {
-                ObjectTracer::Ref(value) => value_parents.push(value.clone()),
+                ObjectTracer::Ref(value) => {
+                    value_parents.push(value.internal_clone());
+                    return ObjectTracer::Ref(value.internal_clone());
+                }
                 ObjectTracer::Cell(cell) if !cell.is_maybe_aliased() => {
                     let (_, snapshot, written) =
                         locals.entry(CellKey::from(cell)).or_insert_with(|| {
-                            let initial = cell.read_home();
-                            value_parents.push(initial.clone());
+                            let mut initial = cell.read_home();
+                            initial.make_internal();
+                            value_parents.push(initial.internal_clone());
                             (cell.clone(), CellTrace::new(initial), false)
                         });
                     *written |= matches!(
@@ -159,6 +165,7 @@ impl Invocation {
                 .map(|ctx| ctx.aliasing_parents(external_write))
                 .unwrap_or_default(),
             outputs: infos,
+            result_slots: OnceLock::new(),
         }));
         let returned = Self::returned_values(invocation.clone());
         // Use the same ordering as direct accesses to possibly aliased cells.

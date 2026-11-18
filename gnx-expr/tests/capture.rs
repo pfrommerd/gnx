@@ -3,8 +3,8 @@ use std::fmt::Display;
 use gnx_expr::trace::{
     CellTrace, Generic, Invocation, ObjectTracer, TraceContext, Tracer, ValueInfo,
 };
-use gnx_expr::{Capture, HInstr, Op};
 use gnx_expr::{Dialect, Operation};
+use gnx_expr::{HInstr, Op, Capture};
 
 pub struct SampleOperation {
     name: &'static str,
@@ -353,7 +353,8 @@ fn capture_nonaliased_dead_store_eliminated() {
     cell.set(v2.trace_ref().clone()); // live store (escapes via output)
 
     let out = ObjectTracer::Ref(cell.get());
-    let cap = Capture::from_context(ctx, &[ObjectTracer::from(base.clone())], &[out]).unwrap();
+    let cap =
+        Capture::from_context(ctx, &[ObjectTracer::from(base.clone())], &[out]).unwrap();
     let ops: Vec<String> = cap
         .expr()
         .instructions()
@@ -377,8 +378,9 @@ fn capture_aliased_read_write_ordering_preserved() {
     let w = Tracer::<Generic>::placeholder(sample_info());
     cell.set(w.trace_ref().clone());
 
-    let cap = Capture::from_context(ctx, &[ObjectTracer::from(cell), ObjectTracer::from(w)], &[])
-        .unwrap();
+    let cap =
+        Capture::from_context(ctx, &[ObjectTracer::from(cell), ObjectTracer::from(w)], &[])
+            .unwrap();
     let instructions = cap.expr().instructions();
     assert_eq!(instructions.len(), 3);
     assert!(matches!(instructions[0], HInstr::ReadCell { .. }));

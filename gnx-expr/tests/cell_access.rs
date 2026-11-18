@@ -1,4 +1,4 @@
-use gnx_expr::{Capture, CellAccess, CellTrace, Generic, TraceContext, Tracer, ValueInfo};
+use gnx_expr::{CellAccess, CellTrace, Generic, TraceContext, Capture, Tracer, ValueInfo};
 
 #[test]
 fn cell_access_union_covers_all_access_pairs() {

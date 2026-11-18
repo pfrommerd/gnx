@@ -1,6 +1,6 @@
 use gnx_expr::{
-    CallError, Capture, CellKey, CellTrace, Generic, HExpr, InputSpec, ObjectTracer, Ownership,
-    TraceContext, Tracer, TracerKey, ValueInfo, hexpr,
+    CallError, CellKey, CellTrace, Generic, HExpr, InputSpec, ObjectTracer, Ownership,
+    TraceContext, Capture, Tracer, TracerKey, ValueInfo, hexpr,
 };
 fn info() -> ValueInfo {
     ValueInfo::new(0usize)

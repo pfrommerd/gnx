@@ -1,6 +1,6 @@
 use gnx::array::{Array, ArrayInfo, ArrayRef, DType, Dim, Shape};
 use gnx::expr::{CellTracer, ObjectTracer, TraceContext, Tracer, ValueInfo};
-use pyo3::exceptions::{PyIndexError, PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PySlice, PyTuple};
 
@@ -43,14 +43,11 @@ pub struct PyArrayRef(pub(crate) ArrayRef);
 impl PyArrayRef {
     fn __getitem__(&self, key: &Bound<'_, PyAny>) -> PyResult<PyArray> {
         check_whole_array_key(key)?;
-        check_live(&ObjectTracer::from(self.0.tracer().clone()))?;
         Ok(PyArray(self.0.get()))
     }
 
     fn __setitem__(&self, key: &Bound<'_, PyAny>, value: &PyArray) -> PyResult<()> {
         check_whole_array_key(key)?;
-        check_live(&ObjectTracer::from(self.0.tracer().clone()))?;
-        check_live(&ObjectTracer::from(value.0.tracer().clone()))?;
         let value = value.0.tracer();
         if self.0.tracer().cell_ref().type_info() != value.trace_ref().info() {
             return Err(PyValueError::new_err(
@@ -87,9 +84,8 @@ pub fn placeholder(shape: Vec<usize>, dtype: &str) -> PyResult<PyArray> {
 
 /// Create a mutable cell initialized with the symbolic array x.
 #[pyfunction]
-pub fn new_ref(x: &PyArray) -> PyResult<PyArrayRef> {
-    check_live(&ObjectTracer::from(x.0.tracer().clone()))?;
-    Ok(PyArrayRef(ArrayRef::new(x.0.tracer().clone())))
+pub fn new_ref(x: &PyArray) -> PyArrayRef {
+    PyArrayRef(ArrayRef::new(x.0.tracer().clone()))
 }
 
 impl PyArrayRef {
@@ -115,20 +111,6 @@ fn check_whole_array_key(key: &Bound<'_, PyAny>) -> PyResult<()> {
     Err(PyIndexError::new_err(
         "ArrayRef only supports whole-array access with [:] or [...]",
     ))
-}
-
-pub(crate) fn check_live(object: &ObjectTracer) -> PyResult<()> {
-    let context = match object {
-        ObjectTracer::Ref(value) => value.context_id(),
-        ObjectTracer::Cell(cell) => cell.context_id(),
-    };
-    if context.is_alive() {
-        Ok(())
-    } else {
-        Err(PyRuntimeError::new_err(
-            "symbolic value belongs to a trace that is no longer active",
-        ))
-    }
 }
 
 pub(crate) fn extract_tracer(obj: &Bound<'_, PyAny>) -> Option<ObjectTracer> {

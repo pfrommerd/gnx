@@ -1,6 +1,6 @@
 use gnx_expr::{
-    Capture, CellTrace, Dialect, Generic, InputId, InputSpec, Invocation, ObjectTracer, Op,
-    Operation, Ownership, Trace, TraceContext, Tracer, TracerKey, ValueInfo,
+    CellTrace, Dialect, Generic, InputId, InputSpec, Invocation, ObjectTracer, Op, Operation,
+    Ownership, Trace, TraceContext, Capture, Tracer, TracerKey, ValueInfo,
 };
 
 fn info() -> ValueInfo {

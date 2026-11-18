@@ -1,124 +1,172 @@
-use super::deferred::Projection;
-use crate::trace::{
-    CellKey, ContextID, Generic, Invocation, ObjectTracer, Trace, TraceContext, Tracer,
-};
-use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, Var, VarScope};
+//! Capture a slice of the trace DAG as an HExpr. Both entry points use the
+//! same producer walk and emitter; they differ in their capture boundaries.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-/// A DAG captured as HExpr, with bindings for its imported values and cells.
-pub struct Capture {
-    expr: Arc<HExpr>,
-    closure: Vec<ObjectTracer>,
-}
+use crate::eval::EVAL_DAG;
+use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, Var, VarScope};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+use super::{
+    CellKey, CellTrace, ContextID, Generic, Invocation, ObjectTracer, ObjectTracerRef, Trace,
+    TraceContext, Tracer, deferred::Projection,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{self:?}")]
 pub enum CaptureError {
     UndefinedValue,
     DuplicateInput,
     LocalCellInput,
     Cycle,
+    #[error("capture roots and deferred dependencies must belong to the same scope")]
+    MixedScopes,
 }
-impl fmt::Display for CaptureError {
+
+/// A captured DAG slice and its bindings in expression order.
+/// `from_context` preserves trace effects; `from_roots` selects the live results
+/// of a slice for evaluation.
+pub struct Capture {
+    expr: HExpr,
+    closure: Vec<ObjectTracer>,
+    inputs: Vec<ObjectTracer>,
+    outputs: Vec<ObjectTracer>,
+}
+
+// Show the IR and its boundary metadata, not the retained runtime values.
+impl fmt::Display for Capture {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
+        fmt::Display::fmt(&self.expr, f)
     }
 }
-impl std::error::Error for CaptureError {}
+
+impl fmt::Debug for Capture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
 
 impl Capture {
-    /// Traverse the DAG and materialize HExpr. No cell aliases are resolved here.
-    pub fn from_context<'a, I, O>(
+    /// Capture the requested outputs and the context's pending cell effects.
+    /// Explicit inputs cut their producer edges. Cell aliases remain unresolved.
+    pub fn from_context<'a>(
         ctx: &TraceContext,
-        inputs: I,
-        outputs: O,
-    ) -> Result<Self, CaptureError>
-    where
-        I: IntoIterator<Item = &'a ObjectTracer>,
-        O: IntoIterator<Item = &'a ObjectTracer>,
-    {
-        let target = ctx.id();
-        let outputs: Vec<_> = outputs.into_iter().collect();
-        let mut builder = Builder::new(target.clone());
+        inputs: impl IntoIterator<Item = &'a ObjectTracer>,
+        outputs: impl IntoIterator<Item = &'a ObjectTracer>,
+    ) -> Result<Self, CaptureError> {
+        let mut emitter = Emitter::new(ctx.id(), Mode::Traced);
         for input in inputs {
-            let key = object_key(input);
-            if builder.bindings.contains_key(&key) {
-                return Err(CaptureError::DuplicateInput);
-            }
-            if let ObjectTracer::Cell(cell) = input {
-                if cell.context_id() == &target && !cell.is_placeholder() {
-                    return Err(CaptureError::LocalCellInput);
-                }
-            }
-            let var = builder.scope.create_var();
-            let kind = object_kind(input);
-            builder.bindings.insert(key, var);
-            builder.inputs.push((var, kind));
+            emitter.bind_input(input.as_ref())?;
         }
-        let mut roots = Vec::new();
-        for output in &outputs {
-            match output {
-                ObjectTracer::Ref(value) => roots.push(value.clone()),
-                ObjectTracer::Cell(cell)
-                    if cell.context_id() == &target && !cell.is_placeholder() =>
-                {
-                    roots.push(cell.read_home());
-                }
-                ObjectTracer::Cell(_) => {}
+        let outputs: Vec<_> = outputs.into_iter().cloned().collect();
+        let roots = outputs.iter().filter_map(|output| match output.as_ref() {
+            ObjectTracerRef::Ref(value) => Some(value.internal_clone()),
+            ObjectTracerRef::Cell(cell)
+                if cell.context_id() == &emitter.target && !cell.is_placeholder() =>
+            {
+                Some(cell.read_home())
             }
+            ObjectTracerRef::Cell(_) => None,
+        });
+        let slice = emitter.discover(roots, ctx.last_aliased_write())?;
+        emitter.emit(&slice, outputs)
+    }
+
+    /// Snapshot cell home values without recording a cell read. The home
+    /// value, not the cell itself, determines the root's scope.
+    pub fn from_objects<'a>(
+        roots: impl IntoIterator<Item = ObjectTracerRef<'a>>,
+    ) -> Result<Self, CaptureError> {
+        Self::capture(roots.into_iter().map(|root| match root {
+            ObjectTracerRef::Ref(trace) => trace.internal_clone(),
+            ObjectTracerRef::Cell(cell) => cell.read_home(),
+        }))
+    }
+
+    /// Capture existing values in one scope, cutting at concrete storage.
+    /// Placeholders become bindings. Requested pending results come before
+    /// live-outside results; concrete roots need no work.
+    pub fn from_roots<'a>(
+        roots: impl IntoIterator<Item = &'a Trace>,
+    ) -> Result<Self, CaptureError> {
+        Self::capture(roots.into_iter().map(Trace::internal_clone))
+    }
+
+    fn capture(roots: impl IntoIterator<Item = Trace>) -> Result<Self, CaptureError> {
+        // Run the caller's iterator outside the publication lock.
+        let roots: Vec<_> = roots.into_iter().collect();
+        let scope = roots
+            .first()
+            .map_or(ContextID::ROOT, |root| root.context_id().clone());
+        if roots.iter().any(|root| root.context_id() != &scope) {
+            return Err(CaptureError::MixedScopes);
         }
-        let ordered =
-            order_invocations(&roots, ctx.last_aliased_write(), &target, &builder.bindings)?;
-        for invocation in ordered {
-            builder.invocation(&invocation)?;
-        }
-        let output_vars = outputs
-            .iter()
-            .map(|obj| builder.object(obj))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self {
-            expr: Arc::new(HExpr {
-                closure: builder.closure_params,
-                inputs: builder.inputs,
-                instructions: builder.instructions,
-                outputs: output_vars,
-            }),
-            closure: builder.closure_values,
-        })
+        let emitter = Emitter::new(scope, Mode::Eval);
+        let pinned;
+        let capture = {
+            let _guard = EVAL_DAG.lock().unwrap();
+            let slice = emitter.discover(roots.iter().map(Trace::internal_clone), None)?;
+            // Weak result slots can disappear if another thread drops their
+            // last public handle. Keep any upgraded slots until we unlock.
+            pinned = slice.pin_results();
+            let outputs = slice.eval_outputs(&roots, &pinned);
+            emitter.emit(&slice, outputs)
+        };
+        capture
     }
 
     pub fn expr(&self) -> &HExpr {
         &self.expr
     }
 
-    /// Share the expression without retaining the captured runtime bindings.
-    pub fn shared_expr(&self) -> Arc<HExpr> {
-        self.expr.clone()
-    }
-
-    /// Bind the current arguments to this body without lowering it.
-    /// Cell outputs and writes are represented by the resulting call's projections.
-    pub fn call(&self, inputs: &[ObjectTracer]) -> Vec<ObjectTracer> {
-        Invocation::defer_call(self.expr.clone(), &self.closure, inputs)
-    }
+    /// Imported values and cells, in `expr().closure()` order.
     pub fn closure(&self) -> &[ObjectTracer] {
         &self.closure
     }
+
+    /// Explicit inputs; root capture imports dependencies through the closure.
+    pub fn inputs(&self) -> &[ObjectTracer] {
+        &self.inputs
+    }
+
+    /// The original tracer handles corresponding to `expr().outputs()`.
+    pub fn outputs(&self) -> &[ObjectTracer] {
+        &self.outputs
+    }
+
+    /// Bind arguments without lowering; cell outputs and writes remain projections.
+    pub fn call(&self, inputs: &[ObjectTracer]) -> Vec<ObjectTracer> {
+        Invocation::defer_call(Arc::new(self.expr.clone()), self.closure(), inputs)
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        HExpr,
+        Vec<ObjectTracer>,
+        Vec<ObjectTracer>,
+        Vec<ObjectTracer>,
+    ) {
+        (self.expr, self.closure, self.inputs, self.outputs)
+    }
 }
+
 impl From<Capture> for (HExpr, Vec<ObjectTracer>) {
     fn from(capture: Capture) -> Self {
-        (Arc::unwrap_or_clone(capture.expr), capture.closure)
+        (capture.expr, capture.closure)
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TracerKey(usize);
+
 impl From<&Trace> for TracerKey {
     fn from(trace: &Trace) -> Self {
-        Self(Arc::as_ptr(&trace.0) as usize)
+        Self(Arc::as_ptr(&trace.data) as usize)
     }
 }
+
 impl From<&Tracer<Generic>> for TracerKey {
     fn from(trace: &Tracer<Generic>) -> Self {
         Self::from(trace.trace_ref())
@@ -127,6 +175,7 @@ impl From<&Tracer<Generic>> for TracerKey {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct InvKey(usize);
+
 impl From<&Arc<Invocation>> for InvKey {
     fn from(inv: &Arc<Invocation>) -> Self {
         Self(Arc::as_ptr(inv) as usize)
@@ -139,103 +188,276 @@ enum BindingKey {
     Result(InvKey, usize),
     Cell(CellKey),
 }
-fn value_key(value: &Trace) -> BindingKey {
-    match value.producer_with_index() {
-        Some((inv, index)) => BindingKey::Result(InvKey::from(inv), index),
-        None => BindingKey::Value(TracerKey::from(value)),
-    }
-}
-fn object_key(obj: &ObjectTracer) -> BindingKey {
-    match obj {
-        ObjectTracer::Ref(value) => value_key(value),
-        ObjectTracer::Cell(cell) => BindingKey::Cell(CellKey::from(cell)),
-    }
-}
-fn object_kind(obj: &ObjectTracer) -> Kind {
-    match obj {
-        ObjectTracer::Ref(value) => Kind::Value(value.info().clone()),
-        ObjectTracer::Cell(cell) => Kind::Cell(cell.type_info().clone()),
+
+impl From<&Trace> for BindingKey {
+    fn from(value: &Trace) -> Self {
+        match value.origin() {
+            Some((inv, index)) => Self::Result(InvKey(inv.as_ptr() as usize), index),
+            None => Self::Value(value.into()),
+        }
     }
 }
 
-struct Builder {
+fn binding(object: ObjectTracerRef<'_>) -> (BindingKey, Kind) {
+    match object {
+        ObjectTracerRef::Ref(value) => (value.into(), Kind::Value(value.info().clone())),
+        ObjectTracerRef::Cell(cell) => (
+            BindingKey::Cell(CellKey::from(cell)),
+            Kind::Cell(cell.type_info().clone()),
+        ),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Traced,
+    Eval,
+}
+
+struct Slice {
+    ordered: Vec<Arc<Invocation>>,
+    members: BTreeSet<InvKey>,
+}
+
+impl Slice {
+    fn pin_results(&self) -> Vec<Trace> {
+        let mut pinned = Vec::new();
+        for inv in &self.ordered {
+            let slots = inv.result_slots();
+            pinned.extend(
+                slots
+                    .iter()
+                    .filter_map(|slot| slot.upgrade())
+                    .map(Trace::internal),
+            );
+        }
+        pinned
+    }
+
+    fn eval_outputs(&self, roots: &[Trace], pinned: &[Trace]) -> Vec<ObjectTracer> {
+        let mut selected = BTreeSet::new();
+        roots
+            .iter()
+            .chain(
+                pinned.iter().filter(|trace| {
+                    trace.is_live_outside(|user| self.members.contains(&InvKey(user)))
+                }),
+            )
+            .filter(|trace| {
+                trace.try_concrete().is_none() && selected.insert(TracerKey::from(*trace))
+            })
+            .map(|trace| ObjectTracer::Ref(trace.internal_clone()))
+            .collect()
+    }
+}
+
+type BoundParam = ((Var, Kind), ObjectTracer);
+
+struct Emitter {
     target: ContextID,
-    scope: VarScope,
+    mode: Mode,
+    vars: VarScope,
     bindings: BTreeMap<BindingKey, Var>,
-    inputs: Vec<(Var, Kind)>,
-    closure_params: Vec<(Var, Kind)>,
-    closure_values: Vec<ObjectTracer>,
+    inputs: Vec<BoundParam>,
+    closure: Vec<BoundParam>,
     instructions: Vec<HInstr>,
 }
-impl Builder {
-    fn new(target: ContextID) -> Self {
+
+impl Emitter {
+    fn new(target: ContextID, mode: Mode) -> Self {
         Self {
             target,
-            scope: VarScope::new(),
+            mode,
+            vars: VarScope::new(),
             bindings: BTreeMap::new(),
             inputs: vec![],
-            closure_params: vec![],
-            closure_values: vec![],
+            closure: vec![],
             instructions: vec![],
         }
     }
-    fn import(&mut self, obj: ObjectTracer) -> Var {
-        let var = self.scope.create_var();
-        let kind = object_kind(&obj);
-        self.bindings.insert(object_key(&obj), var);
-        self.closure_params.push((var, kind));
-        self.closure_values.push(obj);
+
+    fn bind_input(&mut self, object: ObjectTracerRef<'_>) -> Result<(), CaptureError> {
+        let (key, kind) = binding(object);
+        if self.bindings.contains_key(&key) {
+            return Err(CaptureError::DuplicateInput);
+        }
+        if let ObjectTracerRef::Cell(cell) = object {
+            if cell.context_id() == &self.target && !cell.is_placeholder() {
+                return Err(CaptureError::LocalCellInput);
+            }
+        }
+        let var = self.vars.create_var();
+        self.bindings.insert(key, var);
+        self.inputs.push(((var, kind), object.to_owned()));
+        Ok(())
+    }
+
+    /// Postorder DFS over producers. Explicit inputs and concrete values cut
+    /// dependencies. Only a traced region has an ambient cell-effect root.
+    fn discover(
+        &self,
+        roots: impl IntoIterator<Item = Trace>,
+        last_write: Option<Arc<Invocation>>,
+    ) -> Result<Slice, CaptureError> {
+        let producer = |value: &Trace| {
+            if value.context_id() != &self.target {
+                if self.mode == Mode::Eval && value.try_concrete().is_none() {
+                    return Err(CaptureError::MixedScopes);
+                }
+                return Ok(None);
+            }
+            if value.try_concrete().is_some() || self.bindings.contains_key(&value.into()) {
+                return Ok(None);
+            }
+            Ok(value
+                .producer()
+                .filter(|inv| inv.context_id() == &self.target))
+        };
+        let mut pending: Vec<_> = last_write.into_iter().map(|inv| (inv, false)).collect();
+        for root in roots {
+            if let Some(inv) = producer(&root)? {
+                pending.push((inv, false));
+            }
+        }
+        let mut visiting = BTreeSet::new();
+        let mut slice = Slice {
+            ordered: Vec::new(),
+            members: BTreeSet::new(),
+        };
+        while let Some((inv, exit)) = pending.pop() {
+            let key = InvKey::from(&inv);
+            if slice.members.contains(&key) {
+                continue;
+            }
+            if exit {
+                visiting.remove(&key);
+                slice.members.insert(key);
+                slice.ordered.push(inv);
+                continue;
+            }
+            if !visiting.insert(key) {
+                return Err(CaptureError::Cycle);
+            }
+            pending.push((inv.clone(), true));
+            pending.extend(
+                inv.aliasing_parents()
+                    .iter()
+                    .filter(|inv| inv.context_id() == &self.target)
+                    .map(|inv| (inv.clone(), false)),
+            );
+            for value in inv.value_parents() {
+                if let Some(pred) = producer(value)? {
+                    pending.push((pred, false));
+                }
+            }
+        }
+        Ok(slice)
+    }
+
+    fn emit(mut self, slice: &Slice, outputs: Vec<ObjectTracer>) -> Result<Capture, CaptureError> {
+        for inv in &slice.ordered {
+            self.emit_invocation(inv)?;
+        }
+        let output_vars = self.object_args(&outputs)?;
+        let (closure_params, closure) = self.closure.into_iter().unzip();
+        let (input_params, inputs) = self.inputs.into_iter().unzip();
+        Ok(Capture {
+            expr: HExpr {
+                closure: closure_params,
+                inputs: input_params,
+                instructions: self.instructions,
+                outputs: output_vars,
+            },
+            closure,
+            inputs,
+            outputs,
+        })
+    }
+
+    fn import(&mut self, object: ObjectTracerRef<'_>) -> Var {
+        let (key, kind) = binding(object);
+        let var = self.vars.create_var();
+        self.bindings.insert(key, var);
+        let value = match object {
+            ObjectTracerRef::Ref(trace) if self.mode == Mode::Eval => {
+                ObjectTracer::Ref(trace.internal_clone())
+            }
+            _ => object.to_owned(),
+        };
+        self.closure.push(((var, kind), value));
         var
     }
+
     fn value(&mut self, value: &Trace) -> Result<Var, CaptureError> {
-        if let Some(var) = self.bindings.get(&value_key(value)) {
-            return Ok(*var);
+        if let Some(&var) = self.bindings.get(&value.into()) {
+            return Ok(var);
         }
-        if value.context_id() != &self.target || value.try_concrete().is_some() {
-            return Ok(self.import(ObjectTracer::Ref(value.clone())));
+        if value.context_id() != &self.target
+            || value.try_concrete().is_some()
+            || (self.mode == Mode::Eval && value.is_placeholder())
+        {
+            return Ok(self.import(ObjectTracerRef::Ref(value)));
         }
         Err(CaptureError::UndefinedValue)
     }
-    fn object(&mut self, obj: &ObjectTracer) -> Result<Var, CaptureError> {
-        if let Some(var) = self.bindings.get(&object_key(obj)) {
-            return Ok(*var);
-        }
-        match obj {
-            ObjectTracer::Ref(value) => self.value(value),
-            ObjectTracer::Cell(cell) if cell.context_id() != &self.target => {
-                Ok(self.import(obj.clone()))
-            }
-            ObjectTracer::Cell(cell) if cell.is_placeholder() => Err(CaptureError::UndefinedValue),
-            ObjectTracer::Cell(cell) => {
-                // A local cell was already functionalized during tracing. Only
-                // materialize its identity if the handle escapes as an output.
-                let initial = self.value(&cell.read_home())?;
-                let var = self.scope.create_var();
-                self.bindings.insert(object_key(obj), var);
-                self.instructions.push(HInstr::CreateCell {
-                    cell: var,
-                    initial,
-                    kind: object_kind(obj),
-                });
-                Ok(var)
-            }
+
+    fn object(&mut self, object: ObjectTracerRef<'_>) -> Result<Var, CaptureError> {
+        match object {
+            ObjectTracerRef::Ref(value) => self.value(value),
+            ObjectTracerRef::Cell(cell) => self.cell(cell),
         }
     }
-    fn outputs(&mut self, inv: &Arc<Invocation>) -> Vec<(Var, Kind)> {
+
+    fn cell(&mut self, cell: &CellTrace) -> Result<Var, CaptureError> {
+        let key = BindingKey::Cell(CellKey::from(cell));
+        if let Some(&var) = self.bindings.get(&key) {
+            return Ok(var);
+        }
+        if cell.context_id() != &self.target || (self.mode == Mode::Eval && cell.is_placeholder()) {
+            return Ok(self.import(ObjectTracerRef::Cell(cell)));
+        }
+        if cell.is_placeholder() {
+            return Err(CaptureError::UndefinedValue);
+        }
+        // A local cell has already been functionalized. Only build a cell
+        // identity at the boundary if it escapes as an output.
+        let initial = self.value(&cell.read_home())?;
+        let var = self.vars.create_var();
+        self.bindings.insert(key, var);
+        self.instructions.push(HInstr::CreateCell {
+            cell: var,
+            initial,
+            kind: Kind::Cell(cell.type_info().clone()),
+        });
+        Ok(var)
+    }
+
+    fn value_args(&mut self, values: &[Trace]) -> Result<Vec<Var>, CaptureError> {
+        values.iter().map(|value| self.value(value)).collect()
+    }
+
+    fn object_args(&mut self, objects: &[ObjectTracer]) -> Result<Vec<Var>, CaptureError> {
+        objects
+            .iter()
+            .map(|value| self.object(value.as_ref()))
+            .collect()
+    }
+
+    fn define_results(&mut self, inv: &Arc<Invocation>) -> Vec<(Var, Kind)> {
         inv.outputs()
             .iter()
             .enumerate()
             .map(|(index, info)| {
-                let var = self.scope.create_var();
+                let var = self.vars.create_var();
                 self.bindings
-                    .entry(BindingKey::Result(InvKey::from(inv), index))
+                    .entry(BindingKey::Result(inv.into(), index))
                     .or_insert(var);
                 (var, Kind::Value(info.clone()))
             })
             .collect()
     }
 
-    fn invocation(&mut self, inv: &Arc<Invocation>) -> Result<(), CaptureError> {
+    fn emit_invocation(&mut self, inv: &Arc<Invocation>) -> Result<(), CaptureError> {
         let instr = match inv.as_ref() {
             Invocation::Apply {
                 op,
@@ -243,142 +465,78 @@ impl Builder {
                 subexprs,
                 ..
             } => {
-                let inputs = inputs
-                    .iter()
-                    .map(|value| self.value(value))
-                    .collect::<Result<_, _>>()?;
+                let inputs = self.value_args(inputs)?;
                 let subexprs = subexprs
                     .iter()
                     .map(|(expr, captures)| {
-                        let captures = captures
-                            .iter()
-                            .map(|value| self.value(value))
-                            .collect::<Result<_, _>>()?;
-                        Ok(HSubExpr::new(expr.clone(), captures))
+                        Ok(HSubExpr::new(expr.clone(), self.value_args(captures)?))
                     })
                     .collect::<Result<_, CaptureError>>()?;
-                let outputs = self.outputs(inv);
-                HInstr::Apply(HEqn::new(op.clone(), subexprs, inputs, outputs))
-            }
-            Invocation::DeferredCall(call) => {
-                let captures = call
-                    .closure
-                    .iter()
-                    .map(|object| self.object(object))
-                    .collect::<Result<_, _>>()?;
-                let inputs = call
-                    .inputs
-                    .iter()
-                    .map(|object| self.object(object))
-                    .collect::<Result<_, _>>()?;
-                let results: Vec<_> = call
-                    .body
-                    .outputs()
-                    .iter()
-                    .map(|var| {
-                        (
-                            self.scope.create_var(),
-                            call.body.kind(var).expect("call result kind").clone(),
-                        )
-                    })
-                    .collect();
-                self.instructions.push(HInstr::Apply(HEqn::new(
-                    crate::builtins::call_op(),
-                    vec![HSubExpr::new(call.body.clone(), captures)],
+                HInstr::Apply(HEqn::new(
+                    op.clone(),
+                    subexprs,
                     inputs,
-                    results.clone(),
-                )));
-                for (index, projection) in call.results.iter().enumerate() {
-                    let key = BindingKey::Result(InvKey::from(inv), index);
-                    let cell = match projection {
-                        Projection::Value(result_index) => {
-                            self.bindings.insert(key, results[*result_index].0);
-                            continue;
-                        }
-                        Projection::CellContents(index) => results[*index].0,
-                        Projection::LocalUpdate(cell) => {
-                            self.object(&ObjectTracer::Cell(cell.clone()))?
-                        }
-                    };
-                    let output = self.scope.create_var();
-                    self.bindings.insert(key, output);
-                    let kind = Kind::Value(call.outputs[index].clone());
-                    self.instructions
-                        .push(HInstr::ReadCell { cell, output, kind });
-                }
-                return Ok(());
+                    self.define_results(inv),
+                ))
             }
+            Invocation::DeferredCall(call) => return self.emit_call(inv.into(), call),
             Invocation::ReadCell { cell, .. } => {
-                let cell = self.object(&ObjectTracer::Cell(cell.clone()))?;
-                let (output, kind) = self.outputs(inv).pop().expect("cell read has one result");
+                let cell = self.cell(cell)?;
+                let (output, kind) = self
+                    .define_results(inv)
+                    .pop()
+                    .expect("cell read has one result");
                 HInstr::ReadCell { cell, output, kind }
             }
-            Invocation::WriteCell { cell, value, .. } => {
-                let cell = self.object(&ObjectTracer::Cell(cell.clone()))?;
-                let value = self.value(value)?;
-                HInstr::WriteCell { cell, value }
-            }
+            Invocation::WriteCell { cell, value, .. } => HInstr::WriteCell {
+                cell: self.cell(cell)?,
+                value: self.value(value)?,
+            },
         };
         self.instructions.push(instr);
         Ok(())
     }
-}
 
-/// Iterative DFS preserves both data and mutable-access edges without a trace
-/// log. Explicit value inputs cut the graph at their producer boundaries.
-fn order_invocations(
-    roots: &[Trace],
-    last_write: Option<Arc<Invocation>>,
-    target: &ContextID,
-    inputs: &BTreeMap<BindingKey, Var>,
-) -> Result<Vec<Arc<Invocation>>, CaptureError> {
-    let producer = |value: &Trace| {
-        if value.context_id() == target && !inputs.contains_key(&value_key(value)) {
-            value
-                .producer()
-                .filter(|inv| inv.context_id() == target)
-                .cloned()
-        } else {
-            None
+    fn emit_call(&mut self, key: InvKey, call: &super::DeferredCall) -> Result<(), CaptureError> {
+        let captures = self.object_args(&call.closure)?;
+        let inputs = self.object_args(&call.inputs)?;
+        let results: Vec<_> = call
+            .body
+            .outputs()
+            .iter()
+            .map(|var| {
+                (
+                    self.vars.create_var(),
+                    call.body.kind(var).expect("call result kind").clone(),
+                )
+            })
+            .collect();
+        self.instructions.push(HInstr::Apply(HEqn::new(
+            crate::builtins::call_op(),
+            vec![HSubExpr::new(call.body.clone(), captures)],
+            inputs,
+            results.clone(),
+        )));
+        for (index, projection) in call.results.iter().enumerate() {
+            let var = match projection {
+                Projection::Value(result) => results[*result].0,
+                projection => {
+                    let cell = match projection {
+                        Projection::CellContents(result) => results[*result].0,
+                        Projection::LocalUpdate(cell) => self.cell(cell)?,
+                        Projection::Value(_) => unreachable!(),
+                    };
+                    let output = self.vars.create_var();
+                    self.instructions.push(HInstr::ReadCell {
+                        cell,
+                        output,
+                        kind: Kind::Value(call.outputs[index].clone()),
+                    });
+                    output
+                }
+            };
+            self.bindings.insert(BindingKey::Result(key, index), var);
         }
-    };
-    let mut pending = Vec::new();
-    if let Some(inv) = last_write {
-        pending.push((inv, false));
+        Ok(())
     }
-    for root in roots {
-        if let Some(inv) = producer(root) {
-            pending.push((inv, false));
-        }
-    }
-    let mut visiting = BTreeSet::new();
-    let mut finished = BTreeSet::new();
-    let mut ordered = Vec::new();
-    while let Some((inv, exit)) = pending.pop() {
-        let key = InvKey::from(&inv);
-        if finished.contains(&key) {
-            continue;
-        }
-        if exit {
-            visiting.remove(&key);
-            finished.insert(key);
-            ordered.push(inv);
-            continue;
-        }
-        if !visiting.insert(key) {
-            return Err(CaptureError::Cycle);
-        }
-        pending.push((inv.clone(), true));
-        for parent in inv.aliasing_parents() {
-            if parent.context_id() == target {
-                pending.push((parent.clone(), false));
-            }
-        }
-        for value in inv.value_parents() {
-            if let Some(pred) = producer(value) {
-                pending.push((pred, false));
-            }
-        }
-    }
-    Ok(ordered)
 }

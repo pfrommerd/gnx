@@ -1,6 +1,7 @@
 mod attr;
 pub mod builtins;
 mod dialects;
+pub mod eval;
 mod expr;
 pub mod hexpr;
 pub use expr::{Eqn, Expr, SubExpr};
@@ -13,6 +14,7 @@ pub mod value;
 
 pub use attr::*;
 pub use dialects::*;
+pub use eval::{EvalCommit, EvalPlanError, PreparedEval};
 pub use hexpr::*;
 pub use lower::{CallError, InputId, InputSpec, LoweredExpr, LoweringError};
 pub use trace::*;
@@ -49,7 +51,7 @@ pub trait Dialect: Sync {
     fn create(&self, name: &'static str) -> Option<&'static dyn Operation>;
 }
 
-pub trait Operation: Sync {
+pub trait Operation: std::any::Any + Sync {
     fn name(&self) -> &'static str;
     fn dialect(&self) -> &'static dyn Dialect;
 }
@@ -106,6 +108,10 @@ impl fmt::Display for Op {
 }
 
 impl Op {
+    pub fn operation(&self) -> &'static dyn Operation {
+        self.impl_
+    }
+
     pub fn new(impl_: &'static dyn Operation) -> Self {
         Op {
             impl_,

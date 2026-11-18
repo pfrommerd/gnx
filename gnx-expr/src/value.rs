@@ -8,8 +8,9 @@ pub trait ConcreteValue: Any + Send + Sync + Debug + Display {
     fn to_info(&self) -> ValueInfo;
 }
 
-#[derive(Debug)]
-pub struct Value(Box<dyn ConcreteValue>);
+/// An immutable concrete value. Cloning retains its storage, without copying it.
+#[derive(Clone, Debug)]
+pub struct Value(Arc<dyn ConcreteValue>);
 // Allows us to catch when a Value is downcast into a different type.
 unsafe impl castaway::LifetimeFree for Value {}
 
@@ -29,18 +30,18 @@ impl Value {
     pub fn new<T: ConcreteValue>(value: T) -> Self {
         match castaway::cast!(value, Self) {
             Ok(value) => return value,
-            Err(value) => Value(Box::new(value)),
+            Err(value) => Value(Arc::new(value)),
         }
     }
+    /// Take the payload if it has the requested type and is uniquely held.
     pub fn downcast_into<T: ConcreteValue>(self) -> Result<T, Self> {
         // If T is Value, just return self
         castaway::cast!(self, T).or_else(|_value| {
             let value: &dyn Any = _value.0.as_ref();
             if value.type_id() == TypeId::of::<T>() {
-                let value: Box<dyn Any> = _value.0;
-                // SAFETY: We know that the value is of type T because we checked the type_id above.
-                let value: Box<T> = unsafe { value.downcast().unwrap_unchecked() };
-                Ok(*value)
+                let value: Arc<dyn Any + Send + Sync> = _value.0;
+                let value = value.downcast::<T>().ok().expect("checked value type");
+                Arc::try_unwrap(value).map_err(|shared| Value(shared))
             } else {
                 Err(_value)
             }

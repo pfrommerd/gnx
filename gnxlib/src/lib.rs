@@ -6,25 +6,28 @@ mod tracer;
 
 use std::sync::Arc;
 
-use gnx::expr::HExpr;
+use gnx::expr::{Capture, HExpr, ObjectTracer};
 use gnx::{Function, Jit, TryCallable, TryJitable};
-use pyo3::exceptions::{PyRuntimeError, PyTypeError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::gc::{PyTraverseError, PyVisit};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
-use crate::graph::{GraphParser, PyGraph};
+use crate::graph::{parse_roots, GraphParser, PyGraph};
 
 /// A Python module implemented in Rust.
 
 #[pymodule]
 pub mod _native {
+    use gnx::buffer::TransferPolicy;
+    use gnx::{Eval, EvalError, EvalPlanError, ExecOpts};
     use gnx_jax::JaxDevice;
+    use pyo3::exceptions::{PyRuntimeError, PyValueError};
     use pyo3::prelude::*;
     use uuid::Uuid;
 
     #[pymodule_export]
-    use super::{jit, PyJit, PyTrace};
+    use super::{expr, jit, PyCapture, PyJit, PyTrace};
     #[pymodule_export]
     use crate::graph::GraphContainer;
     #[pymodule_export]
@@ -66,6 +69,28 @@ pub mod _native {
             self.0.native(py).clone()
         }
 
+        /// Materialize the pending values in a graph in place.
+        #[pyo3(signature = (roots, *, allow_copy = false))]
+        async fn eval(&self, roots: Py<PyAny>, allow_copy: bool) -> PyResult<()> {
+            let roots = Python::attach(|py| super::parse_roots(roots.bind(py)))?;
+            let transfers = if allow_copy {
+                TransferPolicy::AllowCopy
+            } else {
+                TransferPolicy::RequireZeroCopy
+            };
+            self.0
+                .eval(roots.as_ref(), ExecOpts { transfers })
+                .await
+                .map_err(|error| match error {
+                    EvalError::Backend(error) => error.into(),
+                    EvalError::Capture(_)
+                    | EvalError::Plan(
+                        EvalPlanError::UnboundPlaceholder | EvalPlanError::CellEffect,
+                    ) => PyValueError::new_err(error.to_string()),
+                    _ => PyRuntimeError::new_err(error.to_string()),
+                })
+        }
+
         fn __repr__(&self) -> String {
             self.0.to_string()
         }
@@ -79,6 +104,57 @@ pub mod _native {
             .map(PyJaxDevice)
             .collect())
     }
+}
+
+/// Capture a graph without executing or materializing it.
+#[pyfunction]
+fn expr(roots: &Bound<'_, PyAny>) -> PyResult<PyCapture> {
+    let roots = parse_roots(roots)?;
+    gnx::expr(roots.as_ref())
+        .map(PyCapture)
+        .map_err(|error| PyValueError::new_err(error.to_string()))
+}
+
+#[pyclass(name = "Capture", module = "gnxlib", frozen)]
+pub struct PyCapture(Capture);
+
+#[pymethods]
+impl PyCapture {
+    #[getter]
+    fn closure<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        binding_tuple(py, self.0.closure())
+    }
+
+    #[getter]
+    fn inputs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        binding_tuple(py, self.0.inputs())
+    }
+
+    #[getter]
+    fn outputs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        binding_tuple(py, self.0.outputs())
+    }
+
+    fn __str__(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<gnxlib.Capture inputs={} outputs={} captures={}>",
+            self.0.inputs().len(),
+            self.0.outputs().len(),
+            self.0.closure().len()
+        )
+    }
+}
+
+fn binding_tuple<'py>(py: Python<'py>, bindings: &[ObjectTracer]) -> PyResult<Bound<'py, PyTuple>> {
+    let values = bindings
+        .iter()
+        .map(|binding| tracer::wrap_tracer(py, binding.clone()))
+        .collect::<PyResult<Vec<_>>>()?;
+    PyTuple::new(py, values)
 }
 
 struct PythonFunction(Arc<Py<PyAny>>);

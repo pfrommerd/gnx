@@ -1,6 +1,6 @@
 use gnx_expr::{
-    Capture, CellTrace, Dialect, Generic, HExpr, InputId, InputSpec, Invocation, Kind,
-    LoweringError, Op, Operation, Ownership, TraceContext, Tracer, ValueInfo, lower,
+    CellTrace, Dialect, Generic, HExpr, InputId, InputSpec, Invocation, Kind, LoweringError, Op,
+    Operation, Ownership, TraceContext, Capture, Tracer, ValueInfo, lower,
 };
 
 fn all_values(expr: &HExpr, ownership: Ownership) -> InputSpec {
@@ -150,7 +150,8 @@ fn update_only_sources_are_not_exposed_as_user_results() {
     let cell = CellTrace::placeholder(info());
     let x = value();
     cell.set(compute(vec![x.clone()]).into_trace_ref());
-    let captured = Capture::from_context(guard.context(), &[cell.into(), x.into()], &[]).unwrap();
+    let captured =
+        Capture::from_context(guard.context(), &[cell.into(), x.into()], &[]).unwrap();
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
@@ -176,7 +177,8 @@ fn new_input_cell_uses_the_original_input_state_snapshot() {
     let fresh = CellTrace::new(cell.get());
     cell.set(x.trace_ref().clone());
     let captured =
-        Capture::from_context(guard.context(), &[cell.into(), x.into()], &[fresh.into()]).unwrap();
+        Capture::from_context(guard.context(), &[cell.into(), x.into()], &[fresh.into()])
+            .unwrap();
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
@@ -292,7 +294,8 @@ fn intermediate_values_can_be_moved_even_when_inputs_are_borrowed() {
     let x = value();
     let middle = compute(vec![x.clone()]);
     let out = compute(vec![middle]);
-    let captured = Capture::from_context(guard.context(), &[x.into()], &[out.into()]).unwrap();
+    let captured =
+        Capture::from_context(guard.context(), &[x.into()], &[out.into()]).unwrap();
     let lowered = captured
         .expr()
         .lower(&all_values(captured.expr(), Ownership::Borrow))
@@ -307,7 +310,8 @@ fn returning_a_moved_input_delays_its_move_until_return() {
     let x = value();
     let y = compute(vec![x.clone()]);
     let captured =
-        Capture::from_context(guard.context(), &[x.clone().into()], &[x.into(), y.into()]).unwrap();
+        Capture::from_context(guard.context(), &[x.clone().into()], &[x.into(), y.into()])
+            .unwrap();
     let lowered = captured
         .expr()
         .lower(&all_values(captured.expr(), Ownership::Move))
@@ -443,7 +447,8 @@ fn one_id_cannot_identify_both_a_value_and_a_cell() {
     let guard = TraceContext::enter();
     let x = value();
     let cell = CellTrace::placeholder(info());
-    let captured = Capture::from_context(guard.context(), &[x.into(), cell.into()], &[]).unwrap();
+    let captured =
+        Capture::from_context(guard.context(), &[x.into(), cell.into()], &[]).unwrap();
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
@@ -465,7 +470,8 @@ fn cell_state_and_user_result_share_one_owned_output() {
     cell.set(x.trace_ref().clone());
     let read = cell.get();
     let captured =
-        Capture::from_context(guard.context(), &[cell.into(), x.into()], &[read.into()]).unwrap();
+        Capture::from_context(guard.context(), &[cell.into(), x.into()], &[read.into()])
+            .unwrap();
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
@@ -495,7 +501,8 @@ fn borrowed_cell_state_and_value_passthroughs_never_become_returns() {
     cell.set(x.trace_ref().clone());
     let read = cell.get();
     let captured =
-        Capture::from_context(guard.context(), &[cell.into(), x.into()], &[read.into()]).unwrap();
+        Capture::from_context(guard.context(), &[cell.into(), x.into()], &[read.into()])
+            .unwrap();
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![

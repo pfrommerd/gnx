@@ -6,7 +6,9 @@ pub use gnx_transforms::callable;
 pub use gnx_expr as expr;
 pub use gnx_graph as graph;
 
-pub use gnx_math::array;
+pub use gnx_math::{array, buffer, device, ops};
+pub mod eval;
+pub use eval::{CaptureError, Eval, EvalError, EvalPlanError, expr};
 
 // Include all util modules from gnx-graph and gnx-io
 pub mod util {
@@ -19,6 +21,7 @@ pub mod util {
 // - Graph and GraphId from gnx-graph
 pub use gnx_graph::{Graph, GraphId};
 pub use gnx_math::array::{Array, Shape};
+pub use gnx_math::device::{Device, ExecOpts};
 
 pub use gnx_transforms::{
     Callable, Function, Jit, Jitable, TryCallable, TryJitable, jit, jit_fn, jittable, try_jit_fn,

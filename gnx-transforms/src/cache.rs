@@ -2,7 +2,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 
 use dashmap::DashMap;
-use gnx_expr::{Capture, CellTrace, ContextID, HExpr, Kind, ObjectTracer, Trace, TraceContext};
+use gnx_expr::{
+    Capture, CellTrace, ContextID, HExpr, Invocation, Kind, ObjectTracer, Trace, TraceContext,
+};
 use gnx_graph::anyhash::HasherWrite;
 use gnx_graph::util::{GraphExt, IterSource};
 use gnx_graph::{
@@ -49,7 +51,7 @@ where
         body: impl FnOnce(I::Owned) -> Result<O, E>,
     ) -> Result<Arc<HExpr>, E> {
         let (entry, _) = self.get_or_trace(input, body)?;
-        Ok(entry.capture.shared_expr())
+        Ok(entry.expr.clone())
     }
 
     fn get_or_trace<A, E>(
@@ -114,7 +116,8 @@ impl<O: Graph<Owned = O>> TraceSlot<O> {
 }
 
 struct TraceEntry<O: Graph> {
-    capture: Capture,
+    expr: Arc<HExpr>,
+    closure: Vec<ObjectTracer>,
     output_builder: TracerBuilder<O>,
 }
 
@@ -122,7 +125,7 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
     fn is_cacheable(&self) -> bool {
         // A trace can outlive its caller's scope, but a captured local handle
         // cannot. Concrete values and root handles are safe to keep.
-        self.capture.closure().iter().all(|object| match object {
+        self.closure.iter().all(|object| match object {
             ObjectTracer::Ref(value) => {
                 value.try_concrete().is_some() || value.context_id() == &ContextID::ROOT
             }
@@ -141,14 +144,19 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
         let (output_builder, outputs) = split_graph(&output);
         let capture = Capture::from_context(guard.context(), &placeholders, &outputs)
             .expect("JIT could not capture traced function");
+        let (expr, closure, ..) = capture.into_parts();
         Ok(Self {
-            capture,
+            expr: Arc::new(expr),
+            closure,
             output_builder,
         })
     }
 
     fn call(&self, arguments: &[ObjectTracer]) -> O {
-        rebuild_graph(&self.output_builder, self.capture.call(arguments))
+        rebuild_graph(
+            &self.output_builder,
+            Invocation::defer_call(self.expr.clone(), &self.closure, arguments),
+        )
     }
 }
 

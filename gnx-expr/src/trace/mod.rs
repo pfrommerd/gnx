@@ -11,7 +11,7 @@ pub use deferred::DeferredCall;
 pub use trace_ref::{Trace, TraceData, Tracer};
 
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 
 use crate::{HExpr, Op};
 
@@ -127,11 +127,13 @@ pub enum Invocation {
         subexprs: Vec<(Arc<HExpr>, Vec<Trace>)>,
         inputs: Vec<Trace>,
         outputs: Vec<ValueInfo>,
+        result_slots: OnceLock<Box<[Weak<TraceData>]>>,
     },
     ReadCell {
         context_id: ContextID,
         cell: CellTrace,
         aliasing_parents: Vec<Arc<Invocation>>,
+        result_slots: OnceLock<Box<[Weak<TraceData>]>>,
     },
     WriteCell {
         context_id: ContextID,
@@ -165,6 +167,28 @@ impl Debug for Invocation {
 }
 
 impl Invocation {
+    fn slots(&self) -> Option<&OnceLock<Box<[Weak<TraceData>]>>> {
+        match self {
+            Self::Apply { result_slots, .. } | Self::ReadCell { result_slots, .. } => {
+                Some(result_slots)
+            }
+            Self::DeferredCall(call) => Some(&call.result_slots),
+            _ => None,
+        }
+    }
+
+    pub(super) fn result_slots(&self) -> &[Weak<TraceData>] {
+        self.slots()
+            .and_then(OnceLock::get)
+            .map_or(&[], Box::as_ref)
+    }
+
+    fn register_consumers(invocation: &Arc<Self>) {
+        for parent in invocation.value_parents() {
+            parent.add_consumer(invocation);
+        }
+    }
+
     pub fn context_id(&self) -> &ContextID {
         match self {
             Self::Apply { context_id, .. }
@@ -237,15 +261,18 @@ impl Invocation {
                 "subexpression capture arity mismatch"
             );
         }
-        let inputs = inputs.into_iter().map(|i| i.into().into_value()).collect();
+        let internal = |input: TraceInput| {
+            let mut trace = input.into_value();
+            trace.make_internal();
+            trace
+        };
+        let inputs = inputs
+            .into_iter()
+            .map(|input| internal(input.into()))
+            .collect();
         let subexprs = subexprs
             .into_iter()
-            .map(|(expr, closure)| {
-                (
-                    expr,
-                    closure.into_iter().map(TraceInput::into_value).collect(),
-                )
-            })
+            .map(|(expr, closure)| (expr, closure.into_iter().map(internal).collect()))
             .collect();
         let invocation = Arc::new(Self::Apply {
             context_id: TraceContext::current_id(),
@@ -253,6 +280,7 @@ impl Invocation {
             subexprs,
             inputs,
             outputs,
+            result_slots: OnceLock::new(),
         });
         Self::returned_values(invocation)
             .into_iter()
@@ -292,6 +320,7 @@ impl Invocation {
             context_id: TraceContext::current_id(),
             cell,
             aliasing_parents,
+            result_slots: OnceLock::new(),
         });
         let value = Self::returned_values(invocation.clone()).pop().unwrap();
         if let Some(ctx) = context {
@@ -300,7 +329,8 @@ impl Invocation {
         value
     }
 
-    pub(crate) fn write_cell(cell: CellTrace, value: Trace) {
+    pub(crate) fn write_cell(cell: CellTrace, mut value: Trace) {
+        value.make_internal();
         let context = TraceContext::current();
         let aliasing_parents = context
             .as_ref()
@@ -312,17 +342,29 @@ impl Invocation {
             value,
             aliasing_parents,
         });
+        Self::register_consumers(&invocation);
         if let Some(ctx) = context {
             ctx.note_aliased_write(invocation);
         }
     }
 
     fn returned_values(invocation: Arc<Self>) -> Vec<Trace> {
-        invocation
+        let results: Vec<_> = invocation
             .outputs()
             .iter()
             .enumerate()
-            .map(|(index, info)| Trace::returned(invocation.clone(), index, info.clone()))
-            .collect()
+            .map(|(index, info)| Trace::returned(&invocation, index, info.clone()))
+            .collect();
+        if let Some(slots) = invocation.slots() {
+            // Results retain their producer, so the producer only keeps weak
+            // slots, initialized as a batch before exposing those results.
+            let weak = results
+                .iter()
+                .map(|trace| Arc::downgrade(&trace.data))
+                .collect();
+            slots.set(weak).expect("invocation results initialize once");
+        }
+        Self::register_consumers(&invocation);
+        results
     }
 }

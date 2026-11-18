@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::leaf::PyLeaf;
-use crate::tracer::{check_live, extract_tracer, wrap_tracer};
+use crate::tracer::{extract_tracer, wrap_tracer};
 
 #[pyclass(name = "Graph", module = "gnxlib.graph", skip_from_py_object)]
 #[derive(Clone)]
@@ -28,6 +28,15 @@ impl GraphContainer {
 
     fn to_value(&self) -> PyGraph {
         (*self.0).clone()
+    }
+}
+
+/// Accept a Python tree or an already parsed Graph as an evaluation root.
+pub(crate) fn parse_roots(value: &PyBound<'_, PyAny>) -> PyResult<Arc<PyGraph>> {
+    if let Ok(graph) = value.cast::<GraphContainer>() {
+        Ok(graph.borrow().0.clone())
+    } else {
+        Ok(Arc::new(value.extract()?))
     }
 }
 
@@ -494,7 +503,6 @@ impl<'py> GraphParser<'py> {
             return Err(PyTypeError::new_err("graph nesting depth exceeds 128"));
         }
         if let Some(tracer) = extract_tracer(obj) {
-            check_live(&tracer)?;
             return Ok(PyGraph::Tracer(tracer));
         }
         // Use exact builtin types, not coercions or Python-defined methods.
@@ -598,10 +606,7 @@ impl PyGraph {
     pub fn into_pyobject_bound<'py>(self, py: Python<'py>) -> PyResult<PyBound<'py, PyAny>> {
         match self {
             PyGraph::Leaf(leaf) => leaf.into_pyobject_bound(py),
-            PyGraph::Tracer(tracer) => {
-                check_live(&tracer)?;
-                wrap_tracer(py, tracer)
-            }
+            PyGraph::Tracer(tracer) => wrap_tracer(py, tracer),
             PyGraph::Tuple(children) => Ok(PyTuple::new(py, children)?.into_any()),
             PyGraph::List(children) => Ok(PyList::new(py, children)?.into_any()),
             PyGraph::Dict(children) => {

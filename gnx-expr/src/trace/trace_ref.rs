@@ -1,116 +1,202 @@
 use crate::{Generic, Invocation, Traceable, Value, ValueInfo};
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use super::context::{ContextID, TraceContext};
 
-enum TraceVariant {
-    // a concrete value
-    Concrete(Value),
-    // an abstract placeholder, used for inputs
-    Placeholder,
-    // represents the returned value of an invocation
-    Returned {
-        inv: Arc<Invocation>,
-        ret_idx: usize,
-    },
-}
-
 pub struct TraceData {
-    variant: TraceVariant,
     info: ValueInfo,
     context_id: ContextID,
+    placeholder: bool,
+    concrete: OnceLock<Value>,
+    producer: Mutex<Option<Arc<Invocation>>>,
+    // Keep the capture key stable even after detaching the producer.
+    origin: Option<(Weak<Invocation>, usize)>,
+    external_handles: AtomicUsize,
+    consumers: Mutex<BTreeMap<usize, Weak<Invocation>>>,
 }
 
-/// Shared handle to an immutable [`TraceData`].
-#[repr(transparent)]
-#[derive(Clone)]
-pub struct Trace(pub(crate) Arc<TraceData>);
+/// Shared handle to a traced value. Materialization does not change its
+/// identity, metadata, or immutable contents.
+#[repr(C)]
+pub struct Trace {
+    pub(super) data: Arc<TraceData>,
+    external: bool,
+}
+
+impl Clone for Trace {
+    fn clone(&self) -> Self {
+        Self::external(self.data.clone())
+    }
+}
+
+impl Drop for Trace {
+    fn drop(&mut self) {
+        self.make_internal();
+    }
+}
 
 impl Debug for Trace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.0.variant {
-            TraceVariant::Placeholder => f
-                .debug_struct("Placeholder")
-                .field("ctx", &self.0.context_id)
-                .finish(),
-            TraceVariant::Returned { inv, ret_idx } => f
-                .debug_struct("Returned")
-                .field("call", &inv)
-                .field("ret_idx", &ret_idx)
-                .field("ctx", &self.0.context_id)
-                .finish(),
-            TraceVariant::Concrete(value) => f
+        if let Some(value) = self.try_concrete() {
+            return f
                 .debug_struct("Concrete")
                 .field("value", value)
-                .field("ctx", &self.0.context_id)
-                .finish(),
+                .field("ctx", self.context_id())
+                .finish();
         }
+        if let Some((invocation, index)) = self.producer_with_index() {
+            return f
+                .debug_struct("Returned")
+                .field("call", &invocation)
+                .field("ret_idx", &index)
+                .finish();
+        }
+        f.debug_struct("Placeholder")
+            .field("ctx", self.context_id())
+            .finish()
     }
 }
 
 impl Trace {
+    fn external(data: Arc<TraceData>) -> Self {
+        data.external_handles.fetch_add(1, Ordering::Relaxed);
+        Self {
+            data,
+            external: true,
+        }
+    }
+
+    pub(super) fn internal(data: Arc<TraceData>) -> Self {
+        Self {
+            data,
+            external: false,
+        }
+    }
+
+    pub(super) fn internal_clone(&self) -> Self {
+        Self::internal(self.data.clone())
+    }
+
+    pub(super) fn make_internal(&mut self) {
+        if self.external {
+            self.external = false;
+            self.data.external_handles.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    pub(super) fn add_consumer(&self, invocation: &Arc<Invocation>) {
+        // Concrete data already cuts the DAG, so it needs no reverse edges.
+        if self.try_concrete().is_some() || self.is_placeholder() {
+            return;
+        }
+        let key = Arc::as_ptr(invocation) as usize;
+        let mut consumers = self.data.consumers.lock().unwrap();
+        if self.try_concrete().is_some() || consumers.contains_key(&key) {
+            return;
+        }
+        // Periodically prune expired edges without scanning the full fan-out
+        // on every insertion. Keeping a Weak also prevents pointer reuse.
+        if consumers.len().is_power_of_two() {
+            consumers.retain(|_, user| user.strong_count() != 0);
+        }
+        consumers.insert(key, Arc::downgrade(invocation));
+    }
+
+    pub(super) fn is_live_outside(&self, inside: impl Fn(usize) -> bool) -> bool {
+        if self.data.external_handles.load(Ordering::Relaxed) != 0 {
+            return true;
+        }
+        let mut consumers = self.data.consumers.lock().unwrap();
+        consumers.retain(|_, user| user.strong_count() != 0);
+        consumers.keys().any(|&user| !inside(user))
+    }
+
     pub fn concrete(value: Value, info: ValueInfo) -> Self {
-        Trace(Arc::new(TraceData {
-            variant: TraceVariant::Concrete(value),
+        Self::external(Arc::new(TraceData {
             info,
             context_id: TraceContext::current_id(),
+            placeholder: false,
+            concrete: OnceLock::from(value),
+            producer: Mutex::new(None),
+            origin: None,
+            external_handles: AtomicUsize::new(0),
+            consumers: Mutex::default(),
         }))
     }
 
     pub fn placeholder(info: ValueInfo) -> Self {
-        Trace(Arc::new(TraceData {
-            variant: TraceVariant::Placeholder,
+        Self::external(Arc::new(TraceData {
             info,
             context_id: TraceContext::current_id(),
+            placeholder: true,
+            concrete: OnceLock::new(),
+            producer: Mutex::new(None),
+            origin: None,
+            external_handles: AtomicUsize::new(0),
+            consumers: Mutex::default(),
         }))
     }
 
-    pub fn returned(invocation: Arc<Invocation>, ret_idx: usize, info: ValueInfo) -> Self {
-        Trace(Arc::new(TraceData {
-            variant: TraceVariant::Returned {
-                inv: invocation,
-                ret_idx,
-            },
+    pub(super) fn returned(invocation: &Arc<Invocation>, ret_idx: usize, info: ValueInfo) -> Self {
+        Self::external(Arc::new(TraceData {
             info,
-            context_id: TraceContext::current_id(),
+            context_id: invocation.context_id().clone(),
+            placeholder: false,
+            concrete: OnceLock::new(),
+            producer: Mutex::new(Some(invocation.clone())),
+            origin: Some((Arc::downgrade(invocation), ret_idx)),
+            external_handles: AtomicUsize::new(0),
+            consumers: Mutex::default(),
         }))
     }
 
     pub fn context_id(&self) -> &ContextID {
-        &self.0.context_id
+        &self.data.context_id
     }
 
-    // Returns the producer of this trace, if any.
-    pub fn producer(&self) -> Option<&Arc<Invocation>> {
-        match &self.0.variant {
-            TraceVariant::Placeholder => None,
-            TraceVariant::Returned { inv, .. } => Some(inv),
-            TraceVariant::Concrete(_) => None,
-        }
+    /// Snapshot the producer of this trace, if it is still deferred.
+    pub fn producer(&self) -> Option<Arc<Invocation>> {
+        self.data.producer.lock().unwrap().clone()
     }
 
     /// The producing DAG node and its immutable result position.
-    pub fn producer_with_index(&self) -> Option<(&Arc<Invocation>, usize)> {
-        match &self.0.variant {
-            TraceVariant::Placeholder | TraceVariant::Concrete(_) => None,
-            TraceVariant::Returned { inv, ret_idx } => Some((inv, *ret_idx)),
-        }
+    pub fn producer_with_index(&self) -> Option<(Arc<Invocation>, usize)> {
+        let (_, index) = self.origin()?;
+        Some((self.producer()?, index))
+    }
+
+    pub(super) fn origin(&self) -> Option<(&Weak<Invocation>, usize)> {
+        self.data
+            .origin
+            .as_ref()
+            .map(|(producer, index)| (producer, *index))
     }
 
     pub fn is_placeholder(&self) -> bool {
-        matches!(self.0.variant, TraceVariant::Placeholder)
+        self.data.placeholder
     }
 
     pub fn info(&self) -> &ValueInfo {
-        &self.0.info
+        &self.data.info
     }
 
     pub fn try_concrete(&self) -> Option<&Value> {
-        match &self.0.variant {
-            TraceVariant::Concrete(value) => Some(value),
-            _ => None,
+        self.data.concrete.get()
+    }
+
+    /// Fill a pending result; the first publication wins. Detach the old
+    /// producer so it can be released after leaving the publication lock.
+    pub(crate) fn publish(&self, value: Value) -> Option<Arc<Invocation>> {
+        let mut producer = self.data.producer.lock().unwrap();
+        if producer.is_some() && self.data.concrete.set(value).is_ok() {
+            self.data.consumers.lock().unwrap().clear();
+            producer.take()
+        } else {
+            None
         }
     }
 }

@@ -3,6 +3,25 @@ name = "gnx-jax"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+test = false # Tests that link libpython use the opt-in integration target.
+
+[features]
+jax-tests = []
+
+[[test]]
+name = "execute"
+required-features = ["jax-tests"]
+
 [dependencies]
+futures-channel = "0.3"
+gnx-expr = { path = "../gnx-expr" }
+gnx-math = { path = "../gnx-math" }
+inventory = "0.3"
 pyo3 = { version = "0.28.3", features = ["abi3-py310"] }
+thiserror = "2"
 uuid = { version = "1.19.0", features = ["v4", "v5"] }
+
+[dev-dependencies]
+futures-executor = "0.3"
+gnx = { path = "../gnx" }

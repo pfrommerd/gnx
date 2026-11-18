@@ -6,6 +6,19 @@ from .graph import Graph as Graph
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R", covariant=True)
+_Binding = array.Array | array.ArrayRef
+
+@final
+class Capture:
+    def __new__(cls, _unavailable: NoReturn, /) -> Capture: ...
+    @property
+    def closure(self) -> tuple[_Binding, ...]: ...
+    @property
+    def inputs(self) -> tuple[_Binding, ...]: ...
+    @property
+    def outputs(self) -> tuple[_Binding, ...]: ...
+
+def expr(roots: object) -> Capture: ...
 
 @final
 class Trace:
