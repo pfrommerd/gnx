@@ -2,7 +2,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 
 use dashmap::DashMap;
-use gnx_expr::{Capture, CellTrace, ContextID, Kind, ObjectTracer, Trace, TraceContext};
+use gnx_expr::{Capture, CellTrace, ContextID, HExpr, Kind, ObjectTracer, Trace, TraceContext};
 use gnx_graph::anyhash::HasherWrite;
 use gnx_graph::util::{GraphExt, IterSource};
 use gnx_graph::{
@@ -39,12 +39,33 @@ where
     where
         A: Graph<Owned = I::Owned, Builder<ObjectTracer> = TracerBuilder<I>>,
     {
+        let (entry, arguments) = self.get_or_trace(input, body)?;
+        Ok(entry.call(&arguments))
+    }
+
+    pub(super) fn trace<E>(
+        &self,
+        input: I,
+        body: impl FnOnce(I::Owned) -> Result<O, E>,
+    ) -> Result<Arc<HExpr>, E> {
+        let (entry, _) = self.get_or_trace(input, body)?;
+        Ok(entry.capture.shared_expr())
+    }
+
+    fn get_or_trace<A, E>(
+        &self,
+        input: A,
+        body: impl FnOnce(I::Owned) -> Result<O, E>,
+    ) -> Result<(Arc<TraceEntry<O>>, Vec<ObjectTracer>), E>
+    where
+        A: Graph<Owned = I::Owned, Builder<ObjectTracer> = TracerBuilder<I>>,
+    {
         let (builder, arguments) = split_graph(&input);
         let kinds = arguments.iter().map(kind).collect();
         let key: Arc<TraceKey<I::Owned>> = Arc::new(TraceKey { builder, kinds });
         let slot = self.slot(&key);
         let entry = slot.get_or_trace(|| TraceEntry::trace(&key.builder, &key.kinds, body))?;
-        Ok(entry.call(&arguments))
+        Ok((entry, arguments))
     }
 
     fn slot(&self, key: &Arc<TraceKey<I::Owned>>) -> Arc<TraceSlot<O>> {

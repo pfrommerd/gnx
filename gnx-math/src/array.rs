@@ -1,7 +1,7 @@
 use ordered_float::OrderedFloat;
 use std::fmt::{Debug, Display};
 
-use gnx_expr::{ConcreteValue, Traceable, Tracer, CellTracer, ValueInfo};
+use gnx_expr::{CellTracer, ConcreteValue, Traceable, Tracer, ValueInfo};
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Dim {
@@ -32,6 +32,10 @@ pub struct Shape(Vec<Dim>);
 impl Shape {
     pub fn fixed(dims: impl IntoIterator<Item = usize>) -> Self {
         Shape(dims.into_iter().map(Dim::Fixed).collect())
+    }
+
+    pub fn dims(&self) -> &[Dim] {
+        &self.0
     }
 }
 
@@ -255,6 +259,14 @@ pub struct ArrayInfo {
 impl ArrayInfo {
     pub fn new(shape: Shape, dtype: DType) -> Self {
         ArrayInfo { shape, dtype }
+    }
+
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.dtype
     }
 }
 

@@ -2,7 +2,7 @@ use gnx_expr::{
     Capture, CellKey, HInstr, Invocation, ObjectTracer, TraceContext, Tracer, TracerKey, ValueInfo,
 };
 use gnx_math::{Array, ArrayInfo, ArrayRef, DType, Shape};
-use gnx_transforms::{Callable, jit};
+use gnx_transforms::{Callable, TryCallable, jit};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
@@ -69,6 +69,26 @@ fn flat_results_keep_order_after_a_shared_child_on_cache_hits() {
         assert_eq!(label, "label");
         same(&last, &tail);
     }
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn inspecting_a_trace_populates_the_cache_without_replaying_writes() {
+    let initial = array();
+    let target = ArrayRef::new(initial.clone().into_tracer());
+    let calls = Cell::new(0);
+    let function = jit(|cell: ArrayRef, value: Array| {
+        calls.set(calls.get() + 1);
+        cell.set(value.into_tracer());
+    });
+    let trace = function.try_trace((target.clone(), array())).unwrap();
+    assert!(matches!(trace.instructions(), [HInstr::WriteCell { .. }]));
+    same(&initial, &target.get());
+    function.try_invoke((target, array())).unwrap();
+    let again = function
+        .try_trace((ArrayRef::new(array()), array()))
+        .unwrap();
+    assert!(Arc::ptr_eq(&trace, &again));
     assert_eq!(calls.get(), 1);
 }
 

@@ -91,6 +91,12 @@ impl Capture {
     pub fn expr(&self) -> &HExpr {
         &self.expr
     }
+
+    /// Share the expression without retaining the captured runtime bindings.
+    pub fn shared_expr(&self) -> Arc<HExpr> {
+        self.expr.clone()
+    }
+
     /// Bind the current arguments to this body without lowering it.
     /// Cell outputs and writes are represented by the resulting call's projections.
     pub fn call(&self, inputs: &[ObjectTracer]) -> Vec<ObjectTracer> {

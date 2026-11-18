@@ -1,14 +1,10 @@
 use crate::{bytes::ImBytes, string::ImString};
 use gnx::graph::*;
-use gnx::util::{cast, LifetimeFree};
+use gnx::util::cast;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes};
 use pyo3::Bound as PyBound;
-use std::{convert::Infallible, sync::Arc};
-
-#[derive(Clone)]
-pub struct ObjectHandle(pub Arc<Py<PyAny>>);
-unsafe impl LifetimeFree for ObjectHandle {}
+use std::convert::Infallible;
 
 #[derive(Clone)]
 pub enum PyLeaf {
@@ -18,8 +14,6 @@ pub enum PyLeaf {
     Bool(bool),
     Bytes(ImBytes),
     String(ImString),
-    // A generic python object as a leaf
-    Other(ObjectHandle),
 }
 
 impl PyLeaf {
@@ -31,32 +25,7 @@ impl PyLeaf {
             PyLeaf::Bool(v) => PyBool::new(py, v).to_owned().into_any(),
             PyLeaf::Bytes(v) => PyBytes::new(py, v.as_slice()).into_any(),
             PyLeaf::String(v) => v.as_str().into_pyobject(py)?.into_any(),
-            PyLeaf::Other(v) => v.0.bind(py).clone(),
         })
-    }
-}
-
-impl<'a, 'py> FromPyObject<'a, 'py> for PyLeaf {
-    type Error = PyErr;
-
-    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        if obj.is_none() {
-            Ok(PyLeaf::None)
-        } else if let Ok(value) = obj.extract::<bool>() {
-            Ok(PyLeaf::Bool(value))
-        } else if let Ok(value) = obj.extract::<i64>() {
-            Ok(PyLeaf::Int(value))
-        } else if let Ok(value) = obj.extract::<f64>() {
-            Ok(PyLeaf::Float(value))
-        } else if let Ok(value) = obj.extract::<ImBytes>() {
-            Ok(PyLeaf::Bytes(value))
-        } else if let Ok(value) = obj.extract::<ImString>() {
-            Ok(PyLeaf::String(value))
-        } else {
-            Ok(PyLeaf::Other(ObjectHandle(Arc::new(
-                obj.as_unbound().clone_ref(obj.py()),
-            ))))
-        }
     }
 }
 
@@ -77,7 +46,6 @@ impl<'py> IntoPyObject<'py> for PyLeaf {
 pub enum PyLeafRef<'l> {
     None, Int(&'l i64), Float(&'l f64), Bool(&'l bool),
     Bytes(&'l [u8]), String(&'l str),
-    Other(&'l ObjectHandle),
 }
 impl PyLeafRef<'_> {
     pub fn cloned(self) -> PyLeaf {
@@ -89,7 +57,6 @@ impl PyLeafRef<'_> {
             Bool(v) => PyLeaf::Bool(*v),
             Bytes(v) => PyLeaf::Bytes(Vec::from(v).into()),
             String(v) => PyLeaf::String(std::string::String::from(v).into()),
-            Other(v) => PyLeaf::Other(v.clone()),
         }
     }
 }
@@ -145,7 +112,6 @@ impl Leaf for PyLeaf {
             Float(v) => PyLeafRef::Float(v), Bool(v) => PyLeafRef::Bool(v),
             Bytes(v) => PyLeafRef::Bytes(v.as_ref()),
             String(v) => PyLeafRef::String(v.as_str()),
-            Other(v) => PyLeafRef::Other(v),
         }
     }
     fn clone_ref(v: Self::Ref<'_>) -> Self { v.cloned() }
@@ -156,7 +122,6 @@ impl Leaf for PyLeaf {
             .or_else(|graph| cast!(graph, &'v Vec<u8>).map(|x| PyLeafRef::Bytes(x.as_slice())))
             .or_else(|graph| cast!(graph, &'v ImString).map(|x| PyLeafRef::String(x.as_str())))
             .or_else(|graph| cast!(graph, &'v String).map(|x| PyLeafRef::String(x.as_str())))
-            .or_else(|graph| cast!(graph, &'v ObjectHandle).map(PyLeafRef::Other))
     }
     fn try_from_value<V>(graph: V) -> Result<Self, V> {
         Err(graph).or_else(|graph| cast!(graph, i64).map(PyLeaf::Int))
@@ -165,7 +130,6 @@ impl Leaf for PyLeaf {
             .or_else(|graph| cast!(graph, Vec<u8>).map(|x| PyLeaf::Bytes(x.into())))
             .or_else(|graph| cast!(graph, ImString).map(PyLeaf::String))
             .or_else(|graph| cast!(graph, String).map(|x| PyLeaf::String(x.into())))
-            .or_else(|graph| cast!(graph, ObjectHandle).map(PyLeaf::Other))
     }
     fn try_into_value<V: 'static>(self) -> Result<V, Self> {
         // Try casting into any of the possible types, if that fails,
@@ -177,7 +141,6 @@ impl Leaf for PyLeaf {
             PyLeaf::Bool(v) => cast!(v, V).map_err(PyLeaf::Bool),
             PyLeaf::Bytes(v) => cast!(v, V).map_err(PyLeaf::Bytes),
             PyLeaf::String(v) => cast!(v, V).map_err(PyLeaf::String),
-            PyLeaf::Other(v) => cast!(v, V).map_err(PyLeaf::Other),
         }.or_else(|leaf| cast!(leaf, V))
     }
 }

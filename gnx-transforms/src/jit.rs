@@ -1,6 +1,7 @@
 use std::convert::Infallible;
+use std::sync::Arc;
 
-use gnx_expr::ObjectTracer;
+use gnx_expr::{HExpr, ObjectTracer};
 use gnx_graph::{Graph, GraphEq, GraphHash};
 
 use crate::cache::{TraceCache, TracerBuilder};
@@ -87,6 +88,16 @@ where
     F: Function<I>,
     F::Output: Graph<Owned = F::Output>,
 {
+    /// Return the high-level expression for this input signature without
+    /// emitting a call. Uses the same trace cache as `TryCallable::try_invoke`.
+    pub fn try_trace(&self, input: I) -> Result<Arc<HExpr>, F::Error>
+    where
+        F: TryJitable<I>,
+    {
+        self.try_traces
+            .trace(input, |input| self.func.try_invoke_owned(input))
+    }
+
     // An attribute-generated static can accept shorter borrows because
     // tracing only passes the rebuilt, owned graph to its body.
     #[doc(hidden)]
