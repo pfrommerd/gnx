@@ -9,7 +9,7 @@ use std::fmt::{Debug, Display};
 use uuid::Uuid;
 
 use gnx::backend::{Backend, BackendHandle, BackendImpl, Device, DeviceImpl, ExecOpts};
-use gnx::expr::{Expr, Value};
+use gnx::expr::{lexpr::Expr, Value};
 
 #[derive(Debug)]
 pub struct JaxDevice {

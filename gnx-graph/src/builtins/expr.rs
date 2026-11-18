@@ -1,70 +1,15 @@
 use crate::util::impl_lifetime_free;
 use crate::*;
 
-use gnx_expr::trace::{
-    Generic, TraceCellRef, TraceObject, TraceRef, Traceable, Tracer, TracerCell,
-};
+use gnx_expr::trace::{Generic, CellTrace, ObjectTracer, Tracer, CellTracer};
 use gnx_math::{Array, ArrayInfo, ArrayRef, Device, DeviceInfo};
 
-impl_lifetime_free!(
-    TraceRef,
-    TraceCellRef,
-    Array,
-    ArrayRef,
-    Device,
-    ArrayInfo,
-    DeviceInfo
-);
-impl_lifetime_free!(for<T: Traceable> Tracer<T>);
-impl_lifetime_free!(for<T: Traceable> TracerCell<T>);
+use super::trace::{cell_ref, into_cell_ref, into_value_ref, value_ref};
+use std::any::TypeId;
 
-// Basic leaf types.
-impl_leaf!(TraceRef);
-impl_leaf!(TraceCellRef);
+impl_lifetime_free!(Array, ArrayRef, Device, ArrayInfo, DeviceInfo);
 impl_leaf!(ArrayInfo);
 impl_leaf!(DeviceInfo);
-
-// A TraceObject is also a leaf, and can act as either a TraceRef or a TraceCellRef.
-// impl Graph for TraceObject {
-//     type Owned = Self;
-//     type Builder<L: Leaf> = LeafBuilder<Self>;
-
-//     fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
-//         &'g self,
-//         filter: F,
-//         source: S,
-//         _ctx: &mut GraphContext,
-//     ) -> Result<Self::Owned, S::Error> {
-//         todo!()
-//     }
-
-//     fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
-//         &'g self,
-//         filter: F,
-//         _ctx: &mut GraphContext,
-//     ) -> Result<Self::Builder<L>, E> {
-//         todo!()
-//     }
-
-//     fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
-//         &'g self,
-//         filter: F,
-//         visitor: V,
-//     ) -> V::Output {
-//         todo!()
-//     }
-
-//     fn visit_into<'g, L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
-//         self,
-//         filter: F,
-//         consumer: C,
-//     ) -> C::Output {
-//         todo!()
-//     }
-// }
-
-// Note Tracer<> and TracerCell<> types are intentionally not implemented as leaves.
-// TraceRef and TraceCellRef are only leaves so that we can filter all Traceable types.
 
 impl Graph for Array {
     type Owned = Self;
@@ -145,11 +90,11 @@ impl Leaf for Array {
     }
     fn try_from_value<V>(g: V) -> Result<Self, V> {
         cast!(g, Self).or_else(|g| {
-            if let Ok(r) = cast!(&g, &TraceRef) {
+            if let Some(r) = value_ref(&g) {
                 let r: &Tracer<Generic> = r.into();
                 if r.try_cast_ref::<Array>().is_ok() {
                     // We know that g is a Array, so we can do an unchecked cast to Array.
-                    let r: Tracer<Generic> = cast!(g, TraceRef).ok().unwrap().into();
+                    let r: Tracer<Generic> = into_value_ref(g).ok().unwrap().into();
                     // SAFETY: We know that it is safe to cast to Array since
                     // we just checked that the info matches.
                     return Ok(Array::from(unsafe { r.cast_unchecked() }));
@@ -159,19 +104,26 @@ impl Leaf for Array {
         })
     }
     fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-        cast!(graph, &Self).or_else(|graph| match cast!(graph, &TraceRef) {
-            Ok(r) => {
+        cast!(graph, &Self).or_else(|graph| match value_ref(graph) {
+            Some(r) => {
                 let r: &Tracer<Generic> = r.into();
                 match r.try_cast_ref::<Array>() {
                     Ok(r) => Ok(r.into()),
                     Err(_) => Err(graph),
                 }
             }
-            Err(graph) => Err(graph),
+            None => Err(graph),
         })
     }
     fn try_into_value<V: 'static>(self) -> Result<V, Self> {
         cast!(self, V).or_else(|value| {
+            if TypeId::of::<V>() == TypeId::of::<ObjectTracer>() {
+                return Ok(
+                    cast!(ObjectTracer::Ref(value.into_tracer().into_trace_ref()), V)
+                        .ok()
+                        .unwrap(),
+                );
+            }
             if let Ok(_) = cast!(value.tracer(), &V) {
                 return Ok(cast!(value.into_tracer(), V).ok().unwrap());
             }
@@ -258,10 +210,10 @@ impl Leaf for Device {
     }
     fn try_from_value<V>(g: V) -> Result<Self, V> {
         cast!(g, Self).or_else(|g| {
-            if let Ok(r) = cast!(&g, &TraceRef) {
+            if let Some(r) = value_ref(&g) {
                 let r: &Tracer<Generic> = r.into();
                 if r.try_cast_ref::<Device>().is_ok() {
-                    let r: Tracer<Generic> = cast!(g, TraceRef).ok().unwrap().into();
+                    let r: Tracer<Generic> = into_value_ref(g).ok().unwrap().into();
                     // SAFETY: We know that it is safe to cast to Device since
                     // we just checked that the info matches.
                     return Ok(Device::from(unsafe { r.cast_unchecked() }));
@@ -271,19 +223,26 @@ impl Leaf for Device {
         })
     }
     fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-        cast!(graph, &Self).or_else(|graph| match cast!(graph, &TraceRef) {
-            Ok(r) => {
+        cast!(graph, &Self).or_else(|graph| match value_ref(graph) {
+            Some(r) => {
                 let r: &Tracer<Generic> = r.into();
                 match r.try_cast_ref::<Device>() {
                     Ok(r) => Ok(r.into()),
                     Err(_) => Err(graph),
                 }
             }
-            Err(graph) => Err(graph),
+            None => Err(graph),
         })
     }
     fn try_into_value<V: 'static>(self) -> Result<V, Self> {
         cast!(self, V).or_else(|value| {
+            if TypeId::of::<V>() == TypeId::of::<ObjectTracer>() {
+                return Ok(
+                    cast!(ObjectTracer::Ref(value.into_tracer().into_trace_ref()), V)
+                        .ok()
+                        .unwrap(),
+                );
+            }
             if let Ok(_) = cast!(value.tracer(), &V) {
                 return Ok(cast!(value.into_tracer(), V).ok().unwrap());
             }
@@ -349,7 +308,7 @@ impl Graph for ArrayRef {
             return consumer.consume_leaf(value);
         }
         if let Ok(_) = filter.matches_ref(trace_cell_ref) {
-            let trace_cell_ref: TraceCellRef = self.into_tracer().into();
+            let trace_cell_ref: CellTrace = self.into_tracer().into();
             let value = filter
                 .matches_value(trace_cell_ref)
                 .or(Err(()))
@@ -370,10 +329,10 @@ impl Leaf for ArrayRef {
     }
     fn try_from_value<V>(g: V) -> Result<Self, V> {
         cast!(g, Self).or_else(|g| {
-            if let Ok(r) = cast!(&g, &TraceCellRef) {
-                let r: &TracerCell<Generic> = r.into();
+            if let Some(r) = cell_ref(&g) {
+                let r: &CellTracer<Generic> = r.into();
                 if r.try_cast_ref::<Array>().is_ok() {
-                    let r: TracerCell<Generic> = cast!(g, TraceCellRef).ok().unwrap().into();
+                    let r: CellTracer<Generic> = into_cell_ref(g).ok().unwrap().into();
                     return Ok(ArrayRef::from(r.try_cast::<Array>().ok().unwrap()));
                 }
             }
@@ -381,18 +340,28 @@ impl Leaf for ArrayRef {
         })
     }
     fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-        cast!(graph, &Self).or_else(|graph| match cast!(graph, &TraceCellRef) {
-            Ok(r) => {
-                let r: &TracerCell<Generic> = r.into();
+        cast!(graph, &Self).or_else(|graph| match cell_ref(graph) {
+            Some(r) => {
+                let r: &CellTracer<Generic> = r.into();
                 match r.try_cast_ref::<Array>() {
                     Ok(r) => Ok(r.into()),
                     Err(_) => Err(graph),
                 }
             }
-            Err(graph) => Err(graph),
+            None => Err(graph),
         })
     }
     fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-        cast!(self, V)
+        cast!(self, V).or_else(|value| {
+            if TypeId::of::<V>() == TypeId::of::<ObjectTracer>() {
+                let cell: CellTrace = value.into_tracer().into();
+                return Ok(cast!(ObjectTracer::Cell(cell), V).ok().unwrap());
+            }
+            if TypeId::of::<V>() == TypeId::of::<CellTrace>() {
+                let cell: CellTrace = value.into_tracer().into();
+                return Ok(cast!(cell, V).ok().unwrap());
+            }
+            Err(value)
+        })
     }
 }

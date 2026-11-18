@@ -3,30 +3,28 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
-use crate::builtins::{READ_OP, UPDATE_OP};
-use crate::trace::TraceInput;
-use crate::{Effect, Generic, Invocation, Op, ValueInfo};
+use crate::{Generic, Invocation, ValueInfo};
 
 use super::context::{ContextID, TraceContext};
-use super::{TraceRef, Traceable, Tracer};
+use super::{Trace, Traceable, Tracer};
 
 /// Stable identity for a [`TraceCell`].
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CellKey(usize);
 
 impl CellKey {
-    pub fn from(cell: &TraceCellRef) -> Self {
+    pub fn from(cell: &CellTrace) -> Self {
         CellKey(Arc::as_ptr(&cell.0) as usize)
     }
 }
 
-/// Mutable traced slot (JAX-style ref). [`TraceRef`] values are immutable.
+/// Mutable traced slot (JAX-style ref). [`Trace`] values are immutable.
 pub struct TraceCell {
     context_id: ContextID,
     type_info: ValueInfo,
     /// The current "home" trace value, held under its own lock. Input cells
     /// (`is_input`) initialize this to a placeholder trace.
-    home: RwLock<TraceRef>,
+    home: RwLock<Trace>,
     /// Whether this cell is an abstract input/placeholder. Input cells are
     /// always treated as maybe-aliased (their relationship to other inputs is
     /// unknown at trace time).
@@ -36,11 +34,11 @@ pub struct TraceCell {
 /// Shared handle to a mutable [`TraceCell`].
 #[repr(transparent)]
 #[derive(Clone)]
-pub struct TraceCellRef(Arc<TraceCell>);
+pub struct CellTrace(Arc<TraceCell>);
 
-impl TraceCellRef {
-    pub fn new(base: TraceRef) -> Self {
-        TraceCellRef(Arc::new(TraceCell {
+impl CellTrace {
+    pub fn new(base: Trace) -> Self {
+        CellTrace(Arc::new(TraceCell {
             context_id: TraceContext::current_id(),
             type_info: base.info().clone(),
             home: RwLock::new(base),
@@ -49,10 +47,10 @@ impl TraceCellRef {
     }
 
     pub fn placeholder(info: ValueInfo) -> Self {
-        TraceCellRef(Arc::new(TraceCell {
+        CellTrace(Arc::new(TraceCell {
             context_id: TraceContext::current_id(),
             type_info: info.clone(),
-            home: RwLock::new(TraceRef::placeholder(info)),
+            home: RwLock::new(Trace::placeholder(info)),
             is_input: true,
         }))
     }
@@ -74,76 +72,42 @@ impl TraceCellRef {
         !self.0.context_id.is_current() || self.is_placeholder()
     }
 
-    /// The current home trace value, without emitting a [`READ_OP`].
+    /// The current home trace value, without recording a structural cell read.
     ///
     /// Used during invocation/capture to thread non-aliased cell values and to
     /// classify foreign cells. For maybe-aliased cells this is only a structural
     /// handle (its producer lives in another context or is a placeholder);
     /// ordering is carried by serialization edges, not this value.
-    pub fn read_home(&self) -> TraceRef {
+    pub fn read_home(&self) -> Trace {
         self.0.home.read().unwrap().clone()
     }
 
     /// Resolve the trace for this cell in the active context.
-    pub fn get(&self) -> TraceRef {
+    pub fn get(&self) -> Trace {
         // If we are in the current context,
         // return the actual trace.
         if self.0.context_id.is_current() && !self.is_placeholder() {
             return self.read_home();
         }
-        // Otherwise, bind an invocation with this cell.
-        let [trace] = Invocation::invoke(
-            Op::new(&READ_OP),
-            vec![],
-            vec![self.clone()],
-            vec![self.type_info().clone()],
-        )
-        .try_into()
-        .unwrap();
-        trace.into_trace_ref()
+        Invocation::read_cell(self.clone())
     }
 
-    /// Bind the cell: update home storage in-context, otherwise via [`TraceContext`].
-    pub fn set(&self, value: TraceRef) {
-        if self.0.context_id.is_current() && !self.is_placeholder() {
-            let mut guard = self.0.home.write().unwrap();
-            *guard = value;
-        } else {
-            // Maybe-aliased cell: record the write as an UPDATE_OP invocation so
-            // that aliasing serialization edges are established.
-            Invocation::invoke_with_subexprs(
-                Op::new(&UPDATE_OP),
-                vec![],
-                vec![TraceInput::Cell(self.clone(), Effect::Write)],
-                vec![],
-            );
-            let _ = value;
-        }
-    }
-
-    // Callback from an invocation to update the cell.
-    pub(crate) fn direct_update_from_invoke(
-        &self,
-        invocation: &Arc<Invocation>,
-        subexpr: Option<usize>,
-        index: usize,
-    ) {
-        assert!(
-            !self.is_maybe_aliased(),
-            "aliased cells cannot be updated directly"
+    /// Rebind a local slot, or record an ordered write to an external cell.
+    pub fn set(&self, value: Trace) {
+        assert_eq!(
+            self.type_info(),
+            value.info(),
+            "cell assignment type mismatch"
         );
-        let mut guard = self.0.home.write().unwrap();
-        // set the cell value to an updated trace.
-        *guard =
-            TraceRef::updated_cell(invocation.clone(), self.type_info().clone(), subexpr, index);
-    }
-
-    pub(crate) fn downgrade(&self) -> std::sync::Weak<TraceCell> {
-        Arc::downgrade(&self.0)
+        if self.0.context_id.is_current() && !self.is_placeholder() {
+            *self.0.home.write().unwrap() = value;
+        } else {
+            Invocation::write_cell(self.clone(), value);
+        }
     }
 }
 
-impl Deref for TraceCellRef {
+impl Deref for CellTrace {
     type Target = TraceCell;
 
     fn deref(&self) -> &TraceCell {
@@ -151,19 +115,19 @@ impl Deref for TraceCellRef {
     }
 }
 
-impl From<Arc<TraceCell>> for TraceCellRef {
+impl From<Arc<TraceCell>> for CellTrace {
     fn from(value: Arc<TraceCell>) -> Self {
-        TraceCellRef(value)
+        CellTrace(value)
     }
 }
 
-impl From<TraceCellRef> for Arc<TraceCell> {
-    fn from(value: TraceCellRef) -> Self {
+impl From<CellTrace> for Arc<TraceCell> {
+    fn from(value: CellTrace) -> Self {
         value.0
     }
 }
 
-impl Debug for TraceCellRef {
+impl Debug for CellTrace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&*self.0, f)
     }
@@ -183,28 +147,28 @@ impl Debug for TraceCell {
     }
 }
 
-/// Typed handle to a [`TraceCell`] (analogous to [`Tracer`] for [`Trace`]).
-pub struct TracerCell<T: Traceable> {
-    shared: TraceCellRef,
+/// Typed handle to a [`TraceCell`] (analogous to [`Tracer`] for [`TraceData`]).
+pub struct CellTracer<T: Traceable> {
+    shared: CellTrace,
     _phantom: PhantomData<T>,
 }
 
-impl<T: Traceable> TracerCell<T> {
+impl<T: Traceable> CellTracer<T> {
     pub fn new(trace: Tracer<T>) -> Self {
-        TracerCell {
-            shared: TraceCellRef::new(trace.trace_ref().clone()),
+        CellTracer {
+            shared: CellTrace::new(trace.trace_ref().clone()),
             _phantom: PhantomData,
         }
     }
 
     pub fn placeholder(info: ValueInfo) -> Self {
-        TracerCell {
-            shared: TraceCellRef::placeholder(info),
+        CellTracer {
+            shared: CellTrace::placeholder(info),
             _phantom: PhantomData,
         }
     }
 
-    pub fn cell_ref(&self) -> &TraceCellRef {
+    pub fn cell_ref(&self) -> &CellTrace {
         &self.shared
     }
 
@@ -220,9 +184,9 @@ impl<T: Traceable> TracerCell<T> {
         self.shared.set(value.trace_ref().clone());
     }
 
-    pub fn try_cast<U: Traceable>(self) -> Result<TracerCell<U>, ()> {
+    pub fn try_cast<U: Traceable>(self) -> Result<CellTracer<U>, ()> {
         match self.shared.type_info().downcast::<U::Info>() {
-            Ok(_) => Ok(TracerCell {
+            Ok(_) => Ok(CellTracer {
                 shared: self.shared,
                 _phantom: PhantomData,
             }),
@@ -230,7 +194,7 @@ impl<T: Traceable> TracerCell<T> {
         }
     }
 
-    pub fn try_cast_ref<U: Traceable>(&self) -> Result<&TracerCell<U>, &Self> {
+    pub fn try_cast_ref<U: Traceable>(&self) -> Result<&CellTracer<U>, &Self> {
         match self.shared.type_info().downcast::<U::Info>() {
             Ok(_) => Ok(unsafe { std::mem::transmute(self) }),
             Err(_) => Err(self),
@@ -238,40 +202,40 @@ impl<T: Traceable> TracerCell<T> {
     }
 }
 
-// SAFETY: TracerCell<Generic> and TraceCellRef share the same address (TraceCellRef is field 0).
-impl From<&TraceCellRef> for &TracerCell<Generic> {
-    fn from(r: &TraceCellRef) -> Self {
+// SAFETY: CellTracer<Generic> and CellTrace share the same address (CellTrace is field 0).
+impl From<&CellTrace> for &CellTracer<Generic> {
+    fn from(r: &CellTrace) -> Self {
         unsafe { std::mem::transmute(r) }
     }
 }
 
-impl<T: Traceable> From<TracerCell<T>> for TraceCellRef {
-    fn from(c: TracerCell<T>) -> Self {
+impl<T: Traceable> From<CellTracer<T>> for CellTrace {
+    fn from(c: CellTracer<T>) -> Self {
         c.shared
     }
 }
 
-impl From<TraceCellRef> for TracerCell<Generic> {
-    fn from(c: TraceCellRef) -> Self {
-        TracerCell {
+impl From<CellTrace> for CellTracer<Generic> {
+    fn from(c: CellTrace) -> Self {
+        CellTracer {
             shared: c,
             _phantom: PhantomData,
         }
     }
 }
 
-impl<T: Traceable> Clone for TracerCell<T> {
+impl<T: Traceable> Clone for CellTracer<T> {
     fn clone(&self) -> Self {
-        TracerCell {
+        CellTracer {
             shared: self.shared.clone(),
             _phantom: PhantomData,
         }
     }
 }
 
-impl<T: Traceable> std::fmt::Debug for TracerCell<T> {
+impl<T: Traceable> std::fmt::Debug for CellTracer<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TracerCell")
+        f.debug_struct("CellTracer")
             .field("shared", &self.shared)
             .finish()
     }

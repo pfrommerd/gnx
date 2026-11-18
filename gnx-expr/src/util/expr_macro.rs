@@ -1,7 +1,5 @@
 use crate::dialects::dialects;
-use crate::{
-    Attr, AttrList, AttrMap, Effect, Eqn, Expr, Input, Op, SubExpr, ValueInfo, Var, VarScope,
-};
+use crate::{Attr, AttrList, AttrMap, Eqn, Expr, Input, Op, SubExpr, ValueInfo, Var, VarScope};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -35,22 +33,18 @@ impl ExprBuilder {
         }
     }
 
-    pub fn closure(&mut self, name: &'static str, effect: Effect) {
+    pub fn closure(&mut self, name: &'static str) {
         let var = self.var(name);
-        self.closure.push(Input::new(var, effect));
+        self.closure.push(Input::new(var));
     }
 
-    pub fn input(&mut self, name: &'static str, effect: Effect) {
+    pub fn input(&mut self, name: &'static str) {
         let var = self.var(name);
-        self.inputs.push(Input::new(var, effect));
+        self.inputs.push(Input::new(var));
     }
 
-    pub fn read(&mut self, name: &'static str) -> Input {
-        Input::new(self.var(name), Effect::Read)
-    }
-
-    pub fn write(&mut self, name: &'static str) -> Input {
-        Input::new(self.var(name), Effect::Write)
+    pub fn operand(&mut self, name: &'static str) -> Input {
+        Input::new(self.var(name))
     }
 
     pub fn output(&mut self, name: &'static str) -> Var {
@@ -138,6 +132,11 @@ macro_rules! attr {
     };
 }
 
+/// Build an immutable computation expression. Cell actions belong to HExpr.
+///
+/// ```compile_fail
+/// let _ = gnx_expr::expr!({ lambda ; cell[:] . in (cell) });
+/// ```
 #[macro_export]
 macro_rules! expr {
     ({ lambda $($body:tt)* }) => {{
@@ -176,20 +175,15 @@ macro_rules! __expr_bind_params {
     ($builder:ident; $kind:ident; , $($rest:tt)*) => {
         $crate::__expr_bind_params!($builder; $kind; $($rest)*)
     };
-    ($builder:ident; closure; $name:ident [:] $($rest:tt)*) => {
-        $builder.closure(stringify!($name), $crate::Effect::Write);
-        $crate::__expr_bind_params!($builder; closure; $($rest)*)
-    };
-    ($builder:ident; input; $name:ident [:] $($rest:tt)*) => {
-        $builder.input(stringify!($name), $crate::Effect::Write);
-        $crate::__expr_bind_params!($builder; input; $($rest)*)
+    ($builder:ident; $kind:ident; $name:ident [:] $($rest:tt)*) => {
+        compile_error!("cell mutation is structural HExpr syntax, not a computation parameter annotation");
     };
     ($builder:ident; closure; $name:ident $($rest:tt)*) => {
-        $builder.closure(stringify!($name), $crate::Effect::Read);
+        $builder.closure(stringify!($name));
         $crate::__expr_bind_params!($builder; closure; $($rest)*)
     };
     ($builder:ident; input; $name:ident $($rest:tt)*) => {
-        $builder.input(stringify!($name), $crate::Effect::Read);
+        $builder.input(stringify!($name));
         $crate::__expr_bind_params!($builder; input; $($rest)*)
     };
 }
@@ -292,10 +286,10 @@ macro_rules! __expr_inputs {
         $crate::__expr_inputs!($builder; [$($inputs,)*] $($rest)*)
     };
     ($builder:ident; [$($inputs:expr,)*] $name:ident [:] $($rest:tt)*) => {
-        $crate::__expr_inputs!($builder; [$($inputs,)* $builder.write(stringify!($name)),] $($rest)*)
+        compile_error!("read/write cells through the HExpr cell API, not computation operands");
     };
     ($builder:ident; [$($inputs:expr,)*] $name:ident $($rest:tt)*) => {
-        $crate::__expr_inputs!($builder; [$($inputs,)* $builder.read(stringify!($name)),] $($rest)*)
+        $crate::__expr_inputs!($builder; [$($inputs,)* $builder.operand(stringify!($name)),] $($rest)*)
     };
 }
 

@@ -413,29 +413,29 @@ impl<'p, 'buf, 'src, R: PeekRead + Seek> TextSource<'src> for IoSourceBuf<'p, 'b
 
 impl<'p, 'buf, 'src, R: PeekRead + Seek> BufferedSource<'src, 'buf> for IoSourceBuf<'p, 'buf, R> {}
 
-pub struct RawSource<'src> {
+pub struct BytesSource<'src> {
     data: &'src [u8],
     pos: usize,
 }
 
-pub struct RawSourceBuf<'p, 'src> {
-    parent: &'p mut RawSource<'src>,
+pub struct BytesSourceBuf<'p, 'src> {
+    parent: &'p mut BytesSource<'src>,
     buffer_start: usize,
 }
 
-impl<'src> From<&'src [u8]> for RawSource<'src> {
+impl<'src> From<&'src [u8]> for BytesSource<'src> {
     fn from(data: &'src [u8]) -> Self {
         Self { data, pos: 0 }
     }
 }
 
-impl<'src> RawSource<'src> {
+impl<'src> BytesSource<'src> {
     fn remaining(&self) -> &'src [u8] {
         unsafe { &self.data.get_unchecked(self.pos..) }
     }
 }
 
-impl<'src> TextSource<'src> for RawSource<'src> {
+impl<'src> TextSource<'src> for BytesSource<'src> {
     type Position = usize;
     fn position(&mut self) -> Result<Self::Position> {
         Ok(self.pos)
@@ -498,7 +498,7 @@ impl<'src> TextSource<'src> for RawSource<'src> {
     }
 
     type Buffering<'s, 'tmp>
-        = RawSourceBuf<'s, 'src>
+        = BytesSourceBuf<'s, 'src>
     where
         Self: 's + 'tmp;
     fn buffering<'s, 'tmp>(
@@ -510,14 +510,14 @@ impl<'src> TextSource<'src> for RawSource<'src> {
     {
         // SAFETY: self.pos is a valid index into self.data
         let buffer_start = self.pos;
-        RawSourceBuf {
+        BytesSourceBuf {
             parent: self,
             buffer_start,
         }
     }
 }
 
-impl<'tmp, 'src, 'p> Into<Text<'src, 'tmp>> for RawSourceBuf<'p, 'src> {
+impl<'tmp, 'src, 'p> Into<Text<'src, 'tmp>> for BytesSourceBuf<'p, 'src> {
     fn into(self) -> Text<'src, 'tmp> {
         // SAFETY: We know that buffer_start is a valid UTF-8 index
         // into self.parent.data and that self.parent.pos
@@ -533,7 +533,7 @@ impl<'tmp, 'src, 'p> Into<Text<'src, 'tmp>> for RawSourceBuf<'p, 'src> {
     }
 }
 
-impl<'p, 'src> TextSource<'src> for RawSourceBuf<'p, 'src> {
+impl<'p, 'src> TextSource<'src> for BytesSourceBuf<'p, 'src> {
     type Position = usize;
     fn position(&mut self) -> Result<Self::Position> {
         self.parent.position()
@@ -563,7 +563,7 @@ impl<'p, 'src> TextSource<'src> for RawSourceBuf<'p, 'src> {
     }
 
     type Buffering<'s, 'tmp>
-        = RawSourceBuf<'s, 'src>
+        = BytesSourceBuf<'s, 'src>
     where
         Self: 's + 'tmp;
     fn buffering<'s, 'tmp>(
@@ -574,40 +574,40 @@ impl<'p, 'src> TextSource<'src> for RawSourceBuf<'p, 'src> {
         Self: 's + 'tmp,
     {
         let buffer_start = self.parent.pos;
-        RawSourceBuf {
+        BytesSourceBuf {
             parent: self.parent,
             buffer_start,
         }
     }
 }
 
-impl<'p, 'src, 'buf> BufferedSource<'src, 'buf> for RawSourceBuf<'p, 'src> {}
+impl<'p, 'src, 'buf> BufferedSource<'src, 'buf> for BytesSourceBuf<'p, 'src> {}
 
-pub struct RawStrSource<'src> {
+pub struct StrSource<'src> {
     // The original data that we are consuming from.
     data: &'src str,
     pos: usize,
 }
 
-pub struct RawStrSourceBuf<'p, 'src> {
-    parent: &'p mut RawStrSource<'src>,
+pub struct StrSourceBuf<'p, 'src> {
+    parent: &'p mut StrSource<'src>,
     buffer_start: usize,
 }
 
-impl<'src> From<&'src str> for RawStrSource<'src> {
+impl<'src> From<&'src str> for StrSource<'src> {
     fn from(data: &'src str) -> Self {
         Self { data, pos: 0 }
     }
 }
 
-impl<'src> RawStrSource<'src> {
+impl<'src> StrSource<'src> {
     fn remaining(&self) -> &'src str {
         // SAFETY: self.pos is a valid UTF-8 index into self.data
         unsafe { self.data.get_unchecked(self.pos..) }
     }
 }
 
-impl<'src> TextSource<'src> for RawStrSource<'src> {
+impl<'src> TextSource<'src> for StrSource<'src> {
     type Position = usize;
     fn position(&mut self) -> Result<Self::Position> {
         Ok(self.pos)
@@ -674,7 +674,7 @@ impl<'src> TextSource<'src> for RawStrSource<'src> {
     }
 
     type Buffering<'s, 'tmp>
-        = RawStrSourceBuf<'s, 'src>
+        = StrSourceBuf<'s, 'src>
     where
         Self: 's + 'tmp;
     fn buffering<'s, 'tmp>(
@@ -685,14 +685,14 @@ impl<'src> TextSource<'src> for RawStrSource<'src> {
         Self: 's + 'tmp,
     {
         let buffer_start = self.pos;
-        RawStrSourceBuf {
+        StrSourceBuf {
             parent: self,
             buffer_start,
         }
     }
 }
 
-impl<'tmp, 'src, 'p> Into<Text<'src, 'tmp>> for RawStrSourceBuf<'p, 'src> {
+impl<'tmp, 'src, 'p> Into<Text<'src, 'tmp>> for StrSourceBuf<'p, 'src> {
     fn into(self) -> Text<'src, 'tmp> {
         // SAFETY: We know that buffer_start and self.parent.pos are valid UTF-8 indices
         // into self.parent.data (they were calculated from string slice positions)
@@ -705,7 +705,7 @@ impl<'tmp, 'src, 'p> Into<Text<'src, 'tmp>> for RawStrSourceBuf<'p, 'src> {
     }
 }
 
-impl<'src, 'p> TextSource<'src> for RawStrSourceBuf<'p, 'src> {
+impl<'src, 'p> TextSource<'src> for StrSourceBuf<'p, 'src> {
     type Position = usize;
     fn position(&mut self) -> Result<Self::Position> {
         Ok(self.parent.pos)
@@ -733,7 +733,7 @@ impl<'src, 'p> TextSource<'src> for RawStrSourceBuf<'p, 'src> {
     }
 
     type Buffering<'s, 'tmp>
-        = RawStrSourceBuf<'s, 'src>
+        = StrSourceBuf<'s, 'src>
     where
         Self: 's + 'tmp;
     fn buffering<'s, 'tmp>(
@@ -745,10 +745,10 @@ impl<'src, 'p> TextSource<'src> for RawStrSourceBuf<'p, 'src> {
     {
         // SAFETY: self.parent.pos is a valid UTF-8 index into self.parent.data
         let buffer_start = self.parent.pos;
-        RawStrSourceBuf {
+        StrSourceBuf {
             parent: self.parent,
             buffer_start,
         }
     }
 }
-impl<'p, 'src, 'buf> BufferedSource<'src, 'buf> for RawStrSourceBuf<'p, 'src> {}
+impl<'p, 'src, 'buf> BufferedSource<'src, 'buf> for StrSourceBuf<'p, 'src> {}

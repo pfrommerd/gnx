@@ -66,7 +66,7 @@ pub fn jittable(input: ProcTokenStream) -> ProcTokenStream {
     ProcTokenStream::from(expand_jittable(input.signature, input.callable))
 }
 
-pub fn jit(input: ProcTokenStream) -> ProcTokenStream {
+pub fn jit_fn(input: ProcTokenStream) -> ProcTokenStream {
     let input = parse_macro_input!(input as Expr);
     let err = require_transforms_crate();
     let as_fn = transforms_callable_as_fn();
@@ -84,7 +84,12 @@ pub fn jit(input: ProcTokenStream) -> ProcTokenStream {
     ProcTokenStream::from(expanded)
 }
 
-pub fn jit_fn(_attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
+pub fn jit(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new(Span::call_site(), "#[jit] does not accept arguments")
+            .to_compile_error()
+            .into();
+    }
     let input = parse_macro_input!(input as ItemFn);
     let err = require_transforms_crate();
     let jit_fn = transforms_jit_fn();

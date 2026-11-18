@@ -1,7 +1,7 @@
 use ordered_float::OrderedFloat;
 use std::fmt::{Debug, Display};
 
-use gnx_expr::{ConcreteValue, Traceable, Tracer, TracerCell, ValueInfo};
+use gnx_expr::{ConcreteValue, Traceable, Tracer, CellTracer, ValueInfo};
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Dim {
@@ -307,16 +307,16 @@ impl Array {
     }
 }
 
-/// Mutable array traced via [`TracerCell`] (JAX-style ref).
+/// Mutable array traced via [`CellTracer`] (JAX-style ref).
 #[derive(Clone)]
-pub struct ArrayRef(TracerCell<Array>);
+pub struct ArrayRef(CellTracer<Array>);
 
 impl ArrayRef {
     pub fn new(base: impl Into<Tracer<Array>>) -> Self {
-        ArrayRef(TracerCell::new(base.into()))
+        ArrayRef(CellTracer::new(base.into()))
     }
 
-    pub fn cell(&self) -> &TracerCell<Array> {
+    pub fn cell(&self) -> &CellTracer<Array> {
         &self.0
     }
 
@@ -336,28 +336,28 @@ impl ArrayRef {
         self.0.get().info().shape.clone()
     }
 
-    pub fn tracer(&self) -> &TracerCell<Array> {
+    pub fn tracer(&self) -> &CellTracer<Array> {
         &self.0
     }
-    pub fn into_tracer(self) -> TracerCell<Array> {
+    pub fn into_tracer(self) -> CellTracer<Array> {
         self.0
     }
 }
 
-// SAFETY: ArrayRef and TracerCell<Array> have the same layout.
-impl From<&TracerCell<Array>> for &ArrayRef {
-    fn from(value: &TracerCell<Array>) -> Self {
+// SAFETY: ArrayRef and CellTracer<Array> have the same layout.
+impl From<&CellTracer<Array>> for &ArrayRef {
+    fn from(value: &CellTracer<Array>) -> Self {
         unsafe { std::mem::transmute(value) }
     }
 }
 
-impl From<TracerCell<Array>> for ArrayRef {
-    fn from(value: TracerCell<Array>) -> Self {
+impl From<CellTracer<Array>> for ArrayRef {
+    fn from(value: CellTracer<Array>) -> Self {
         ArrayRef(value)
     }
 }
 
-impl From<ArrayRef> for TracerCell<Array> {
+impl From<ArrayRef> for CellTracer<Array> {
     fn from(value: ArrayRef) -> Self {
         value.0
     }

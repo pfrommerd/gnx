@@ -48,7 +48,7 @@ pub fn require_graph_crate() -> Option<TokenStream2> {
 
 pub fn transforms_callable_as_fn() -> Path {
     match crate_name("gnx-transforms") {
-        Ok(FoundCrate::Itself) => syn::parse_quote!(crate::callable::as_fn),
+        Ok(FoundCrate::Itself) => syn::parse_quote!(::gnx_transforms::callable::as_fn),
         Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx_transforms::callable::as_fn),
         Err(_) => match crate_name("gnx") {
             Ok(_) => syn::parse_quote!(::gnx::callable::as_fn),
@@ -59,7 +59,7 @@ pub fn transforms_callable_as_fn() -> Path {
 
 pub fn transforms_jit_fn() -> Path {
     match crate_name("gnx-transforms") {
-        Ok(FoundCrate::Itself) => syn::parse_quote!(crate::jit),
+        Ok(FoundCrate::Itself) => syn::parse_quote!(::gnx_transforms::jit),
         Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx_transforms::jit),
         Err(_) => match crate_name("gnx") {
             Ok(_) => syn::parse_quote!(::gnx::jit),
@@ -70,7 +70,7 @@ pub fn transforms_jit_fn() -> Path {
 
 pub fn transforms_callable() -> Path {
     match crate_name("gnx-transforms") {
-        Ok(FoundCrate::Itself) => syn::parse_quote!(crate::Callable),
+        Ok(FoundCrate::Itself) => syn::parse_quote!(::gnx_transforms::Callable),
         Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx_transforms::Callable),
         Err(_) => match crate_name("gnx") {
             Ok(_) => syn::parse_quote!(::gnx::Callable),
@@ -81,7 +81,7 @@ pub fn transforms_callable() -> Path {
 
 pub fn transforms_jitable() -> Path {
     match crate_name("gnx-transforms") {
-        Ok(FoundCrate::Itself) => syn::parse_quote!(crate::Jitable),
+        Ok(FoundCrate::Itself) => syn::parse_quote!(::gnx_transforms::Jitable),
         Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx_transforms::Jitable),
         Err(_) => match crate_name("gnx") {
             Ok(_) => syn::parse_quote!(::gnx::transforms::Jitable),

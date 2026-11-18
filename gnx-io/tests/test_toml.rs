@@ -1,10 +1,10 @@
 use gnx_graph::Deserialize;
 use gnx_io::toml::TomlError;
 use gnx_io::toml::{Map, TomlParser, Value, to_string, value_to_string};
-use gnx_io::util::RawStrSource;
+use gnx_io::util::StrSource;
 
 fn parse_toml(toml: &str) -> Result<Value, TomlError> {
-    TomlParser::new(RawStrSource::from(toml)).into_value()
+    TomlParser::new(StrSource::from(toml)).into_value()
 }
 
 #[test]
@@ -258,7 +258,7 @@ features = ["json", "toml"]
 metadata = { stable = false, version = 1 }
 "#;
 
-    let mut parser = TomlParser::new(RawStrSource::from(toml));
+    let mut parser = TomlParser::new(StrSource::from(toml));
     let value = Value::deserialize(&mut parser).unwrap();
     assert_eq!(
         value,
@@ -323,7 +323,7 @@ contact = {
     );
 
     let rendered = value_to_string(&value).unwrap();
-    let reparsed = TomlParser::new(RawStrSource::from(rendered.as_str()))
+    let reparsed = TomlParser::new(StrSource::from(rendered.as_str()))
         .into_value()
         .unwrap();
     assert_eq!(reparsed, value);
@@ -356,7 +356,7 @@ fn test_toml_write_and_round_trip() {
         "active = true\ncreated = 2026-05-13\nnested = { message = \"hello\\n\\\"gnx\\\"\" }\nvalues = [1, 2.5]"
     );
 
-    let parsed = TomlParser::new(RawStrSource::from(toml.as_str()))
+    let parsed = TomlParser::new(StrSource::from(toml.as_str()))
         .into_value()
         .unwrap();
     assert_eq!(parsed, value);

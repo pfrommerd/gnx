@@ -20,8 +20,8 @@ pub fn impl_lifetime_free(input: ProcTokenStream) -> ProcTokenStream {
 }
 
 #[proc_macro]
-pub fn jit(input: ProcTokenStream) -> ProcTokenStream {
-    transforms::jit(input)
+pub fn jit_fn(input: ProcTokenStream) -> ProcTokenStream {
+    transforms::jit_fn(input)
 }
 
 #[proc_macro]
@@ -35,11 +35,8 @@ pub fn dag(input: ProcTokenStream) -> ProcTokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn transform(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
-    match attr.to_string().as_str() {
-        "jit" => transforms::jit_fn(attr, input),
-        _ => panic!("Invalid transform"),
-    }
+pub fn jit(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
+    transforms::jit(attr, input)
 }
 
 #[proc_macro_derive(Leaf)]

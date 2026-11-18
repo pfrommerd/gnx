@@ -1,9 +1,9 @@
 use gnx_graph::{Deserialize, Serialize};
 use gnx_io::json::{JsonError, JsonParser, Map, Number, Value, to_string};
-use gnx_io::util::RawStrSource;
+use gnx_io::util::StrSource;
 
 fn parse_json(json: &str) -> Result<Value, JsonError> {
-    let mut parser = JsonParser::new(RawStrSource::from(json));
+    let mut parser = JsonParser::new(StrSource::from(json));
     Value::deserialize(&mut parser)
 }
 
@@ -186,7 +186,7 @@ fn test_json_write() {
         r#"{"items":[null,3],"message":"hello\n\"gnx\"","ok":true}"#
     );
 
-    let mut parser = JsonParser::new(RawStrSource::from(json.as_str()));
+    let mut parser = JsonParser::new(StrSource::from(json.as_str()));
     assert_eq!(Value::deserialize(&mut parser).unwrap(), value);
 }
 

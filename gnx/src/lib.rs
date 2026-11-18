@@ -22,6 +22,6 @@ pub use gnx_math::backend::devices;
 pub use gnx_math::device::Device;
 pub use gnx_graph::{Graph, GraphId};
 
-pub use gnx_transforms::{Callable, jit, jittable, transform};
+pub use gnx_transforms::{Callable, jit, jit_fn, jittable};
 
 extern crate self as gnx;

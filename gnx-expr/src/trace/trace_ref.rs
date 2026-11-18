@@ -15,34 +15,20 @@ enum TraceVariant {
         inv: Arc<Invocation>,
         ret_idx: usize,
     },
-    // The state of a new cell created
-    // by the specified invocation
-    NewCellState {
-        inv: Arc<Invocation>,
-        ret_idx: usize,
-    },
-    // the cell has been updated by the specified invocation.
-    // `subexpr` identifies the closure subexpression that wrote the cell
-    // (None for a direct input), and `index` the position within it.
-    UpdatedCellState {
-        inv: Arc<Invocation>,
-        subexpr: Option<usize>,
-        index: usize,
-    },
 }
 
-pub struct Trace {
+pub struct TraceData {
     variant: TraceVariant,
     info: ValueInfo,
     context_id: ContextID,
 }
 
-/// Shared handle to an immutable [`Trace`].
+/// Shared handle to an immutable [`TraceData`].
 #[repr(transparent)]
 #[derive(Clone)]
-pub struct TraceRef(pub(crate) Arc<Trace>);
+pub struct Trace(pub(crate) Arc<TraceData>);
 
-impl Debug for TraceRef {
+impl Debug for Trace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0.variant {
             TraceVariant::Placeholder => f
@@ -55,23 +41,6 @@ impl Debug for TraceRef {
                 .field("ret_idx", &ret_idx)
                 .field("ctx", &self.0.context_id)
                 .finish(),
-            TraceVariant::NewCellState { inv, ret_idx } => f
-                .debug_struct("NewCellState")
-                .field("call", &inv)
-                .field("ret_idx", &ret_idx)
-                .field("ctx", &self.0.context_id)
-                .finish(),
-            TraceVariant::UpdatedCellState {
-                inv,
-                subexpr,
-                index,
-            } => f
-                .debug_struct("UpdatedCellState")
-                .field("call", &inv)
-                .field("subexpr", &subexpr)
-                .field("index", &index)
-                .field("ctx", &self.0.context_id)
-                .finish(),
             TraceVariant::Concrete(value) => f
                 .debug_struct("Concrete")
                 .field("value", value)
@@ -81,9 +50,9 @@ impl Debug for TraceRef {
     }
 }
 
-impl TraceRef {
+impl Trace {
     pub fn concrete(value: Value, info: ValueInfo) -> Self {
-        TraceRef(Arc::new(Trace {
+        Trace(Arc::new(TraceData {
             variant: TraceVariant::Concrete(value),
             info,
             context_id: TraceContext::current_id(),
@@ -91,7 +60,7 @@ impl TraceRef {
     }
 
     pub fn placeholder(info: ValueInfo) -> Self {
-        TraceRef(Arc::new(Trace {
+        Trace(Arc::new(TraceData {
             variant: TraceVariant::Placeholder,
             info,
             context_id: TraceContext::current_id(),
@@ -99,27 +68,10 @@ impl TraceRef {
     }
 
     pub fn returned(invocation: Arc<Invocation>, ret_idx: usize, info: ValueInfo) -> Self {
-        TraceRef(Arc::new(Trace {
+        Trace(Arc::new(TraceData {
             variant: TraceVariant::Returned {
                 inv: invocation,
                 ret_idx,
-            },
-            info,
-            context_id: TraceContext::current_id(),
-        }))
-    }
-
-    pub fn updated_cell(
-        invocation: Arc<Invocation>,
-        info: ValueInfo,
-        subexpr: Option<usize>,
-        index: usize,
-    ) -> Self {
-        TraceRef(Arc::new(Trace {
-            variant: TraceVariant::UpdatedCellState {
-                inv: invocation,
-                subexpr,
-                index,
             },
             info,
             context_id: TraceContext::current_id(),
@@ -135,21 +87,15 @@ impl TraceRef {
         match &self.0.variant {
             TraceVariant::Placeholder => None,
             TraceVariant::Returned { inv, .. } => Some(inv),
-            TraceVariant::NewCellState { inv, .. } => Some(inv),
-            TraceVariant::UpdatedCellState { inv, .. } => Some(inv),
             TraceVariant::Concrete(_) => None,
         }
     }
 
-    // Returns the producing invocation together with the output index it
-    // corresponds to (when the trace is a direct invocation output). Cell
-    // updates have no fixed output slot, so the index is `None`.
-    pub fn producer_with_index(&self) -> Option<(&Arc<Invocation>, Option<usize>)> {
+    /// The producing DAG node and its immutable result position.
+    pub fn producer_with_index(&self) -> Option<(&Arc<Invocation>, usize)> {
         match &self.0.variant {
             TraceVariant::Placeholder | TraceVariant::Concrete(_) => None,
-            TraceVariant::Returned { inv, ret_idx } => Some((inv, Some(*ret_idx))),
-            TraceVariant::NewCellState { inv, ret_idx } => Some((inv, Some(*ret_idx))),
-            TraceVariant::UpdatedCellState { inv, .. } => Some((inv, None)),
+            TraceVariant::Returned { inv, ret_idx } => Some((inv, *ret_idx)),
         }
     }
 
@@ -169,21 +115,21 @@ impl TraceRef {
     }
 }
 
-/// Tracing handle referencing a [`Trace`].
+/// Tracing handle referencing a [`TraceData`].
 #[repr(transparent)]
 pub struct Tracer<T: Traceable> {
-    trace: TraceRef,
+    trace: Trace,
     _phantom: PhantomData<T>,
 }
 
-impl From<&TraceRef> for &Tracer<Generic> {
-    fn from(r: &TraceRef) -> Self {
-        // SAFETY: The Tracer<Generic> and TraceRef have the same layout.
+impl From<&Trace> for &Tracer<Generic> {
+    fn from(r: &Trace) -> Self {
+        // SAFETY: The Tracer<Generic> and Trace have the same layout.
         unsafe { std::mem::transmute(r) }
     }
 }
-impl From<TraceRef> for Tracer<Generic> {
-    fn from(t: TraceRef) -> Self {
+impl From<Trace> for Tracer<Generic> {
+    fn from(t: Trace) -> Self {
         Tracer {
             trace: t,
             _phantom: PhantomData,
@@ -193,10 +139,10 @@ impl From<TraceRef> for Tracer<Generic> {
 
 impl<T: Traceable> Tracer<T> {
     pub fn placeholder(info: ValueInfo) -> Self {
-        unsafe { Tracer::unchecked_new(TraceRef::placeholder(info)) }
+        unsafe { Tracer::unchecked_new(Trace::placeholder(info)) }
     }
 
-    pub unsafe fn unchecked_new(trace: TraceRef) -> Self {
+    pub unsafe fn unchecked_new(trace: Trace) -> Self {
         Tracer {
             trace,
             _phantom: PhantomData,
@@ -207,10 +153,10 @@ impl<T: Traceable> Tracer<T> {
         self.trace.info().downcast().unwrap()
     }
 
-    pub fn trace_ref(&self) -> &TraceRef {
+    pub fn trace_ref(&self) -> &Trace {
         &self.trace
     }
-    pub fn into_trace_ref(self) -> TraceRef {
+    pub fn into_trace_ref(self) -> Trace {
         self.trace
     }
     pub fn context_id(&self) -> &ContextID {

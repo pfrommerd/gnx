@@ -1,10 +1,10 @@
-use gnx_io::util::{BufferedSource, RawStrSource, ScratchBuffer, TextSource};
+use gnx_io::util::{BufferedSource, StrSource, ScratchBuffer, TextSource};
 
 use std::io::Error;
 
 #[test]
 fn test_text_source() {
-    let mut source = RawStrSource::from("H\u{10000}llo!");
+    let mut source = StrSource::from("H\u{10000}llo!");
     let pos = || -> Result<usize, Error> {
         assert_eq!(source.next()?, Some('H'));
         let mut outer_buf = source.buffering(&mut ScratchBuffer::new());

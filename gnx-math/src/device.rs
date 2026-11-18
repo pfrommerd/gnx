@@ -1,5 +1,5 @@
 use crate::backend::{DeviceHandle, ExecOpts};
-use gnx_expr::{ConcreteValue, Expr, TraceRef, Traceable, Tracer, Value, ValueInfo};
+use gnx_expr::{lexpr::Expr, ConcreteValue, Trace, Traceable, Tracer, Value, ValueInfo};
 
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
@@ -61,7 +61,7 @@ impl ConcreteValue for DeviceHandle {
 impl Device {
     pub fn new(handle: DeviceHandle) -> Self {
         let info = ValueInfo::new(DeviceInfo);
-        let trace = TraceRef::concrete(Value::new(handle), info);
+        let trace = Trace::concrete(Value::new(handle), info);
         Device(unsafe { Tracer::unchecked_new(trace) })
     }
 

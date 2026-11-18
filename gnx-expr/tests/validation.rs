@@ -1,5 +1,5 @@
 use gnx_expr::{
-    AttrMap, Dialect, Eqn, Expr, Input, Op, Operation, Output, SubExpr, ValidationIssue, VarScope,
+    Dialect, Eqn, Expr, Input, Op, Operation, Output, SubExpr, ValidationIssue, VarScope,
 };
 use std::sync::Arc;
 
@@ -42,10 +42,10 @@ fn check_collects_multiple_errors() {
 
     let expr = Expr::new(
         vec![],
-        vec![Input::read(x)],
+        vec![Input::new(x)],
         vec![
-            Eqn::new(op(), vec![Input::read(missing)], vec![Output::New(out)]),
-            Eqn::new(op(), vec![Input::read(missing)], vec![Output::New(out)]),
+            Eqn::new(op(), vec![Input::new(missing)], vec![Output::New(out)]),
+            Eqn::new(op(), vec![Input::new(missing)], vec![Output::New(out)]),
         ],
         vec![missing],
         vars,
@@ -71,29 +71,73 @@ fn check_collects_multiple_errors() {
 }
 
 #[test]
-fn check_allows_less_restrictive_subexpr_binding() {
+fn check_still_validates_capture_arity_and_variable_bindings() {
     let mut inner_vars = VarScope::new();
-    let inner_cell = inner_vars.create_var();
+    let captured = inner_vars.create_var();
     let inner = Expr::new(
-        vec![Input::read_write(inner_cell, true)],
+        vec![Input::new(captured)],
         vec![],
         vec![],
-        vec![inner_cell],
+        vec![captured],
         inner_vars,
     );
 
     let mut outer_vars = VarScope::new();
-    let outer_cell = outer_vars.create_var();
+    let missing = outer_vars.create_var();
     let out = outer_vars.create_var();
     let expr = Expr::new(
-        vec![Input::read_write(outer_cell, false)],
+        vec![],
         vec![],
         vec![Eqn::new_with_subexprs(
             op(),
             vec![SubExpr::new(
                 Arc::new(inner),
-                vec![Input::read_write(outer_cell, false)],
+                vec![Input::new(missing), Input::new(missing)],
             )],
+            vec![],
+            vec![out],
+        )],
+        vec![out],
+        outer_vars,
+    );
+    let error = expr.check().unwrap_err();
+    assert!(error.errors().iter().any(|issue| matches!(
+        issue,
+        ValidationIssue::SubExprClosureArity {
+            expected: 1,
+            actual: 2,
+            ..
+        }
+    )));
+    assert!(
+        error
+            .errors()
+            .iter()
+            .any(|issue| matches!(issue, ValidationIssue::UndefinedSubExprClosure { .. }))
+    );
+}
+
+#[test]
+fn check_binds_subexpression_capture_to_an_outer_value() {
+    let mut inner_vars = VarScope::new();
+    let inner_capture = inner_vars.create_var();
+    let inner = Expr::new(
+        vec![Input::new(inner_capture)],
+        vec![],
+        vec![],
+        vec![inner_capture],
+        inner_vars,
+    );
+
+    let mut outer_vars = VarScope::new();
+    let outer_value = outer_vars.create_var();
+    let out = outer_vars.create_var();
+    let expr = Expr::new(
+        vec![Input::new(outer_value)],
+        vec![],
+        vec![Eqn::new_with_subexprs(
+            op(),
+            vec![SubExpr::new(Arc::new(inner), vec![Input::new(outer_value)])],
             vec![],
             vec![Output::New(out)],
         )],
@@ -101,5 +145,6 @@ fn check_allows_less_restrictive_subexpr_binding() {
         outer_vars,
     );
 
-    expr.check().expect("unaliased binding is less restrictive");
+    expr.check()
+        .expect("capture should bind to the outer value");
 }

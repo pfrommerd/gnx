@@ -1,6 +1,5 @@
 use gnx_expr::{
-    Attr, AttrMap, Dialect, Effect, Eqn, Expr, Input, Op, Operation, SubExpr, VarScope, attr, expr,
-    register_dialect,
+    Attr, Dialect, Eqn, Expr, Input, Op, Operation, SubExpr, VarScope, attr, expr, register_dialect,
 };
 use std::fmt::Display;
 use std::sync::Arc;
@@ -59,10 +58,10 @@ fn pretty_expr_uses_alphabetic_names() {
     let z = vars.create_var();
     let expr = Expr::new(
         vec![],
-        vec![Input::new(x, Effect::Read), Input::new(y, Effect::Read)],
+        vec![Input::new(x), Input::new(y)],
         vec![Eqn::new(
             Op::new(&ADD),
-            vec![Input::new(x, Effect::Read), Input::new(y, Effect::Read)],
+            vec![Input::new(x), Input::new(y)],
             vec![z],
         )],
         vec![z],
@@ -82,14 +81,11 @@ fn nested_expr_closure_names_match_outer_names() {
     let inner_input = inner_vars.create_var();
     let inner_output = inner_vars.create_var();
     let inner = Expr::new(
-        vec![Input::new(inner_closure, Effect::Read)],
-        vec![Input::new(inner_input, Effect::Read)],
+        vec![Input::new(inner_closure)],
+        vec![Input::new(inner_input)],
         vec![Eqn::new(
             Op::new(&ADD),
-            vec![
-                Input::new(inner_closure, Effect::Read),
-                Input::new(inner_input, Effect::Read),
-            ],
+            vec![Input::new(inner_closure), Input::new(inner_input)],
             vec![inner_output],
         )],
         vec![inner_output],
@@ -101,15 +97,15 @@ fn nested_expr_closure_names_match_outer_names() {
     let outer_input = outer_vars.create_var();
     let outer_output = outer_vars.create_var();
     let outer = Expr::new(
-        vec![Input::new(outer_closure, Effect::Read)],
-        vec![Input::new(outer_input, Effect::Read)],
+        vec![Input::new(outer_closure)],
+        vec![Input::new(outer_input)],
         vec![Eqn::new_with_subexprs(
             Op::new(&CALL),
             vec![SubExpr::new(
                 Arc::new(inner),
-                vec![Input::read(outer_closure)],
+                vec![Input::new(outer_closure)],
             )],
-            vec![Input::new(outer_input, Effect::Read)],
+            vec![Input::new(outer_input)],
             vec![outer_output],
         )],
         vec![outer_output],
@@ -153,10 +149,10 @@ fn hinted_var_names_are_disambiguated() {
     let x3 = vars.create_var_with_hint("x");
     let expr = Expr::new(
         vec![],
-        vec![Input::new(x1, Effect::Read), Input::new(x2, Effect::Read)],
+        vec![Input::new(x1), Input::new(x2)],
         vec![Eqn::new(
             Op::new(&ADD),
-            vec![Input::new(x1, Effect::Read), Input::new(x2, Effect::Read)],
+            vec![Input::new(x1), Input::new(x2)],
             vec![x3],
         )],
         vec![x3],
@@ -176,10 +172,10 @@ fn large_subexprs_can_be_deferred_with_hinted_names() {
     let inner_output = inner_vars.create_var_with_hint("c");
     let inner = Expr::new(
         vec![],
-        vec![Input::new(inner_input, Effect::Read)],
+        vec![Input::new(inner_input)],
         vec![Eqn::new(
             Op::new(&SIN),
-            vec![Input::new(inner_input, Effect::Read)],
+            vec![Input::new(inner_input)],
             vec![inner_output],
         )],
         vec![inner_output],
@@ -192,11 +188,11 @@ fn large_subexprs_can_be_deferred_with_hinted_names() {
     let outer_output = outer_vars.create_var_with_hint("c");
     let outer = Expr::new(
         vec![],
-        vec![Input::new(outer_input, Effect::Read)],
+        vec![Input::new(outer_input)],
         vec![Eqn::new_with_subexprs(
             Op::new(&CALL),
             vec![SubExpr::new(Arc::new(inner), vec![])],
-            vec![Input::new(outer_input, Effect::Read)],
+            vec![Input::new(outer_input)],
             vec![outer_output],
         )],
         vec![outer_output],
@@ -216,10 +212,10 @@ fn inline_subexpr_indentation_is_configurable() {
     let inner_output = inner_vars.create_var_with_hint("c");
     let inner = Expr::new(
         vec![],
-        vec![Input::new(inner_input, Effect::Read)],
+        vec![Input::new(inner_input)],
         vec![Eqn::new(
             Op::new(&SIN),
-            vec![Input::new(inner_input, Effect::Read)],
+            vec![Input::new(inner_input)],
             vec![inner_output],
         )],
         vec![inner_output],
@@ -231,11 +227,11 @@ fn inline_subexpr_indentation_is_configurable() {
     let outer_output = outer_vars.create_var_with_hint("c");
     let outer = Expr::new(
         vec![],
-        vec![Input::new(outer_input, Effect::Read)],
+        vec![Input::new(outer_input)],
         vec![Eqn::new_with_subexprs(
             Op::new(&CALL),
             vec![SubExpr::new(Arc::new(inner), vec![])],
-            vec![Input::new(outer_input, Effect::Read)],
+            vec![Input::new(outer_input)],
             vec![outer_output],
         )],
         vec![outer_output],
@@ -256,10 +252,10 @@ fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
     let inner = Arc::new(
         Expr::new(
             vec![],
-            vec![Input::new(inner_input, Effect::Read)],
+            vec![Input::new(inner_input)],
             vec![Eqn::new(
                 Op::new(&SIN),
-                vec![Input::new(inner_input, Effect::Read)],
+                vec![Input::new(inner_input)],
                 vec![inner_output],
             )],
             vec![inner_output],
@@ -274,18 +270,18 @@ fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
     let second = outer_vars.create_var_with_hint("d");
     let outer = Expr::new(
         vec![],
-        vec![Input::new(input, Effect::Read)],
+        vec![Input::new(input)],
         vec![
             Eqn::new_with_subexprs(
                 Op::new(&CALL),
                 vec![SubExpr::new(Arc::clone(&inner), vec![])],
-                vec![Input::new(input, Effect::Read)],
+                vec![Input::new(input)],
                 vec![first],
             ),
             Eqn::new_with_subexprs(
                 Op::new(&CALL),
                 vec![SubExpr::new(Arc::clone(&inner), vec![])],
-                vec![Input::new(input, Effect::Read)],
+                vec![Input::new(input)],
                 vec![second],
             ),
         ],

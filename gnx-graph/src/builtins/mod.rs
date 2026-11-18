@@ -5,6 +5,7 @@ use super::*;
 mod containers;
 mod expr;
 mod refs;
+mod trace;
 
 impl_leaf!(());
 impl_leaf!(char);

@@ -91,7 +91,7 @@ struct TraceContextState {
     reads_since_write: RefCell<Vec<Arc<Invocation>>>,
 }
 
-/// Active tracing region: cell overrides and update log for capture.
+/// Active tracing region tracking mutable-access ordering in the trace DAG.
 #[derive(Clone, Debug)]
 pub struct TraceContext {
     state: Rc<TraceContextState>,

@@ -1,4 +1,4 @@
-use crate::{Effect, Eqn, Expr, Input, SubExpr, Var};
+use crate::{Eqn, Expr, Input, SubExpr, Var};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -50,11 +50,7 @@ impl PrettyVarScope {
     }
 
     pub fn fmt_input(&self, input: &Input, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name_for(input.var()))?;
-        match input.effect() {
-            Effect::Unused | Effect::Read => Ok(()),
-            Effect::Write | Effect::ReadWrite => write!(f, "[:]"),
-        }
+        write!(f, "{}", self.name_for(input.var()))
     }
 
     pub fn fmt_eqn(&self, eqn: &Eqn, f: &mut fmt::Formatter<'_>) -> fmt::Result {
