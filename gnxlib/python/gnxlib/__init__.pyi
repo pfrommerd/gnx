@@ -1,14 +1,7 @@
 from collections.abc import Callable
 from typing import Generic, NoReturn, ParamSpec, TypeVar, final
 
-from . import array as array, backend as backend, dtype as dtype, graph as graph
-from .backend import (
-    Backend as Backend,
-    Device as Device,
-    backends as backends,
-    devices as devices,
-    enable_jax_backend as enable_jax_backend,
-)
+from . import array as array, dtype as dtype, graph as graph, jax as jax
 from .graph import Graph as Graph
 
 _P = ParamSpec("_P")

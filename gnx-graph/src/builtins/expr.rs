@@ -2,14 +2,13 @@ use crate::util::impl_lifetime_free;
 use crate::*;
 
 use gnx_expr::trace::{Generic, CellTrace, ObjectTracer, Tracer, CellTracer};
-use gnx_math::{Array, ArrayInfo, ArrayRef, Device, DeviceInfo};
+use gnx_math::{Array, ArrayInfo, ArrayRef};
 
 use super::trace::{cell_ref, into_cell_ref, into_value_ref, value_ref};
 use std::any::TypeId;
 
-impl_lifetime_free!(Array, ArrayRef, Device, ArrayInfo, DeviceInfo);
+impl_lifetime_free!(Array, ArrayRef, ArrayInfo);
 impl_leaf!(ArrayInfo);
-impl_leaf!(DeviceInfo);
 
 impl Graph for Array {
     type Owned = Self;
@@ -108,125 +107,6 @@ impl Leaf for Array {
             Some(r) => {
                 let r: &Tracer<Generic> = r.into();
                 match r.try_cast_ref::<Array>() {
-                    Ok(r) => Ok(r.into()),
-                    Err(_) => Err(graph),
-                }
-            }
-            None => Err(graph),
-        })
-    }
-    fn try_into_value<V: 'static>(self) -> Result<V, Self> {
-        cast!(self, V).or_else(|value| {
-            if TypeId::of::<V>() == TypeId::of::<ObjectTracer>() {
-                return Ok(
-                    cast!(ObjectTracer::Ref(value.into_tracer().into_trace_ref()), V)
-                        .ok()
-                        .unwrap(),
-                );
-            }
-            if let Ok(_) = cast!(value.tracer(), &V) {
-                return Ok(cast!(value.into_tracer(), V).ok().unwrap());
-            }
-            if let Ok(_) = cast!(value.tracer().trace_ref(), &V) {
-                return Ok(cast!(value.into_tracer().into_trace_ref(), V).ok().unwrap());
-            }
-            Err(value)
-        })
-    }
-}
-
-impl Graph for Device {
-    type Owned = Self;
-    type Builder<L: Leaf> = LeafBuilder<Self>;
-
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
-        &'g self,
-        filter: F,
-        source: S,
-        _ctx: &mut GraphContext,
-    ) -> Result<Self::Owned, S::Error> {
-        let trace_ref = self.tracer().trace_ref();
-        match filter_matches_ref_any!(filter, self, trace_ref) {
-            Ok(r) => {
-                Ok(Self::try_from_value(source.leaf(r)?).map_err(|_| S::Error::invalid_leaf())?)
-            }
-            Err(_) => Ok(self.clone()),
-        }
-    }
-    fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
-        &'g self,
-        filter: F,
-        _ctx: &mut GraphContext,
-    ) -> Result<Self::Builder<L>, E> {
-        let trace_ref = self.tracer().trace_ref();
-        match filter_matches_ref_any!(filter, self, trace_ref) {
-            Ok(_) => Ok(LeafBuilder::Leaf),
-            Err(_) => Ok(LeafBuilder::Static(self.clone())),
-        }
-    }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
-        &'g self,
-        filter: F,
-        visitor: V,
-    ) -> V::Output {
-        let trace_ref = self.tracer().trace_ref();
-        match filter_matches_ref_any!(filter, self, trace_ref) {
-            Ok(r) => visitor.visit_leaf(r),
-            Err(_) => visitor.visit_static::<Self>(self),
-        }
-    }
-    fn visit_into<'g, L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
-        self,
-        filter: F,
-        consumer: C,
-    ) -> C::Output {
-        let trace_ref = self.tracer().trace_ref();
-        if let Ok(_) = filter.matches_ref(&self) {
-            let value = filter
-                .matches_value(self)
-                .or(Err(()))
-                .expect("Filter matched ref but not value");
-            return consumer.consume_leaf(value);
-        }
-        if let Ok(_) = filter.matches_ref(trace_ref) {
-            let trace_ref = self.into_tracer().into_trace_ref();
-            let value = filter
-                .matches_value(trace_ref)
-                .or(Err(()))
-                .expect("Filter matched ref but not value");
-            return consumer.consume_leaf(value);
-        }
-        consumer.consume_static::<Self>(self)
-    }
-}
-
-impl Leaf for Device {
-    type Ref<'l> = &'l Device;
-    fn as_ref<'l>(&'l self) -> Self::Ref<'l> {
-        self
-    }
-    fn clone_ref(v: Self::Ref<'_>) -> Self {
-        v.clone()
-    }
-    fn try_from_value<V>(g: V) -> Result<Self, V> {
-        cast!(g, Self).or_else(|g| {
-            if let Some(r) = value_ref(&g) {
-                let r: &Tracer<Generic> = r.into();
-                if r.try_cast_ref::<Device>().is_ok() {
-                    let r: Tracer<Generic> = into_value_ref(g).ok().unwrap().into();
-                    // SAFETY: We know that it is safe to cast to Device since
-                    // we just checked that the info matches.
-                    return Ok(Device::from(unsafe { r.cast_unchecked() }));
-                }
-            }
-            Err(g)
-        })
-    }
-    fn try_from_ref<'v, V>(graph: &'v V) -> Result<Self::Ref<'v>, &'v V> {
-        cast!(graph, &Self).or_else(|graph| match value_ref(graph) {
-            Some(r) => {
-                let r: &Tracer<Generic> = r.into();
-                match r.try_cast_ref::<Device>() {
                     Ok(r) => Ok(r.into()),
                     Err(_) => Err(graph),
                 }

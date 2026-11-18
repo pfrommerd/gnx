@@ -7,7 +7,7 @@ use gnx_graph::{
     Bound, Builder, Filter, Graph, GraphConsumer, GraphContext, GraphId, GraphSource, Leaf, Node,
     Nothing, NullSource, Of, SourceError, TypedGraph, View,
 };
-use gnx_math::{Array, ArrayInfo, ArrayRef, DType, Device, DeviceInfo, Shape};
+use gnx_math::{Array, ArrayInfo, ArrayRef, DType, Shape};
 
 fn info() -> ValueInfo {
     ValueInfo::new(ArrayInfo::new(Shape::fixed([4]), DType::F32))
@@ -21,8 +21,8 @@ fn cell() -> CellTrace {
 fn array() -> Array {
     Array::from(Tracer::<Array>::placeholder(info()))
 }
-fn device() -> Device {
-    Device::from(Tracer::<Device>::placeholder(ValueInfo::new(DeviceInfo)))
+fn non_array_trace() -> Trace {
+    Trace::placeholder(ValueInfo::new(0u32))
 }
 fn array_ref() -> ArrayRef {
     <ArrayRef as Leaf>::try_from_value(cell()).unwrap()
@@ -192,10 +192,10 @@ fn raw_handle_graphs_can_be_replaced_and_built_from_trace_objects() {
 #[test]
 fn typed_mixed_graphs_roundtrip_through_one_trace_object_filter() {
     let _guard = TraceContext::enter();
-    let original = (array(), device(), array_ref(), 42u32);
+    let original = (array(), non_array_trace(), array_ref(), 42u32);
     let replacement = (
         ObjectTracer::Ref(trace()),
-        ObjectTracer::Ref(device().into_tracer().into_trace_ref()),
+        ObjectTracer::Ref(non_array_trace()),
         ObjectTracer::Cell(cell()),
         99u32,
     );
@@ -264,8 +264,8 @@ fn typed_conversions_reject_wrong_variants_and_metadata_families() {
     let _guard = TraceContext::enter();
     let array_value = ObjectTracer::Ref(trace());
     let array_cell = ObjectTracer::Cell(cell());
-    let device_value = ObjectTracer::Ref(device().into_tracer().into_trace_ref());
-    let device_cell = ObjectTracer::Cell(CellTrace::placeholder(ValueInfo::new(DeviceInfo)));
+    let other_value = ObjectTracer::Ref(non_array_trace());
+    let other_cell = ObjectTracer::Cell(CellTrace::placeholder(ValueInfo::new(0u32)));
     assert_same(
         &array_cell,
         &<Array as Leaf>::try_from_value(array_cell.clone())
@@ -279,26 +279,21 @@ fn typed_conversions_reject_wrong_variants_and_metadata_families() {
             .unwrap(),
     );
     assert_same(
-        &device_value,
-        &<Array as Leaf>::try_from_value(device_value.clone())
+        &other_value,
+        &<Array as Leaf>::try_from_value(other_value.clone())
             .err()
             .unwrap(),
     );
     assert_same(
-        &array_value,
-        &<Device as Leaf>::try_from_value(array_value.clone())
-            .err()
-            .unwrap(),
-    );
-    assert_same(
-        &device_cell,
-        &<ArrayRef as Leaf>::try_from_value(device_cell.clone())
+        &other_cell,
+        &<ArrayRef as Leaf>::try_from_value(other_cell.clone())
             .err()
             .unwrap(),
     );
     assert!(<Array as Leaf>::try_from_ref(&array_cell).is_err());
     assert!(<ArrayRef as Leaf>::try_from_ref(&array_value).is_err());
-    assert!(<Device as Leaf>::try_from_ref(&array_value).is_err());
+    assert!(<Array as Leaf>::try_from_ref(&other_value).is_err());
+    assert!(<ArrayRef as Leaf>::try_from_ref(&other_cell).is_err());
     let original = array();
     assert!(
         original

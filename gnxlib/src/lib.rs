@@ -19,7 +19,7 @@ use crate::graph::{GraphParser, PyGraph};
 
 #[pymodule]
 pub mod _native {
-    use gnx::backend::{Backend, Device};
+    use gnx_jax::JaxDevice;
     use pyo3::prelude::*;
     use uuid::Uuid;
 
@@ -30,65 +30,54 @@ pub mod _native {
     #[pymodule_export]
     use crate::tracer::{new_ref, placeholder, PyArray, PyArrayRef};
 
-    #[pyclass(name = "Backend", module = "gnxlib.backend", eq)]
-    #[derive(PartialEq, Eq)]
-    struct PyBackend(Backend);
-
-    #[pymethods]
-    impl PyBackend {
-        fn name(&self) -> &str {
-            self.0.name()
-        }
-
-        fn __repr__(&self) -> String {
-            format!("Backend(name='{}')", self.name())
-        }
-    }
-
-    #[pyclass(name = "Device", module = "gnxlib.backend", eq, frozen, hash)]
+    #[pyclass(name = "JaxDevice", module = "gnxlib.jax", eq, frozen, hash)]
     #[derive(PartialEq, Eq, Hash)]
-    struct PyDevice(Device);
+    struct PyJaxDevice(JaxDevice);
 
     #[pymethods]
-    impl PyDevice {
+    impl PyJaxDevice {
+        #[staticmethod]
+        fn from_native(device: Bound<'_, PyAny>) -> PyResult<Self> {
+            JaxDevice::from_native(device).map(Self)
+        }
+
         #[getter]
         fn uuid(&self) -> &Uuid {
             self.0.uuid()
         }
+
         #[getter]
         fn platform(&self) -> &str {
             self.0.platform()
         }
-        #[getter]
-        fn hardware_id(&self) -> &str {
-            self.0.hardware_id()
-        }
+
         #[getter]
         fn hardware_kind(&self) -> &str {
             self.0.hardware_kind()
         }
 
-        fn __str__(&self) -> String {
-            format!("{}", self.0)
+        #[getter]
+        fn hardware_id(&self) -> &str {
+            self.0.hardware_id()
+        }
+
+        #[getter]
+        fn native<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+            self.0.native(py).clone()
+        }
+
+        fn __repr__(&self) -> String {
+            self.0.to_string()
         }
     }
 
-    #[pyfunction]
-    fn enable_jax_backend() -> PyBackend {
-        PyBackend(gnx_jax::register())
-    }
-
-    #[pyfunction]
-    fn backends() -> Vec<PyBackend> {
-        gnx::backend::backends()
+    /// Return JAX device handles for the selected platform or JAX's default.
+    #[pyfunction(signature = (backend = None))]
+    fn jax_devices(py: Python<'_>, backend: Option<&str>) -> PyResult<Vec<PyJaxDevice>> {
+        Ok(gnx_jax::devices(py, backend)?
             .into_iter()
-            .map(PyBackend)
-            .collect()
-    }
-
-    #[pyfunction]
-    fn devices() -> Result<Vec<PyDevice>, PyErr> {
-        Ok(gnx::backend::devices()?.into_iter().map(PyDevice).collect())
+            .map(PyJaxDevice)
+            .collect())
     }
 }
 

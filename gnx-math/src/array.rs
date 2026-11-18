@@ -240,13 +240,13 @@ impl std::fmt::Display for DType {
 }
 
 pub trait DataImpl: Send + Sync + Debug + Display {
-    fn info(&self) -> &ArrayInfo;
+    fn info(&self) -> ArrayInfo;
 }
 pub type DataHandle = Box<dyn DataImpl>;
 
 impl ConcreteValue for DataHandle {
     fn to_info(&self) -> ValueInfo {
-        ValueInfo::new(self.info().clone())
+        ValueInfo::new(self.info())
     }
 }
 

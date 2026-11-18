@@ -1,7 +1,7 @@
 use anyhash::{Hash, HasherWrite};
 
 use gnx_expr::{CellKey, CellTrace, ObjectTracer, Trace, TracerKey};
-use gnx_math::{Array, ArrayInfo, ArrayRef, Device, DeviceInfo};
+use gnx_math::{Array, ArrayInfo, ArrayRef};
 
 use super::hash::CoreHash;
 use crate::*;
@@ -108,15 +108,9 @@ fn array_identity(value: &Array) -> TracerKey {
 fn array_cell_identity(value: &ArrayRef) -> CellKey {
     CellKey::from(value.tracer().cell_ref())
 }
-fn device_identity(value: &Device) -> TracerKey {
-    TracerKey::from(value.tracer().trace_ref())
-}
-
 impl_trace_traits!(Trace, TracerKey::from);
 impl_trace_traits!(CellTrace, CellKey::from);
 impl_trace_traits!(ObjectTracer, object_identity);
 impl_trace_traits!(Array, array_identity);
 impl_trace_traits!(ArrayRef, array_cell_identity);
-impl_trace_traits!(Device, device_identity);
 impl_trace_traits!(ArrayInfo, ArrayInfo::clone);
-impl_trace_traits!(DeviceInfo, DeviceInfo::clone);
