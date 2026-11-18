@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Key {
     Named(Cow<'static, str>),
     Index(isize),

@@ -248,6 +248,7 @@ dependencies = [
  "gnx-derive",
  "gnx-expr",
  "gnx-math",
+ "indexmap",
  "ordered-float",
  "paste",
 ]

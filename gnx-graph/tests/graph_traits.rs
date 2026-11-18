@@ -3,8 +3,8 @@ use std::hash::Hasher;
 use std::rc::Rc;
 
 use gnx_graph::{
-    Graph, GraphContext, GraphEq, GraphHash, GraphHashContext, GraphPartialEq, Leaf, Nothing, Of,
-    SourceError,
+    Graph, GraphContext, GraphEq, GraphEqContext, GraphHash, GraphHashContext, GraphPartialEq,
+    Leaf, Nothing, Of, SourceError,
 };
 
 #[derive(Clone, Leaf, GraphHash, GraphPartialEq, GraphEq)]
@@ -127,6 +127,62 @@ fn graph_eq_builder_compares_prefiltered_builder() {
         .unwrap();
 
     assert!(graph.builder_eq::<u32>(builder));
+}
+
+#[test]
+fn direct_builder_equality_ignores_holes_but_preserves_static_data_and_sharing() {
+    type G = (Vec<Rc<u32>>, bool);
+    let builder = |graph: G| {
+        graph
+            .builder::<u32, _, SourceError>(Of::<u32>::filter(), &mut GraphContext::new())
+            .unwrap()
+    };
+    let compare = |a, b| G::builders_eq::<u32>(&a, &b, &mut GraphEqContext::new());
+    let packed = |value: u32, flag: bool| {
+        let value = Rc::new(value);
+        builder((vec![value.clone(), value], flag))
+    };
+    assert_eq!(compare(packed(1, true), packed(2, true)), Some(true));
+    assert_eq!(compare(packed(1, true), packed(1, false)), Some(false));
+    assert_eq!(
+        compare(
+            packed(1, true),
+            builder((vec![Rc::new(1), Rc::new(1)], true))
+        ),
+        Some(false)
+    );
+}
+
+#[test]
+fn dag_mapping_uses_insertion_order_and_maps_shared_leaves_once() {
+    use gnx_graph::Key;
+    use gnx_graph::util::{Dag, DagChild, DagNode};
+    use std::sync::Arc;
+    let shared = Arc::new(Dag::Leaf(Some(7u32)));
+    let graph = Dag::Node(DagNode::Map(
+        [
+            ("b".into(), DagChild::Owned(Dag::Leaf(Some(2)))),
+            ("d".into(), DagChild::Shared(shared.clone())),
+            ("a".into(), DagChild::Shared(shared)),
+            ("c".into(), DagChild::Owned(Dag::Leaf(Some(3)))),
+        ]
+        .into(),
+    ));
+    let mut visited = Vec::new();
+    let mapped = graph.map_leaves(|leaf| {
+        visited.push(*leaf);
+        visited.len() - 1
+    });
+    assert_eq!(visited, vec![2, 7, 3]);
+    let Dag::Node(DagNode::Map(children)) = mapped else {
+        panic!("expected map")
+    };
+    let (DagChild::Shared(a), DagChild::Shared(d)) =
+        (&children[&Key::from("a")], &children[&Key::from("d")])
+    else {
+        panic!("expected shared leaves")
+    };
+    assert!(Arc::ptr_eq(a, d));
 }
 
 #[test]

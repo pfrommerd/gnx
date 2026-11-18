@@ -135,7 +135,7 @@ fn capture_diamond_distinct_intermediate_vars() {
         .as_apply()
         .unwrap();
     assert_eq!(add.inputs().len(), 2);
-    assert_ne!(&add.inputs()[0].0, &add.inputs()[1].0);
+    assert_ne!(&add.inputs()[0], &add.inputs()[1]);
 }
 
 #[test]
@@ -164,7 +164,7 @@ fn capture_reuses_var_when_same_tracer_used_twice() {
         .unwrap()
         .as_apply()
         .unwrap();
-    assert_eq!(&add.inputs()[0].0, &add.inputs()[1].0);
+    assert_eq!(&add.inputs()[0], &add.inputs()[1]);
 }
 
 #[test]
@@ -221,8 +221,8 @@ fn capture_foreign_context_tracer_is_closure() {
         .as_apply()
         .unwrap();
     assert_ne!(
-        &add.inputs()[0].0,
-        &add.inputs()[1].0,
+        &add.inputs()[0],
+        &add.inputs()[1],
         "a and outer b must be distinct vars"
     );
     drop(inner);

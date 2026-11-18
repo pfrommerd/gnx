@@ -1,5 +1,7 @@
 use crate::core::*;
 
+use super::OrderMap;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -11,7 +13,7 @@ pub enum Dag<I> {
 
 #[derive(Clone)]
 pub enum DagNode<I> {
-    Map(HashMap<Key, DagChild<I>>),
+    Map(OrderMap<Key, DagChild<I>>),
     // For efficiency, we store
     // nodes with only sequential Key::Index
     // values as a Vec
@@ -22,6 +24,45 @@ pub enum DagChild<I> {
     Owned(Dag<I>),
     Shared(Arc<Dag<I>>),
 }
+
+impl<I> Dag<I> {
+    /// Map selected leaves, visiting each shared node once. Map children are
+    /// visited in insertion order.
+    pub fn map_leaves<O>(&self, mut map: impl FnMut(&I) -> O) -> Dag<O> {
+        fn map_dag<I, O>(
+            dag: &Dag<I>,
+            map: &mut impl FnMut(&I) -> O,
+            shared: &mut HashMap<*const Dag<I>, Arc<Dag<O>>>,
+        ) -> Dag<O> {
+            let mut child = |child: &DagChild<I>| match child {
+                DagChild::Owned(dag) => DagChild::Owned(map_dag(dag, map, shared)),
+                DagChild::Shared(dag) => {
+                    let id = Arc::as_ptr(dag);
+                    if let Some(mapped) = shared.get(&id) {
+                        return DagChild::Shared(mapped.clone());
+                    }
+                    let mapped = Arc::new(map_dag(dag, map, shared));
+                    shared.insert(id, mapped.clone());
+                    DagChild::Shared(mapped)
+                }
+            };
+            match dag {
+                Dag::Leaf(leaf) => Dag::Leaf(leaf.as_ref().map(map)),
+                Dag::Node(DagNode::List(children)) => {
+                    Dag::Node(DagNode::List(children.iter().map(child).collect()))
+                }
+                Dag::Node(DagNode::Map(children)) => Dag::Node(DagNode::Map(
+                    children
+                        .iter()
+                        .map(|(key, value)| (key.clone(), child(value)))
+                        .collect(),
+                )),
+            }
+        }
+        map_dag(self, &mut map, &mut HashMap::new())
+    }
+}
+
 impl<I> DagChild<I> {
     fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self,
@@ -84,7 +125,7 @@ impl<I: Leaf> Graph for Dag<I> {
                 Dag::Leaf(Some(x)) => Dag::Leaf(Some(x.replace(filter, source, ctx)?)),
                 Dag::Node(DagNode::Map(children)) => {
                     let mut ns = source.node()?;
-                    let children: Result<HashMap<Key, DagChild<I>>, S::Error> =
+                    let children: Result<OrderMap<Key, DagChild<I>>, S::Error> =
                         children.iter().map(|(k, v)| {
                             let child = v.replace(
                                 filter.child(k.as_ref()), ns.expect_child(k.as_ref())?, ctx
@@ -112,13 +153,13 @@ impl<I: Leaf> Graph for Dag<I> {
         Ok(match filter.matches_ref(self) {
             Ok(_) => DagBuilder::Leaf,
             Err(graph) => match graph {
-                Dag::Leaf(None) => DagBuilder::Leaf,
+                Dag::Leaf(None) => DagBuilder::Empty,
                 Dag::Leaf(Some(x)) => match filter.matches_ref(x) {
                     Ok(_) => DagBuilder::Leaf,
                     Err(_) => DagBuilder::Static(x.clone()),
                 },
                 Dag::Node(DagNode::Map(children)) => {
-                    let children: Result<HashMap<Key, ChildBuilder<I>>, E> =
+                    let children: Result<OrderMap<Key, ChildBuilder<I>>, E> =
                         children.iter().map(|(k, v)| {
                             let child = v.builder(filter.child(k.as_ref()), &mut ctx)?;
                             Ok((k.clone(), child))
@@ -177,23 +218,15 @@ impl<I: Leaf> Node for Dag<I> {
             Dag::Node(DagNode::Map(children)) => {
                 let mut v = visitor;
                 for (k, child) in children {
-                    let child = match child {
-                        DagChild::Owned(v) => v,
-                        DagChild::Shared(v) => v.as_ref(),
-                    };
-                    v.visit_child(k.as_ref(), View::new(child, filter.child(k.as_ref())));
+                    visit_child(&mut v, k.as_ref(), child, filter.child(k.as_ref()));
                 }
                 v.finish()
             }
             Dag::Node(DagNode::List(children)) => {
                 let mut v = visitor;
                 for (i, child) in children.iter().enumerate() {
-                    let child = match child {
-                        DagChild::Owned(v) => v,
-                        DagChild::Shared(v) => v.as_ref(),
-                    };
                     let k = KeyRef::Index(i as isize);
-                    v.visit_child(k, View::new(child, filter.child(k)));
+                    visit_child(&mut v, k, child, filter.child(k));
                 }
                 v.finish()
             }
@@ -237,11 +270,24 @@ impl<I: Leaf> Node for Dag<I> {
     }
 }
 
+fn visit_child<'g, I: Leaf, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Dag<I>, L>>(
+    visitor: &mut V,
+    key: KeyRef<'g>,
+    child: &'g DagChild<I>,
+    filter: F,
+) {
+    match child {
+        DagChild::Owned(node) => visitor.visit_child(key, View::new(node, filter)),
+        DagChild::Shared(node) => visitor.visit_child(key, View::new(node, filter)),
+    };
+}
+
 #[derive(Clone)]
 pub enum DagBuilder<I> {
     Leaf,
+    Empty,
     Static(I),
-    MapNode(HashMap<Key, ChildBuilder<I>>),
+    MapNode(OrderMap<Key, ChildBuilder<I>>),
     ListNode(Vec<ChildBuilder<I>>),
 }
 #[derive(Clone)]
@@ -283,6 +329,10 @@ impl<L: Leaf, I: Leaf> Builder<L> for DagBuilder<I> {
                     .try_into_value()
                     .map_err(|_| S::Error::invalid_leaf())?,
             ))),
+            Empty => {
+                source.empty_leaf()?;
+                Ok(Dag::Leaf(None))
+            }
             Static(v) => {
                 source.empty_leaf()?;
                 Ok(Dag::Leaf(Some(v)))
@@ -303,7 +353,7 @@ impl<L: Leaf, I: Leaf> Builder<L> for DagBuilder<I> {
                         let child = child.build(ns.expect_child(k.as_ref())?, &mut ctx)?;
                         Ok((k, child))
                     })
-                    .collect::<Result<HashMap<Key, DagChild<I>>, S::Error>>()?
+                    .collect::<Result<OrderMap<Key, DagChild<I>>, S::Error>>()?
             }))),
         }
     }
@@ -324,14 +374,13 @@ where
     fn visit_static<S: Leaf>(self, _: S::Ref<'_>) -> Self::Output {
         Dag::Leaf(None)
     }
-    fn visit_node<N: Node, F: Filter<L>>(self, node: View<'_, N, F>) -> Self::Output {
+    fn visit_node<N: Node, F: Filter<L>>(mut self, node: View<'_, N, F>) -> Self::Output {
         let mut ctx = HashMap::new();
         node.graph.visit_children(
             node.filter,
             ToDagChildren {
-                map: self.0,
-                map_children: HashMap::new(),
-                seq_children: Vec::new(),
+                map: &mut self.0,
+                children: DagNode::List(Vec::new()),
                 ctx: &mut ctx,
             },
         )
@@ -346,9 +395,8 @@ where
 }
 
 struct ToDagChildren<'ctx, M, I> {
-    map: M,
-    map_children: HashMap<Key, DagChild<I>>,
-    seq_children: Vec<DagChild<I>>,
+    map: &'ctx mut M,
+    children: DagNode<I>,
     ctx: &'ctx mut HashMap<GraphId, Arc<Dag<I>>>,
 }
 
@@ -365,34 +413,35 @@ where
     ) -> &mut Self {
         let key = key.to_value();
         let child = child.visit(ToDagChild {
-            map: &mut self.map,
+            map: self.map,
             ctx: self.ctx,
         });
-        if key == Key::from(self.seq_children.len()) {
-            self.seq_children.push(child);
-        } else {
-            self.map_children.insert(key, child);
+        if let DagNode::List(children) = &mut self.children {
+            if key == Key::from(children.len()) {
+                children.push(child);
+                return self;
+            }
+            self.children = DagNode::Map(
+                std::mem::take(children)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, child)| (Key::from(index), child))
+                    .collect(),
+            );
         }
+        let DagNode::Map(children) = &mut self.children else {
+            unreachable!()
+        };
+        children.insert(key, child);
         self
     }
     fn finish(self) -> Self::Output {
-        if self.map_children.is_empty() {
-            Dag::Node(DagNode::List(self.seq_children))
-        } else {
-            let mut children = self.map_children;
-            children.extend(
-                self.seq_children
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, x)| (Key::from(i), x)),
-            );
-            Dag::Node(DagNode::Map(children))
-        }
+        Dag::Node(self.children)
     }
 }
 
 struct ToDagChild<'ctx, M, I> {
-    map: M,
+    map: &'ctx mut M,
     ctx: &'ctx mut HashMap<GraphId, Arc<Dag<I>>>,
 }
 
@@ -402,25 +451,24 @@ where
 {
     type Output = DagChild<I>;
 
-    fn visit_leaf(mut self, value: L::Ref<'_>) -> Self::Output {
+    fn visit_leaf(self, value: L::Ref<'_>) -> Self::Output {
         DagChild::Owned(Dag::Leaf(Some((self.map)(value))))
     }
     fn visit_static<S: Leaf>(self, _: S::Ref<'_>) -> Self::Output {
         DagChild::Owned(Dag::Leaf(None))
     }
-    fn visit_node<N: Node, F: Filter<L>>(mut self, node: View<'_, N, F>) -> Self::Output {
+    fn visit_node<N: Node, F: Filter<L>>(self, node: View<'_, N, F>) -> Self::Output {
         DagChild::Owned(node.graph.visit_children(
             node.filter,
             ToDagChildren {
                 map: self.map,
-                map_children: HashMap::new(),
-                seq_children: Vec::new(),
-                ctx: &mut self.ctx,
+                children: DagNode::List(Vec::new()),
+                ctx: self.ctx,
             },
         ))
     }
     fn visit_shared<S: Graph, F: Filter<L>>(
-        mut self,
+        self,
         id: GraphId,
         shared: View<'_, S, F>,
     ) -> Self::Output {
@@ -428,7 +476,7 @@ where
             return DagChild::Shared(dag.clone());
         }
         let dag = shared.visit(ToDagChild {
-            map: &mut self.map,
+            map: self.map,
             ctx: self.ctx,
         });
         match dag {

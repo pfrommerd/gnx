@@ -57,10 +57,10 @@ fn cell_syntax_preserves_metadata_and_lowers_without_dialect_cell_ops() {
 }
 
 #[test]
-fn hexpr_and_expr_share_nested_body_syntax() {
+fn hexpr_subexpressions_have_no_ownership_annotations() {
     let info = ValueInfo::new(0usize);
-    let passthrough = expr!({ lambda value: &info => in (value) });
-    let inner = Arc::new(expr!({ lambda x: &info =>
+    let passthrough = hexpr!({ lambda value: &info => in (value) });
+    let inner = Arc::new(hexpr!({ lambda x: &info =>
         y: &info = builtins::call[passthrough => ()] x;
         in (y)
     }));
@@ -74,8 +74,8 @@ fn hexpr_and_expr_share_nested_body_syntax() {
         body.to_string(),
         concat!(
             "{ lambda input: 0 =>\n",
-            "  result: 0 = builtins::call[expr!({ lambda x: 0 =>\n",
-            "    y: 0 = builtins::call[expr!({ lambda value: 0 =>\n",
+            "  result: 0 = builtins::call[hexpr!({ lambda x: 0 =>\n",
+            "    y: 0 = builtins::call[hexpr!({ lambda value: 0 =>\n",
             "      in (value) }) => ()] x;\n",
             "    in (y) }) => ()] input;\n",
             "  in (result) }",
@@ -87,7 +87,7 @@ fn hexpr_and_expr_share_nested_body_syntax() {
         body.kind(&eqn.outputs()[0].0),
         Some(&Kind::Value(info.clone()))
     );
-    // HExpr syntax leaves ownership to lowering. The inner call requires a move.
+    // Only the outer boundary chooses ownership.
     let lowered = body
         .lower(&InputSpec {
             closure: vec![],
@@ -95,10 +95,7 @@ fn hexpr_and_expr_share_nested_body_syntax() {
         })
         .unwrap();
     lowered.expr.check().unwrap();
-    assert!(Arc::ptr_eq(
-        lowered.expr.eqns()[0].subexprs()[0].expr(),
-        &inner
-    ));
+    assert!(lowered.expr.eqns().is_empty());
 }
 
 #[test]

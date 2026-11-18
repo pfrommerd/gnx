@@ -62,6 +62,9 @@ pub trait Error: Sized + std::error::Error {
 pub trait Builder<L: Leaf>: Clone {
     type Graph: Graph + Clone + 'static;
 
+    /// Rebuild the graph, requesting selected leaves in the same order as a
+    /// depth-first visit of the original graph. Like the builder, the visit
+    /// must descend into shared subgraphs only on their first occurrence.
     fn build<S: GraphSource<(), L>>(
         self,
         source: S,

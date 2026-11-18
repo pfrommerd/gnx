@@ -135,19 +135,34 @@ pub fn jit(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
     let f = quote! {
         |#inputs| -> #output_ty #block
     };
-    let jittable = expand_jittable(
-        Some(JittableSignature {
-            inputs: inputs_ty.clone(),
-            output: Some(output_ty),
-        }),
-        parse_quote! { #f },
-    );
+    let signature = JittableSignature {
+        inputs: inputs_ty.clone(),
+        output: Some(output_ty.clone()),
+    };
+    let invoke = if sig.generics.params.is_empty() {
+        let mut jit_type = jit_fn.clone();
+        jit_type.segments.last_mut().unwrap().ident = Ident::new("Jit", Span::call_site());
+        let impls = expand_signature_impls(signature);
+        quote! {
+            struct _FnContainer<F>(F);
+            #impls
+            static __JIT: #jit_type<_FnContainer<fn(#(#inputs_ty),*) -> #output_ty>> =
+                #jit_fn(_FnContainer((#f) as fn(#(#inputs_ty),*) -> #output_ty));
+            #callable::invoke(&__JIT, (#(#args_gathered,)*))
+        }
+    } else {
+        // A local static can't name a function's generic parameters.
+        let jittable = expand_jittable(Some(signature), parse_quote! { #f });
+        quote! {
+            let jitted_fn = #jit_fn(#jittable);
+            #callable::invoke(&jitted_fn, (#(#args_gathered,)*))
+        }
+    };
 
     let expanded = quote! {
         #vis #mod_sig {
             #err
-            let jitted_fn = #jit_fn(#jittable);
-            #callable::invoke(&jitted_fn, (#(#args_gathered,)*))
+            #invoke
         }
     };
 

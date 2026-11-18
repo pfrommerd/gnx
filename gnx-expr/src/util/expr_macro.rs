@@ -97,6 +97,10 @@ impl ExprBuilder {
         }
     }
 
+    pub fn subexpr(&self, body: impl Into<Arc<Expr>>, captures: Vec<(Var, Ownership)>) -> SubExpr {
+        SubExpr::new(body.into(), captures)
+    }
+
     pub fn eqn(
         &mut self,
         outputs: Vec<(Var, Kind)>,
@@ -386,9 +390,10 @@ macro_rules! __expr_operation {
     (@emit $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
         $([$body:expr => ($($captures:tt)*)])* ($($inputs:tt)*) ; $($rest:tt)*) => {{
         let __inputs = $crate::__expr_inputs!($builder; [] $($inputs)*);
-        let __subexprs = vec![$(
-            $crate::expr_macro::subexpr($body, $crate::__expr_inputs!($builder; [] $($captures)*))
-        ),*];
+        let __subexprs = vec![$({
+            let __captures = $crate::__expr_inputs!($builder; [] $($captures)*);
+            $builder.subexpr($body, __captures)
+        }),*];
         let __outputs = $crate::__expr_outputs!($builder; [] $($outs)*);
         $builder.eqn(__outputs, stringify!($dialect), stringify!($op),
             $crate::__expr_attrs!($($attrs)*), __inputs, __subexprs);
@@ -419,7 +424,7 @@ macro_rules! __expr_inputs {
         $crate::__expr_inputs!($builder; [$($inputs,)*] $($rest)*)
     };
     ($builder:ident; [$($inputs:expr,)*] $name:ident [:] $($rest:tt)*) => {
-        compile_error!("read/write cells through the HExpr cell API, not computation operands");
+        $crate::__expr_inputs!($builder; [$($inputs,)* $builder.cell_operand(stringify!($name)),] $($rest)*)
     };
     ($builder:ident; [$($inputs:expr,)*] move $name:ident $($rest:tt)*) => {
         compile_error!("write `x` for a moved operand or `&x` for a borrowed operand");

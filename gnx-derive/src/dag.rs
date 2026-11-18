@@ -132,7 +132,7 @@ impl DagMap {
 
         quote!({
             #(#bindings)*
-            let mut __gnx_dag_map = ::std::collections::HashMap::new();
+            let mut __gnx_dag_map = #util::OrderMap::new();
             #(#entries)*
             #util::Dag::Node(#util::DagNode::Map(__gnx_dag_map))
         })

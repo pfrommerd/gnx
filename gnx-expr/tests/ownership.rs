@@ -616,8 +616,8 @@ fn input_spec_from_args_shares_value_and_cell_identities_across_both_lists() {
 }
 
 #[test]
-fn immutable_calls_cannot_move_a_borrowed_outer_argument() {
-    let body = gnx_expr::expr!(gnx_expr::ValueInfo::new(0usize); { lambda formal: in (formal) });
+fn high_level_call_infers_ownership_from_the_outer_boundary() {
+    let body = gnx_expr::hexpr!(gnx_expr::ValueInfo::new(0usize); { lambda formal: in (formal) });
     let guard = TraceContext::enter();
     let x = value();
     let result = gnx_expr::builtins::call(
@@ -627,12 +627,16 @@ fn immutable_calls_cannot_move_a_borrowed_outer_argument() {
         vec![info()],
     );
     let captured = Capture::from_context(guard.context(), &[x.into()], &result).unwrap();
-    assert!(matches!(
-        captured
-            .expr()
-            .lower(&all_values(captured.expr(), Ownership::Borrow)),
-        Err(LoweringError::MoveBorrowed(_))
-    ));
+    let lowered = captured
+        .expr()
+        .lower(&all_values(captured.expr(), Ownership::Borrow))
+        .unwrap();
+    assert_eq!(
+        lowered.results(),
+        &[lower::Output::InputValue {
+            input_id: InputId::Input(0)
+        }]
+    );
 }
 
 #[test]

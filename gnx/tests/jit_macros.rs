@@ -22,6 +22,6 @@ fn attribute_and_closure_macros_are_reexported() {
 
 #[test]
 fn runtime_jit_function_keeps_its_name() {
-    let callable = gnx::jit::<(u32,), _>(|value: u32| value + 1);
+    let callable = gnx::jit(|value: u32| value + 1);
     assert_eq!(Callable::invoke(&callable, (3,)), 4);
 }

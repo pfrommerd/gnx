@@ -1,17 +1,19 @@
 mod capture;
 mod cell;
 mod context;
+mod deferred;
 mod trace_ref;
 
 pub use capture::{Capture, CaptureError, TracerKey};
 pub use cell::{CellKey, CellTrace, CellTracer, TraceCell};
 pub use context::{ContextID, TraceContext, TraceContextGuard};
+pub use deferred::DeferredCall;
 pub use trace_ref::{Trace, TraceData, Tracer};
 
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use crate::{Expr, Op};
+use crate::{HExpr, Op};
 
 pub use super::value::{ConcreteValue, Generic, Traceable, Value, ValueInfo};
 
@@ -115,14 +117,14 @@ pub enum TraceOutput {
     Ref(ValueInfo),
 }
 
-/// A node in the trace DAG. Computations can only consume immutable value
-/// references. Cell accesses have dedicated, typed operands and ordering edges;
-/// they are not registered dialect operations.
+/// A node in the trace DAG. Nested bodies are always high-level expressions.
+/// Cell effects have typed operands and ordering edges.
 pub enum Invocation {
+    DeferredCall(DeferredCall),
     Apply {
         context_id: ContextID,
         op: Op,
-        subexprs: Vec<(Arc<Expr>, Vec<Trace>)>,
+        subexprs: Vec<(Arc<HExpr>, Vec<Trace>)>,
         inputs: Vec<Trace>,
         outputs: Vec<ValueInfo>,
     },
@@ -142,6 +144,10 @@ pub enum Invocation {
 impl Debug for Invocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::DeferredCall(call) => f
+                .debug_struct("DeferredCall")
+                .field("ctx", &call.context_id)
+                .finish(),
             Self::Apply { context_id, op, .. } => f
                 .debug_struct("Apply")
                 .field("op", op)
@@ -164,9 +170,10 @@ impl Invocation {
             Self::Apply { context_id, .. }
             | Self::ReadCell { context_id, .. }
             | Self::WriteCell { context_id, .. } => context_id,
+            Self::DeferredCall(call) => &call.context_id,
         }
     }
-    pub fn subexprs(&self) -> &[(Arc<Expr>, Vec<Trace>)] {
+    pub fn subexprs(&self) -> &[(Arc<HExpr>, Vec<Trace>)] {
         match self {
             Self::Apply { subexprs, .. } => subexprs,
             _ => &[],
@@ -188,6 +195,10 @@ impl Invocation {
             .iter()
             .chain(self.subexprs().iter().flat_map(|(_, captures)| captures))
             .chain(value)
+            .chain(match self {
+                Self::DeferredCall(call) => call.value_parents.as_slice(),
+                _ => &[],
+            })
     }
     pub fn aliasing_parents(&self) -> &[Arc<Invocation>] {
         match self {
@@ -198,6 +209,7 @@ impl Invocation {
                 aliasing_parents, ..
             } => aliasing_parents,
             Self::Apply { .. } => &[],
+            Self::DeferredCall(call) => &call.aliasing_parents,
         }
     }
     pub fn outputs(&self) -> &[ValueInfo] {
@@ -205,12 +217,13 @@ impl Invocation {
             Self::Apply { outputs, .. } => outputs,
             Self::ReadCell { cell, .. } => std::slice::from_ref(cell.type_info()),
             Self::WriteCell { .. } => &[],
+            Self::DeferredCall(call) => &call.outputs,
         }
     }
 
     pub fn invoke<I>(
         op: Op,
-        subexprs: Vec<(Arc<Expr>, Vec<TraceInput>)>,
+        subexprs: Vec<(Arc<HExpr>, Vec<TraceInput>)>,
         inputs: Vec<I>,
         outputs: Vec<ValueInfo>,
     ) -> Vec<Tracer<Generic>>
@@ -218,7 +231,6 @@ impl Invocation {
         I: Into<TraceInput>,
     {
         for (expr, closure) in &subexprs {
-            assert!(expr.check().is_ok(), "invalid immutable computation body");
             assert_eq!(
                 closure.len(),
                 expr.closure().len(),
@@ -250,7 +262,7 @@ impl Invocation {
 
     pub fn invoke_with_subexprs(
         op: Op,
-        subexprs: Vec<(Arc<Expr>, Vec<TraceInput>)>,
+        subexprs: Vec<(Arc<HExpr>, Vec<TraceInput>)>,
         inputs: Vec<TraceInput>,
         outputs: Vec<TraceOutput>,
     ) -> Vec<ObjectTracer> {

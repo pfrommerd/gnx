@@ -17,11 +17,11 @@ pub mod util {
 // for convenience, re-export a handful of top-level namespace items
 // - Array, Shape, Device, and devices() from gnx-expr
 // - Graph and GraphId from gnx-graph
+pub use gnx_graph::{Graph, GraphId};
 pub use gnx_math::array::{Array, Shape};
 pub use gnx_math::backend::devices;
 pub use gnx_math::device::Device;
-pub use gnx_graph::{Graph, GraphId};
 
-pub use gnx_transforms::{Callable, jit, jit_fn, jittable};
+pub use gnx_transforms::{Callable, Jit, TryCallable, TryJitable, jit, jit_fn, jittable};
 
 extern crate self as gnx;

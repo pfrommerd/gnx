@@ -59,6 +59,16 @@ pub trait GraphPartialEq<Rhs: Graph = Self>: Graph {
 }
 
 pub trait GraphEq: GraphPartialEq<Self> {
+    /// Compare two builders without supplying their dynamic leaves. `None`
+    /// means this graph type has no direct builder comparison.
+    fn builders_eq<L: Leaf>(
+        _left: &Self::Builder<L>,
+        _right: &Self::Builder<L>,
+        _ctx: &mut GraphEqContext,
+    ) -> Option<bool> {
+        None
+    }
+
     fn graph_eq<L, F>(&self, other: &Self, filter: F, ctx: &mut GraphEqContext) -> bool
     where
         L: Leaf,
@@ -81,6 +91,32 @@ pub trait GraphEq: GraphPartialEq<Self> {
     }
 }
 
+pub(super) fn leaf_builders_eq<V: Leaf + GraphEq>(
+    left: &LeafBuilder<V>,
+    right: &LeafBuilder<V>,
+    ctx: &mut GraphEqContext,
+) -> bool {
+    match (left, right) {
+        (LeafBuilder::Leaf, LeafBuilder::Leaf) => true,
+        (LeafBuilder::Static(a), LeafBuilder::Static(b)) => {
+            a.graph_eq(b, Nothing::<()>::filter(), ctx)
+        }
+        _ => false,
+    }
+}
+
+macro_rules! impl_leaf_builder_eq {
+    () => {
+        fn builders_eq<L: Leaf>(
+            left: &Self::Builder<L>,
+            right: &Self::Builder<L>,
+            ctx: &mut GraphEqContext,
+        ) -> Option<bool> {
+            Some(leaf_builders_eq(left, right, ctx))
+        }
+    };
+}
+
 macro_rules! impl_leaf_eq {
     ($($T:ty)*) => {
         $(
@@ -100,7 +136,7 @@ macro_rules! impl_leaf_eq {
                 }
             }
 
-            impl GraphEq for $T {}
+            impl GraphEq for $T { impl_leaf_builder_eq!(); }
         )*
     };
 }
@@ -122,7 +158,9 @@ impl GraphPartialEq for f32 {
     }
 }
 
-impl GraphEq for f32 {}
+impl GraphEq for f32 {
+    impl_leaf_builder_eq!();
+}
 
 impl GraphPartialEq for f64 {
     fn graph_partial_eq<L, F>(&self, other: &Self, filter: F, _ctx: &mut GraphEqContext) -> bool
@@ -135,7 +173,9 @@ impl GraphPartialEq for f64 {
     }
 }
 
-impl GraphEq for f64 {}
+impl GraphEq for f64 {
+    impl_leaf_builder_eq!();
+}
 
 impl<T, U> GraphPartialEq<Vec<U>> for Vec<T>
 where
@@ -161,7 +201,26 @@ where
     }
 }
 
-impl<T> GraphEq for Vec<T> where T: GraphEq {}
+impl<T: GraphEq> GraphEq for Vec<T> {
+    fn builders_eq<L: Leaf>(
+        left: &Self::Builder<L>,
+        right: &Self::Builder<L>,
+        ctx: &mut GraphEqContext,
+    ) -> Option<bool> {
+        match (left, right) {
+            (NodeBuilder::Leaf, NodeBuilder::Leaf) => Some(true),
+            (NodeBuilder::Node(left), NodeBuilder::Node(right)) if left.len() == right.len() => {
+                for (left, right) in left.iter().zip(right) {
+                    if !T::builders_eq::<L>(left, right, ctx)? {
+                        return Some(false);
+                    }
+                }
+                Some(true)
+            }
+            _ => Some(false),
+        }
+    }
+}
 
 macro_rules! impl_shared_eq {
     ($W:ident) => {
@@ -192,7 +251,22 @@ macro_rules! impl_shared_eq {
             }
         }
 
-        impl<T> GraphEq for $W<T> where T: GraphEq {}
+        impl<T: GraphEq> GraphEq for $W<T> {
+            fn builders_eq<L: Leaf>(
+                left: &Self::Builder<L>,
+                right: &Self::Builder<L>,
+                ctx: &mut GraphEqContext,
+            ) -> Option<bool> {
+                match ctx.match_shared(
+                    GraphId::from($W::as_ptr(left) as u64),
+                    GraphId::from($W::as_ptr(right) as u64),
+                ) {
+                    SharedEqVisit::Seen => Some(true),
+                    SharedEqVisit::Mismatch => Some(false),
+                    SharedEqVisit::First => T::builders_eq::<L>(left, right, ctx),
+                }
+            }
+        }
     };
 }
 
@@ -219,7 +293,15 @@ where
     }
 }
 
-impl<T> GraphEq for &T where T: GraphEq {}
+impl<T: GraphEq> GraphEq for &T {
+    fn builders_eq<L: Leaf>(
+        left: &Self::Builder<L>,
+        right: &Self::Builder<L>,
+        ctx: &mut GraphEqContext,
+    ) -> Option<bool> {
+        <Arc<T> as GraphEq>::builders_eq::<L>(left, right, ctx)
+    }
+}
 
 macro_rules! impl_tuple_eq {
     ($($T:ident $U:ident),* ; $($idx:tt),*) => {
@@ -247,7 +329,19 @@ macro_rules! impl_tuple_eq {
             }
         }
 
-        impl<$($T: GraphEq,)*> GraphEq for ($($T,)*) {}
+        impl<$($T: GraphEq,)*> GraphEq for ($($T,)*) {
+            #[allow(non_snake_case)]
+            fn builders_eq<L: Leaf>(left: &Self::Builder<L>, right: &Self::Builder<L>, ctx: &mut GraphEqContext) -> Option<bool> {
+                match (left, right) {
+                    (NodeBuilder::Leaf, NodeBuilder::Leaf) => Some(true),
+                    (NodeBuilder::Node(left), NodeBuilder::Node(right)) => {
+                        $(if !$T::builders_eq::<L>(&left.$idx, &right.$idx, ctx)? { return Some(false); })*
+                        Some(true)
+                    }
+                    _ => Some(false),
+                }
+            }
+        }
     };
 }
 

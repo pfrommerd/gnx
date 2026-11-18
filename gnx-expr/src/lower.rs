@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use crate::{Eqn, Expr, HExpr, HInstr, Kind, Ownership, SubExpr, ValueInfo, Var, VarScope};
+use crate::{
+    Eqn, Expr, HEqn, HExpr, HInstr, HSubExpr, Kind, Op, Ownership, SubExpr, ValueInfo, Var,
+    VarScope,
+};
 
 /// Canonical source of a supplied value or cell, indexed in the original HExpr
 /// argument lists. Aliases share a source. Explicit inputs take precedence over
@@ -105,6 +108,7 @@ pub struct LoweredExpr {
     spec: InputSpec,
     snapshot_inputs: BTreeSet<InputId>,
     pub expr: Arc<Expr>,
+    trace_body: Arc<HExpr>,
     /// Metadata for each physical owned return, in expr.outputs() order.
     pub output_infos: Vec<ValueInfo>,
     pub closure: Vec<InputId>,
@@ -113,6 +117,10 @@ pub struct LoweredExpr {
     pub updates: Vec<(InputId, usize)>,
 }
 impl LoweredExpr {
+    /// The ownership-free body used when emitting this specialization into a trace.
+    pub fn trace_body(&self) -> &Arc<HExpr> {
+        &self.trace_body
+    }
     pub fn results(&self) -> &[Output] {
         &self.outputs[..self.outputs.len() - self.updates.len()]
     }
@@ -188,7 +196,7 @@ impl LoweredExpr {
             .map(bind_value)
             .collect::<Result<Vec<_>, CallError>>()?;
         let returned = crate::builtins::call(
-            self.expr.clone(),
+            self.trace_body.clone(),
             captures,
             arguments,
             self.output_infos.clone(),
@@ -280,6 +288,7 @@ pub enum LoweringError {
     },
     CaptureOwnership(Var),
     CallArity,
+    UnsupportedNestedOperation,
 }
 impl fmt::Display for LoweringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -291,6 +300,12 @@ impl std::error::Error for LoweringError {}
 /// Lower a captured HExpr. There is intentionally no trace-DAG-to-Expr shortcut.
 pub fn lower(expr: &HExpr, spec: &InputSpec) -> Result<LoweredExpr, LoweringError> {
     Lowerer::new(expr, spec)?.lower(expr)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum NestedBinding {
+    Value(Var),
+    Cell(CellBinding),
 }
 
 struct Lowerer {
@@ -306,6 +321,7 @@ struct Lowerer {
     inputs: Vec<(Var, Ownership, ValueInfo)>,
     input_sources: Vec<InputId>,
     eqns: Vec<Eqn>,
+    trace_eqns: Vec<HInstr>,
     local_count: usize,
 }
 impl Lowerer {
@@ -323,6 +339,7 @@ impl Lowerer {
             inputs: vec![],
             input_sources: vec![],
             eqns: vec![],
+            trace_eqns: vec![],
             local_count: 0,
         };
         for (is_closure, params, specs) in [
@@ -418,12 +435,174 @@ impl Lowerer {
             }
         })
     }
+    // Emit both representations from the specialized SSA operands. Only the
+    // executable equation has ownership; no Expr is embedded in the trace.
+    fn emit_eqn(
+        &mut self,
+        op: Op,
+        inputs: Vec<(Var, Ownership)>,
+        outputs: Vec<(Var, Kind)>,
+        nested: Option<&LoweredExpr>,
+        captures: Vec<(Var, Ownership)>,
+    ) {
+        let high = nested.map(|body| {
+            HSubExpr::new(
+                body.trace_body.clone(),
+                captures.iter().map(|(var, _)| *var).collect(),
+            )
+        });
+        self.trace_eqns.push(HInstr::Apply(HEqn::new(
+            op.clone(),
+            high.into_iter().collect(),
+            inputs.iter().map(|(var, _)| *var).collect(),
+            outputs.clone(),
+        )));
+        let low = nested.map(|body| SubExpr::new(body.expr.clone(), captures));
+        self.eqns.push(Eqn::new_with_subexprs(
+            op,
+            low.into_iter().collect(),
+            inputs,
+            outputs,
+        ));
+    }
+
+    fn lower_equation(&mut self, eqn: &HEqn) -> Result<(), LoweringError> {
+        if eqn.subexprs().is_empty() {
+            let inputs = eqn
+                .inputs()
+                .iter()
+                .map(|var| self.value(*var).map(|var| (var, Ownership::Borrow)))
+                .collect::<Result<_, _>>()?;
+            let mut outputs = Vec::new();
+            for (output, kind) in eqn.outputs() {
+                if !matches!(kind, Kind::Value(_)) {
+                    return Err(LoweringError::ExpectedValue(*output));
+                }
+                let var = self.scope.create_var();
+                self.values.insert(*output, var);
+                outputs.push((var, kind.clone()));
+            }
+            self.emit_eqn(eqn.op().clone(), inputs, outputs, None, vec![]);
+            return Ok(());
+        }
+        // Functionalization defines a call ABI for mutating regions. Other
+        // operations need their own rule for threading cell state.
+        if eqn.op() != &crate::builtins::call_op() {
+            return Err(LoweringError::UnsupportedNestedOperation);
+        }
+        let [sub] = eqn.subexprs() else {
+            return Err(LoweringError::CallArity);
+        };
+        let body = sub.expr();
+        if sub.closure().len() != body.closure().len()
+            || eqn.inputs().len() != body.inputs().len()
+            || eqn.outputs().len() != body.outputs().len()
+        {
+            return Err(LoweringError::CallArity);
+        }
+        let mut identities = BTreeMap::new();
+        let mut bindings = BTreeMap::new();
+        let mut bind = |operands: &[Var], params: &[(Var, Kind)], id: fn(usize) -> InputId| {
+            operands
+                .iter()
+                .zip(params)
+                .enumerate()
+                .map(|(index, (&var, (_, kind)))| {
+                    let binding = match kind {
+                        Kind::Value(_) => NestedBinding::Value(self.value(var)?),
+                        Kind::Cell(_) => NestedBinding::Cell(self.cell(var)?),
+                    };
+                    let id = *identities.entry(binding).or_insert_with(|| id(index));
+                    bindings.insert(id, binding);
+                    Ok((id, kind.clone(), Ownership::Borrow))
+                })
+                .collect::<Result<Vec<_>, LoweringError>>()
+        };
+        let inputs = bind(eqn.inputs(), body.inputs(), InputId::Input)?;
+        let closure = bind(sub.closure(), body.closure(), InputId::Closure)?;
+        let lowered = body.lower(&InputSpec { closure, inputs })?;
+
+        // Snapshot all operands from current SSA state before processing updates.
+        let initial: BTreeMap<_, _> = bindings
+            .iter()
+            .map(|(&id, &binding)| {
+                let var = match binding {
+                    NestedBinding::Value(var) => var,
+                    NestedBinding::Cell(cell) => self.states[&cell],
+                };
+                (id, var)
+            })
+            .collect();
+        let bind_values = |ids: &[InputId]| {
+            ids.iter()
+                .map(|id| (initial[id], Ownership::Borrow))
+                .collect()
+        };
+        let outputs: Vec<_> = lowered
+            .output_infos
+            .iter()
+            .map(|info| (self.scope.create_var(), Kind::Value(info.clone())))
+            .collect();
+        let value_source = |output: &Output| match *output {
+            Output::OutputValue { output_idx } | Output::NewOutputCell { output_idx, .. } => {
+                outputs[output_idx].0
+            }
+            Output::InputValue { input_id } | Output::NewInputCell { input_id, .. } => {
+                initial[&input_id]
+            }
+            Output::InputCell { .. } => unreachable!("expected a value source"),
+        };
+        let mut new_cells = BTreeMap::new();
+        for ((var, kind), result) in eqn.outputs().iter().zip(lowered.results()) {
+            match (kind, result) {
+                (Kind::Value(_), Output::OutputValue { .. } | Output::InputValue { .. }) => {
+                    self.values.insert(*var, value_source(result));
+                }
+                (Kind::Cell(_), Output::InputCell { input_id }) => {
+                    let NestedBinding::Cell(cell) = bindings[input_id] else {
+                        unreachable!()
+                    };
+                    self.cells.insert(*var, cell);
+                }
+                (
+                    Kind::Cell(_),
+                    Output::NewInputCell { id, .. } | Output::NewOutputCell { id, .. },
+                ) => {
+                    let cell = *new_cells.entry(*id).or_insert_with(|| {
+                        let cell = CellBinding::Local(self.local_count);
+                        self.local_count += 1;
+                        self.states.insert(cell, value_source(result));
+                        cell
+                    });
+                    self.cells.insert(*var, cell);
+                }
+                _ => return Err(LoweringError::InvalidComputation),
+            }
+        }
+        for (id, descriptor) in &lowered.updates {
+            let NestedBinding::Cell(cell) = bindings[id] else {
+                unreachable!()
+            };
+            self.states
+                .insert(cell, value_source(&lowered.outputs[*descriptor]));
+            self.written.insert(cell);
+        }
+        if !lowered.expr.eqns().is_empty() || !outputs.is_empty() {
+            self.emit_eqn(
+                eqn.op().clone(),
+                bind_values(&lowered.inputs),
+                outputs,
+                Some(&lowered),
+                bind_values(&lowered.closure),
+            );
+        }
+        Ok(())
+    }
+
     fn lower(mut self, expr: &HExpr) -> Result<LoweredExpr, LoweringError> {
         for instr in expr.instructions() {
             match instr {
-                HInstr::Apply(eqn) => {
-                    lower_computation(eqn, &mut self.scope, &mut self.values, &mut self.eqns)?
-                }
+                HInstr::Apply(eqn) => self.lower_equation(eqn)?,
                 HInstr::CreateCell { cell, initial, .. } => {
                     let initial = self.value(*initial)?;
                     let resource = CellBinding::Local(self.local_count);
@@ -514,6 +693,18 @@ impl Lowerer {
             .into_iter()
             .collect::<Option<Vec<_>>>()
             .ok_or(LoweringError::InvalidComputation)?;
+        let trace_params = |params: &[(Var, Ownership, ValueInfo)]| {
+            params
+                .iter()
+                .map(|(var, _, info)| (*var, Kind::Value(info.clone())))
+                .collect()
+        };
+        let trace_body = Arc::new(HExpr {
+            closure: trace_params(&self.closure),
+            inputs: trace_params(&self.inputs),
+            instructions: self.trace_eqns,
+            outputs: return_vars.clone(),
+        });
         let mut expr = Expr {
             closure: self.closure,
             inputs: self.inputs,
@@ -551,6 +742,7 @@ impl Lowerer {
             snapshot_inputs: needed,
             spec: self.spec,
             expr: Arc::new(expr),
+            trace_body,
             output_infos,
             closure: self.closure_sources,
             inputs: self.input_sources,
@@ -603,54 +795,4 @@ fn assign_ownership(expr: &mut Expr) {
             Ownership::Borrow
         };
     }
-}
-
-fn lookup(values: &BTreeMap<Var, Var>, var: &Var) -> Result<Var, LoweringError> {
-    values
-        .get(var)
-        .copied()
-        .ok_or(LoweringError::UndefinedVariable(*var))
-}
-
-fn lower_computation(
-    eqn: &Eqn,
-    scope: &mut VarScope,
-    values: &mut BTreeMap<Var, Var>,
-    equations: &mut Vec<Eqn>,
-) -> Result<(), LoweringError> {
-    let inputs = eqn
-        .inputs()
-        .iter()
-        .map(|i| lookup(values, &i.0).map(|var| (var, Ownership::Borrow)))
-        .collect::<Result<_, _>>()?;
-    let subexprs = eqn
-        .subexprs()
-        .iter()
-        .map(|sub| {
-            Ok(SubExpr {
-                captures: sub
-                    .closure()
-                    .iter()
-                    .map(|i| lookup(values, &i.0).map(|var| (var, Ownership::Borrow)))
-                    .collect::<Result<_, _>>()?,
-                expr: sub.expr().clone(),
-            })
-        })
-        .collect::<Result<_, LoweringError>>()?;
-    let mut outputs = Vec::new();
-    for (output, kind) in eqn.outputs() {
-        if !matches!(kind, Kind::Value(_)) {
-            return Err(LoweringError::ExpectedValue(*output));
-        }
-        let var = scope.create_var();
-        values.insert(*output, var);
-        outputs.push((var, kind.clone()));
-    }
-    equations.push(Eqn {
-        op: eqn.op().clone(),
-        inputs,
-        outputs,
-        subexprs,
-    });
-    Ok(())
 }

@@ -1,14 +1,15 @@
+use super::deferred::Projection;
 use crate::trace::{
     CellKey, ContextID, Generic, Invocation, ObjectTracer, Trace, TraceContext, Tracer,
 };
-use crate::{Eqn, HExpr, HInstr, Kind, Ownership, SubExpr, Var, VarScope};
+use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, Var, VarScope};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
 /// A DAG captured as HExpr, with bindings for its imported values and cells.
 pub struct Capture {
-    expr: HExpr,
+    expr: Arc<HExpr>,
     closure: Vec<ObjectTracer>,
 }
 
@@ -77,12 +78,12 @@ impl Capture {
             .map(|obj| builder.object(obj))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
-            expr: HExpr {
+            expr: Arc::new(HExpr {
                 closure: builder.closure_params,
                 inputs: builder.inputs,
                 instructions: builder.instructions,
                 outputs: output_vars,
-            },
+            }),
             closure: builder.closure_values,
         })
     }
@@ -90,17 +91,22 @@ impl Capture {
     pub fn expr(&self) -> &HExpr {
         &self.expr
     }
+    /// Bind the current arguments to this body without lowering it.
+    /// Cell outputs and writes are represented by the resulting call's projections.
+    pub fn call(&self, inputs: &[ObjectTracer]) -> Vec<ObjectTracer> {
+        Invocation::defer_call(self.expr.clone(), &self.closure, inputs)
+    }
     pub fn closure(&self) -> &[ObjectTracer] {
         &self.closure
     }
 }
 impl From<Capture> for (HExpr, Vec<ObjectTracer>) {
     fn from(capture: Capture) -> Self {
-        (capture.expr, capture.closure)
+        (Arc::unwrap_or_clone(capture.expr), capture.closure)
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TracerKey(usize);
 impl From<&Trace> for TracerKey {
     fn from(trace: &Trace) -> Self {
@@ -233,25 +239,68 @@ impl Builder {
             } => {
                 let inputs = inputs
                     .iter()
-                    .map(|value| self.value(value).map(|var| (var, Ownership::Borrow)))
+                    .map(|value| self.value(value))
                     .collect::<Result<_, _>>()?;
                 let subexprs = subexprs
                     .iter()
                     .map(|(expr, captures)| {
                         let captures = captures
                             .iter()
-                            .map(|value| self.value(value).map(|var| (var, Ownership::Borrow)))
+                            .map(|value| self.value(value))
                             .collect::<Result<_, _>>()?;
-                        Ok(SubExpr::new(expr.clone(), captures))
+                        Ok(HSubExpr::new(expr.clone(), captures))
                     })
                     .collect::<Result<_, CaptureError>>()?;
                 let outputs = self.outputs(inv);
-                HInstr::Apply(Eqn::new_with_subexprs(
-                    op.clone(),
-                    subexprs,
+                HInstr::Apply(HEqn::new(op.clone(), subexprs, inputs, outputs))
+            }
+            Invocation::DeferredCall(call) => {
+                let captures = call
+                    .closure
+                    .iter()
+                    .map(|object| self.object(object))
+                    .collect::<Result<_, _>>()?;
+                let inputs = call
+                    .inputs
+                    .iter()
+                    .map(|object| self.object(object))
+                    .collect::<Result<_, _>>()?;
+                let results: Vec<_> = call
+                    .body
+                    .outputs()
+                    .iter()
+                    .map(|var| {
+                        (
+                            self.scope.create_var(),
+                            call.body.kind(var).expect("call result kind").clone(),
+                        )
+                    })
+                    .collect();
+                self.instructions.push(HInstr::Apply(HEqn::new(
+                    crate::builtins::call_op(),
+                    vec![HSubExpr::new(call.body.clone(), captures)],
                     inputs,
-                    outputs,
-                ))
+                    results.clone(),
+                )));
+                for (index, projection) in call.results.iter().enumerate() {
+                    let key = BindingKey::Result(InvKey::from(inv), index);
+                    let cell = match projection {
+                        Projection::Value(result_index) => {
+                            self.bindings.insert(key, results[*result_index].0);
+                            continue;
+                        }
+                        Projection::CellContents(index) => results[*index].0,
+                        Projection::LocalUpdate(cell) => {
+                            self.object(&ObjectTracer::Cell(cell.clone()))?
+                        }
+                    };
+                    let output = self.scope.create_var();
+                    self.bindings.insert(key, output);
+                    let kind = Kind::Value(call.outputs[index].clone());
+                    self.instructions
+                        .push(HInstr::ReadCell { cell, output, kind });
+                }
+                return Ok(());
             }
             Invocation::ReadCell { cell, .. } => {
                 let cell = self.object(&ObjectTracer::Cell(cell.clone()))?;

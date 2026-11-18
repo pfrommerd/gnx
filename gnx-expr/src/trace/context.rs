@@ -5,70 +5,35 @@ use std::thread::ThreadId;
 
 use super::Invocation;
 
-/// Identifies a [`TraceContext`] by its thread id,
-/// the local counter number for that thread,
-/// stack offset, and the address of the associated Rc
+/// Identifies a trace by its thread, per-thread sequence number, and stack offset.
+/// The ID is only a token; the trace state itself remains thread-local.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContextID(Option<(ThreadId, usize, usize, *const TraceContextState)>);
-
-impl ContextID {
-    pub const ROOT: ContextID = ContextID(None);
-
-    pub(crate) fn new(
-        thread_id: ThreadId,
-        local_id: usize,
-        stack_offset: usize,
-        arc: &Rc<TraceContextState>,
-    ) -> Self {
-        ContextID(Some((thread_id, local_id, stack_offset, Rc::as_ptr(arc))))
-    }
-
-    pub(crate) fn thread_id(&self) -> Option<ThreadId> {
-        self.0.as_ref().map(|x| x.0)
-    }
-
-    pub(crate) fn local_id(&self) -> Option<usize> {
-        self.0.as_ref().map(|x| x.1)
-    }
-
-    pub(crate) fn stack_offset(&self) -> Option<usize> {
-        self.0.as_ref().map(|x| x.2)
-    }
-
-    pub(crate) fn address(&self) -> Option<*const TraceContextState> {
-        self.0.as_ref().map(|x| x.3)
-    }
-}
+pub struct ContextID(Option<(ThreadId, usize, usize)>);
 
 impl From<&TraceContext> for ContextID {
     fn from(ctx: &TraceContext) -> Self {
-        ContextID::new(
+        Self(Some((
             ctx.state.thread_id,
             ctx.state.local_id,
             ctx.state.stack_offset,
-            &ctx.state,
-        )
+        )))
     }
 }
 
 impl ContextID {
-    // If the context is not alive, a tracer has been leaked!
+    pub const ROOT: Self = Self(None);
+
     pub fn is_alive(&self) -> bool {
-        match &self.0 {
+        match self.0 {
             None => true,
-            Some((_, _, stack_offset, rc_ptr)) => CONTEXT_STACK.with_borrow(|(_, stack)| {
-                stack.get(*stack_offset).map(|x| Rc::as_ptr(&x.state)) == Some(*rc_ptr)
-            }),
+            Some((thread, _, offset)) if thread == std::thread::current().id() => CONTEXT_STACK
+                .with_borrow(|(_, stack)| stack.get(offset).is_some_and(|ctx| ctx.id() == *self)),
+            Some(_) => false,
         }
     }
-    // If this is the current active context
+
     pub fn is_current(&self) -> bool {
-        CONTEXT_STACK.with_borrow(|(_, stack)| match stack.last() {
-            // If there is a context, check if it is the same as this context
-            Some(ctx) => Some(Rc::as_ptr(&ctx.state)) == self.address(),
-            // If there is no context, check if this is the root context
-            None => self.0.is_none(),
-        })
+        *self == TraceContext::current_id()
     }
 }
 

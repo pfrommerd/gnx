@@ -127,7 +127,10 @@ fn closure_only_values_stay_captured_and_shared_values_are_regular_inputs() {
     let (call, _) = result.producer_with_index().unwrap();
     assert_eq!(call.inputs().len(), 2);
     assert_eq!(call.subexprs()[0].1.len(), 1);
-    assert!(std::sync::Arc::ptr_eq(&call.subexprs()[0].0, &lowered.expr));
+    assert!(std::sync::Arc::ptr_eq(
+        &call.subexprs()[0].0,
+        lowered.trace_body()
+    ));
     let cloned = lowered.clone();
     assert!(std::sync::Arc::ptr_eq(&cloned.expr, &lowered.expr));
     let repeated = cloned.call(captured.closure(), &arguments).unwrap();
@@ -137,7 +140,7 @@ fn closure_only_values_stay_captured_and_shared_values_are_regular_inputs() {
     let (repeated_call, _) = repeated.producer_with_index().unwrap();
     assert!(std::sync::Arc::ptr_eq(
         &repeated_call.subexprs()[0].0,
-        &lowered.expr
+        lowered.trace_body()
     ));
     same(&call.inputs()[0], &shared);
     same(&call.inputs()[1], &explicit_only);

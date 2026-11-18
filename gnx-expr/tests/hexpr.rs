@@ -453,7 +453,7 @@ fn explicit_multioutput_input_is_not_overwritten_when_its_sibling_is_captured() 
         .filter_map(HInstr::as_apply)
         .find(|eqn| &eqn.outputs()[0].0 == &captured.expr().outputs()[1])
         .unwrap();
-    assert_eq!(&use_first.inputs()[0].0, &captured.expr().inputs()[1].0);
+    assert_eq!(&use_first.inputs()[0], &captured.expr().inputs()[1].0);
 }
 
 #[test]
@@ -490,9 +490,9 @@ fn alias_bindings_must_have_compatible_cell_types() {
 
 #[test]
 fn immutable_calls_preserve_the_boundary_without_duplicating_captures_as_arguments() {
-    let body = gnx_expr::expr!(gnx_expr::ValueInfo::new(0usize); {
-        lambda &capture; &argument:
-        output = test::neg &argument;
+    let body = gnx_expr::hexpr!(gnx_expr::ValueInfo::new(0usize); {
+        lambda capture; argument:
+        output = test::neg argument;
         in (output)
     });
     let guard = TraceContext::enter();

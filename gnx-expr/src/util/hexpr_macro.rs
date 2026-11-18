@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-use crate::{AttrMap, Eqn, HExpr, HInstr, Kind, Ownership, SubExpr, ValueInfo, Var, VarScope};
+use crate::{AttrMap, HEqn, HExpr, HInstr, HSubExpr, Kind, ValueInfo, Var, VarScope};
 
 #[doc(hidden)]
 pub struct HExprBuilder {
@@ -98,12 +99,16 @@ impl HExprBuilder {
             .push(HInstr::WriteCell { cell, value });
     }
 
-    pub fn operand(&self, name: &str) -> (Var, Ownership) {
-        (self.lookup(name, false).0, Ownership::Borrow)
+    pub fn operand(&self, name: &str) -> Var {
+        self.lookup(name, false).0
     }
 
-    pub fn borrowed_operand(&self, name: &str) -> (Var, Ownership) {
-        self.operand(name)
+    pub fn cell_operand(&self, name: &str) -> Var {
+        self.lookup(name, true).0
+    }
+
+    pub fn subexpr(&self, body: impl Into<Arc<HExpr>>, captures: Vec<Var>) -> HSubExpr {
+        HSubExpr::new(body.into(), captures)
     }
 
     pub fn output(&mut self, name: &'static str) -> (Var, Kind) {
@@ -129,15 +134,13 @@ impl HExprBuilder {
         dialect: &'static str,
         op: &'static str,
         attrs: AttrMap,
-        inputs: Vec<(Var, Ownership)>,
-        subexprs: Vec<SubExpr>,
+        inputs: Vec<Var>,
+        subexprs: Vec<HSubExpr>,
     ) {
         let op = super::expr_macro::op_by_name(dialect, op, attrs);
         self.expr
             .instructions
-            .push(HInstr::Apply(Eqn::new_with_subexprs(
-                op, subexprs, inputs, outputs,
-            )));
+            .push(HInstr::Apply(HEqn::new(op, subexprs, inputs, outputs)));
     }
 
     pub fn result(&self, name: &str, cell: bool) -> Var {
@@ -156,6 +159,7 @@ impl HExprBuilder {
 /// `ValueInfo`: a value moves in, and `&info` clones it. The older
 /// `hexpr!(info; { ... })` form supplies default metadata. Cell reads and
 /// creation inherit metadata; ownership is assigned during lowering.
+/// Nested bodies are `HExpr` or `Arc<HExpr>`, never immutable `Expr`.
 /// End the lambda header with `=>` and return with `in (x)`, `in (x, y)`, or `in ()`.
 ///
 /// ```
@@ -182,6 +186,12 @@ impl HExprBuilder {
 /// ```compile_fail
 /// let info = gnx_expr::ValueInfo::new(0usize);
 /// let _ = gnx_expr::hexpr!({ lambda cell[:]: info => in cell[:] }); // missing parentheses
+/// ```
+/// ```compile_fail
+/// use gnx_expr::{ValueInfo, expr, hexpr};
+/// let info = ValueInfo::new(0usize);
+/// let low = expr!({ lambda x: &info => in (x) });
+/// let _ = hexpr!({ lambda x: &info => y: &info = builtins::call[low => ()] x; in (y) });
 /// ```
 #[macro_export]
 macro_rules! hexpr {

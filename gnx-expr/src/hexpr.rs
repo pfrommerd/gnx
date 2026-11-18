@@ -4,8 +4,62 @@
 //! requires explicit alias and ownership bindings and produces an immutable [`crate::Expr`].
 
 use std::fmt;
+use std::sync::Arc;
 
-use crate::{Eqn, InputSpec, Kind, LoweredExpr, LoweringError, Var};
+use crate::{InputSpec, Kind, LoweredExpr, LoweringError, Op, Var};
+
+#[derive(Clone, Debug)]
+pub struct HSubExpr {
+    pub expr: Arc<HExpr>,
+    pub captures: Vec<Var>,
+}
+impl HSubExpr {
+    pub fn new(expr: Arc<HExpr>, captures: Vec<Var>) -> Self {
+        Self { expr, captures }
+    }
+    pub fn expr(&self) -> &Arc<HExpr> {
+        &self.expr
+    }
+    pub fn closure(&self) -> &[Var] {
+        &self.captures
+    }
+}
+
+/// A high-level equation. Ownership is decided only during lowering.
+#[derive(Clone, Debug)]
+pub struct HEqn {
+    op: Op,
+    subexprs: Vec<HSubExpr>,
+    inputs: Vec<Var>,
+    outputs: Vec<(Var, Kind)>,
+}
+impl HEqn {
+    pub fn new(
+        op: Op,
+        subexprs: Vec<HSubExpr>,
+        inputs: Vec<Var>,
+        outputs: Vec<(Var, Kind)>,
+    ) -> Self {
+        Self {
+            op,
+            subexprs,
+            inputs,
+            outputs,
+        }
+    }
+    pub fn op(&self) -> &Op {
+        &self.op
+    }
+    pub fn subexprs(&self) -> &[HSubExpr] {
+        &self.subexprs
+    }
+    pub fn inputs(&self) -> &[Var] {
+        &self.inputs
+    }
+    pub fn outputs(&self) -> &[(Var, Kind)] {
+        &self.outputs
+    }
+}
 
 /// Derived summary of structural cell accesses. Not a computation effect or
 /// ownership annotation; immutable value parameters have no cell-access summary.
@@ -30,7 +84,7 @@ impl CellAccess {
 
 #[derive(Clone, Debug)]
 pub enum HInstr {
-    Apply(Eqn),
+    Apply(HEqn),
     /// Defines `cell` with the contents metadata of `initial`.
     CreateCell {
         cell: Var,
@@ -49,7 +103,7 @@ pub enum HInstr {
     },
 }
 impl HInstr {
-    pub fn as_apply(&self) -> Option<&Eqn> {
+    pub fn as_apply(&self) -> Option<&HEqn> {
         match self {
             Self::Apply(eqn) => Some(eqn),
             _ => None,
@@ -138,6 +192,24 @@ impl HExpr {
                     let next = match instr {
                         HInstr::ReadCell { cell, .. } if cell == var => CellAccess::Read,
                         HInstr::WriteCell { cell, .. } if cell == var => CellAccess::Write,
+                        HInstr::Apply(eqn) => {
+                            eqn.subexprs()
+                                .iter()
+                                .fold(CellAccess::Unused, |access, sub| {
+                                    let body = sub.expr();
+                                    body.closure()
+                                        .iter()
+                                        .chain(body.inputs())
+                                        .zip(sub.captures.iter().chain(eqn.inputs()))
+                                        .filter(|(_, operand)| *operand == var)
+                                        .fold(access, |access, ((param, _), _)| {
+                                            access.combine(
+                                                body.cell_access(param)
+                                                    .unwrap_or(CellAccess::Unused),
+                                            )
+                                        })
+                                })
+                        }
                         _ => CellAccess::Unused,
                     };
                     access.combine(next)

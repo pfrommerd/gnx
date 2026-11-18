@@ -19,6 +19,21 @@ pub trait Jitable<I: Graph>: Callable<I, Output = Self::OwnedOutput> {
     fn invoke_owned(&self, input: I::Owned) -> Self::Output;
 }
 
+/// A callable whose successful result is a graph. Errors need not be graphs.
+pub trait TryCallable<I: Graph> {
+    type Output: Graph;
+    type Error;
+
+    fn try_invoke(&self, input: I) -> Result<Self::Output, Self::Error>;
+}
+
+/// A fallible callable that can also accept the owned form of its input graph.
+pub trait TryJitable<I: Graph>: TryCallable<I, Output = Self::OwnedOutput> {
+    type OwnedOutput: Graph<Owned = Self::OwnedOutput>;
+
+    fn try_invoke_owned(&self, input: I::Owned) -> Result<Self::Output, Self::Error>;
+}
+
 pub mod as_fn {
     use super::Callable;
     use gnx_graph::Graph;
@@ -65,6 +80,19 @@ macro_rules! impl_tuple_arg_fn {
                     self($([<$T:lower>],)*)
                 }
             }
+
+            impl<$($T: Graph,)* FUNC, OUT: Graph, ERR> TryCallable<($($T,)*)> for FUNC
+            where
+                FUNC: Fn($($T,)*) -> Result<OUT, ERR>,
+            {
+                type Output = OUT;
+                type Error = ERR;
+
+                fn try_invoke(&self, input: ($($T,)*)) -> Result<Self::Output, Self::Error> {
+                    let ($([<$T:lower>],)*) = input;
+                    self($([<$T:lower>],)*)
+                }
+            }
         }
     };
 }
@@ -94,6 +122,18 @@ macro_rules! impl_tuple_arg_jitable_fn {
                 fn invoke_owned(&self, input: ($($T,)*)) -> Self::Output {
                     let ($([<$T:lower>],)*) = input;
                     self($([<$T:lower>],)*)
+                }
+            }
+
+            impl<$($T: Graph<Owned = $T>,)* FUNC, OUT: Graph<Owned = OUT>, ERR>
+                TryJitable<($($T,)*)> for FUNC
+            where
+                FUNC: Fn($($T,)*) -> Result<OUT, ERR>,
+            {
+                type OwnedOutput = OUT;
+
+                fn try_invoke_owned(&self, input: ($($T,)*)) -> Result<Self::Output, Self::Error> {
+                    self.try_invoke(input)
                 }
             }
         }

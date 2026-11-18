@@ -1,6 +1,6 @@
 use crate::trace::{Invocation, ObjectTracer, TraceInput, TraceOutput};
 use crate::value::ValueInfo;
-use crate::{Dialect, Expr, Op, Operation};
+use crate::{Dialect, HExpr, Kind, Op, Operation};
 use std::sync::Arc;
 
 /// Built-in immutable computation operations. Cell actions belong to HExpr,
@@ -35,10 +35,10 @@ pub fn call_op() -> Op {
     Op::new(&CALL_OP)
 }
 
-/// Emit one call to the canonical immutable Expr. Mutable HExpr bodies must be
-/// lowered first; LoweredExpr::call handles cell snapshots and boundary updates.
+/// Record a call with an immutable, value-only interface in the trace.
+/// For a body with cell effects, use `Capture::call` instead.
 pub fn call<C, I>(
-    expr: Arc<Expr>,
+    expr: Arc<HExpr>,
     closure: C,
     inputs: I,
     outputs: Vec<ValueInfo>,
@@ -49,7 +49,17 @@ where
     I: IntoIterator,
     I::Item: Into<TraceInput>,
 {
-    expr.check().expect("invalid call expression");
+    assert!(
+        expr.closure()
+            .iter()
+            .chain(expr.inputs())
+            .all(|(_, kind)| matches!(kind, Kind::Value(_)))
+    );
+    assert!(
+        expr.outputs()
+            .iter()
+            .all(|var| matches!(expr.kind(var), Some(Kind::Value(_))))
+    );
     let closure: Vec<TraceInput> = closure.into_iter().map(Into::into).collect();
     assert_eq!(
         closure.len(),

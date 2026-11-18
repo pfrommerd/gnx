@@ -109,6 +109,11 @@ impl PrettyVarScope {
 
     /// Format the HExpr body and display metadata at its explicit definitions.
     pub fn fmt_hexpr(&self, expr: &HExpr, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt_hexpr_at(expr, f, 0)
+    }
+
+    fn fmt_hexpr_at(&self, expr: &HExpr, f: &mut fmt::Formatter<'_>, indent: usize) -> fmt::Result {
+        let padding = (indent + 1) * 2;
         let cell_var = |var: &Var, f: &mut fmt::Formatter<'_>| {
             self.fmt_var(var, f)?;
             if matches!(expr.kind(var), Some(Kind::Cell(_))) {
@@ -120,9 +125,26 @@ impl PrettyVarScope {
             self.fmt_definition(param, f)
         })?;
         for instruction in expr.instructions() {
-            write!(f, "  ")?;
+            write!(f, "{:padding$}", "")?;
             match instruction {
-                HInstr::Apply(eqn) => self.fmt_macro_eqn(eqn, f, 1, false)?,
+                HInstr::Apply(eqn) => {
+                    if !eqn.outputs().is_empty() {
+                        fmt_list(f, eqn.outputs(), |output, f| self.fmt_definition(output, f))?;
+                        write!(f, " = ")?;
+                    }
+                    fmt_op(eqn.op(), f)?;
+                    for sub in eqn.subexprs() {
+                        write!(f, "[hexpr!(")?;
+                        PrettyVarScope::new().fmt_hexpr_at(sub.expr(), f, indent + 1)?;
+                        write!(f, ") => (")?;
+                        fmt_list(f, sub.closure(), cell_var)?;
+                        write!(f, ")]")?;
+                    }
+                    for var in eqn.inputs() {
+                        write!(f, " ")?;
+                        cell_var(var, f)?;
+                    }
+                }
                 HInstr::CreateCell { cell, initial, .. } => {
                     cell_var(cell, f)?;
                     write!(f, " = ")?;
@@ -141,61 +163,8 @@ impl PrettyVarScope {
             }
             writeln!(f, ";")?;
         }
-        write!(f, "  ")?;
-        fmt_return(f, expr.outputs(), cell_var)
-    }
-
-    // Print nested bodies and their bindings so they can sit inside `expr!(...)`.
-    fn fmt_macro_expr(
-        &self,
-        expr: &Expr,
-        f: &mut fmt::Formatter<'_>,
-        indent: usize,
-    ) -> fmt::Result {
-        fmt_lambda(f, expr.closure(), expr.inputs(), |input, f| {
-            self.fmt_param(input, f)
-        })?;
-        let padding = (indent + 1) * 2;
-        for eqn in expr.eqns() {
-            write!(f, "{:padding$}", "")?;
-            self.fmt_macro_eqn(eqn, f, indent + 1, true)?;
-            writeln!(f, ";")?;
-        }
         write!(f, "{:padding$}", "")?;
-        fmt_return(f, expr.outputs(), |var, f| self.fmt_var(var, f))
-    }
-
-    fn fmt_macro_eqn(
-        &self,
-        eqn: &Eqn,
-        f: &mut fmt::Formatter<'_>,
-        indent: usize,
-        ownership: bool,
-    ) -> fmt::Result {
-        if !eqn.outputs().is_empty() {
-            fmt_list(f, eqn.outputs(), |output, f| self.fmt_definition(output, f))?;
-            write!(f, " = ")?;
-        }
-        fmt_op(eqn.op(), f)?;
-        let operand = |input: &(Var, Ownership), f: &mut fmt::Formatter<'_>| {
-            if ownership {
-                self.fmt_input(input, f)
-            } else {
-                self.fmt_var(&input.0, f)
-            }
-        };
-        for subexpr in eqn.subexprs() {
-            write!(f, "[expr!(")?;
-            PrettyVarScope::new().fmt_macro_expr(subexpr.expr(), f, indent)?;
-            write!(f, ") => (")?;
-            fmt_list(f, subexpr.closure(), operand)?;
-            write!(f, ")]")?;
-        }
-        for input in eqn.inputs() {
-            write!(f, " ")?;
-            operand(input, f)?;
-        }
-        Ok(())
+        fmt_return(f, expr.outputs(), cell_var)
     }
 
     fn fmt_expr_with_printer(
