@@ -9,7 +9,7 @@ use gnx_expr::{
 };
 use gnx_graph::util::GraphExt;
 use gnx_graph::{Builder, Graph, Key, Of};
-use gnx_math::ops::{ones_op, zeros_op};
+use gnx_math_base::ops::{ones_op, zeros_op};
 
 use crate::body::Body;
 use crate::cache::{TraceEntry, TracerBuilder, kind, rebuild_graph, split_graph};
@@ -137,7 +137,7 @@ pub(crate) fn differentiated(
                 return Ok(false);
             }
             let differentiable =
-                matches!(object, ObjectTracer::Ref(trace) if util::is_float(trace.info()));
+                matches!(object, ObjectTracer::Ref(trace) if util::is_inexact(trace.info()));
             if !differentiable && selected.exact {
                 return Err(TransformError::invalid(format!(
                     "wrt selects a leaf that is not a floating-point array ({path:?})"

@@ -2,8 +2,6 @@ pub mod bytes;
 mod cf;
 pub mod graph;
 pub mod leaf;
-#[cfg(feature = "xla-mesh")]
-mod mesh;
 pub mod string;
 mod tracer;
 mod transforms;
@@ -25,12 +23,6 @@ use crate::graph::{parse_roots, GraphParser, PyGraph};
 
 #[pymodule]
 pub mod _native {
-    use gnx::buffer::TransferPolicy;
-    use gnx::{Eval, ExecOpts};
-    use gnx_jax::JaxDevice;
-    use pyo3::prelude::*;
-    use uuid::Uuid;
-
     #[pymodule_export]
     use super::{expr, jit, PyCapture, PyJit, PyTrace};
     #[pymodule_export]
@@ -38,86 +30,19 @@ pub mod _native {
     #[pymodule_export]
     use crate::graph::GraphContainer;
     #[pymodule_export]
-    use crate::transforms::{
-        grad, hessian, jvp, map, value_and_grad, vjp, PyTransformed, PyVjpFunction,
-    };
-    #[cfg(feature = "xla-mesh")]
-    #[pymodule_export]
-    use crate::mesh::{constrain, replicate, PyMesh, PyMeshWorker};
-    #[pymodule_export]
     use crate::tracer::{
         from_host_bytes, from_numpy_array, new_ref, placeholder, PyArray, PyArrayRef,
+    };
+    #[pymodule_export]
+    use crate::transforms::{
+        grad, hessian, jvp, map, stop_gradient, value_and_grad, vjp, PyTransformed, PyVjpFunction,
     };
     #[cfg(feature = "xla")]
     #[pymodule_export]
     use crate::xla::{xla_devices, PyXlaDevice};
-
-    #[pyclass(name = "JaxDevice", module = "gnxlib.jax", eq, frozen, hash)]
-    #[derive(PartialEq, Eq, Hash)]
-    struct PyJaxDevice(JaxDevice);
-
-    #[pymethods]
-    impl PyJaxDevice {
-        #[staticmethod]
-        fn from_native(device: Bound<'_, PyAny>) -> PyResult<Self> {
-            JaxDevice::from_native(device).map(Self)
-        }
-
-        #[getter]
-        fn uuid(&self) -> &Uuid {
-            self.0.uuid()
-        }
-
-        #[getter]
-        fn platform(&self) -> &str {
-            self.0.platform()
-        }
-
-        #[getter]
-        fn hardware_kind(&self) -> &str {
-            self.0.hardware_kind()
-        }
-
-        #[getter]
-        fn hardware_id(&self) -> &str {
-            self.0.hardware_id()
-        }
-
-        #[getter]
-        fn native<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
-            self.0.native(py).clone()
-        }
-
-        /// Materialize the pending values in a graph in place.
-        #[pyo3(signature = (roots, *, allow_copy = false))]
-        async fn eval(&self, roots: Py<PyAny>, allow_copy: bool) -> PyResult<()> {
-            let roots = Python::attach(|py| super::parse_roots(roots.bind(py)))?;
-            let transfers = if allow_copy {
-                TransferPolicy::AllowCopy
-            } else {
-                TransferPolicy::RequireZeroCopy
-            };
-            self.0
-                .eval(roots.as_ref(), ExecOpts { transfers })
-                .await
-                .map_err(super::eval_error)
-        }
-
-        fn __repr__(&self) -> String {
-            self.0.to_string()
-        }
-    }
-
-    /// Return JAX device handles for the selected platform or JAX's default.
-    #[pyfunction(signature = (backend = None))]
-    fn jax_devices(py: Python<'_>, backend: Option<&str>) -> PyResult<Vec<PyJaxDevice>> {
-        Ok(gnx_jax::devices(py, backend)?
-            .into_iter()
-            .map(PyJaxDevice)
-            .collect())
-    }
 }
 
+#[cfg(feature = "xla")]
 fn eval_error(error: gnx::EvalError) -> PyErr {
     use gnx::{EvalError, EvalPlanError};
     match error {

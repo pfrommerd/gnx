@@ -7,13 +7,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
+use gnx_array::{ArrayInfo, DType, Shape};
 use gnx_expr::lower::{FixedRegion, LoweringContext, RegionCell, StructuredRegion};
 use gnx_expr::{
     Capture, CellAccess, CellKey, DeferredApplyPlan, DeferredLocal, DeferredProjection,
     DeferredRegion, Dialect, Eqn, Expr, HEqn, HExpr, Invocation, Kind, LoweringError, ObjectTracer,
     Op, Trace, ValueInfo, Var,
 };
-use gnx_math::{ArrayInfo, DType, Shape};
 
 mod branch;
 mod call;

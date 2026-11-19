@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install clang and libclang
-        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev liblapacke-dev
       - name: Install matching XLA runtime
         run: |
           archive="$RUNNER_TEMP/xla-cpu.tar.gz"
@@ -20,4 +20,4 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP"
           export XLA_EXTENSION_DIR="$RUNNER_TEMP/xla_extension"
           export LD_LIBRARY_PATH="$XLA_EXTENSION_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          CXX=clang++ cargo test --locked -p gnx-xla --features mesh
+          CXX=clang++ cargo test --locked -p gnx-xla --features native

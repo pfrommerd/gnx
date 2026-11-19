@@ -8,6 +8,7 @@ dashmap = "6.1.0"
 gnx-derive = { version = "0.1.0", path = "../gnx-derive" }
 gnx-graph = { version = "0.1.0", path = "../gnx-graph" }
 gnx-expr = { version = "0.1.0", path = "../gnx-expr" }
-gnx-math = { version = "0.1.0", path = "../gnx-math" }
+gnx-array = { version = "0.1.0", path = "../gnx-array" }
+gnx-math-base = { version = "0.1.0", path = "../gnx-math-base" }
 paste = "1.0.15"
 thiserror = "2"

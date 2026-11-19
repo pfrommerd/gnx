@@ -7,7 +7,6 @@
 //!
 //! // Batch along a new leading axis: every operand is moved (or broadcast) to
 //! // axis 0, and the closure returns the operation to apply to them.
-//! defbatch!(ReduceSumOperation, |op| Ok(reduce_sum_op(&shifted(op.axes()))));
 //! ```
 //!
 //! Operations without operands (`zeros`, `ones`, `eye`, ...) need no rule: an

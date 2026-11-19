@@ -25,7 +25,7 @@ mod api;
 pub mod batch;
 pub mod def;
 pub mod region;
-mod rules;
+pub(crate) mod rules;
 
 pub use api::{Map, map};
 pub use batch::{BatchRule, Batched};

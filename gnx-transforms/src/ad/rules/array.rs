@@ -1,11 +1,10 @@
 //! Forward-mode and transposition rules for the `array` dialect.
 
-use gnx_math::ops::{
-    AddOperation, BroadcastInDimOperation, MulOperation, ReduceSumOperation, ReshapeOperation,
-    RevOperation, SelectOperation, TransposeOperation,
+use gnx_math_base::ops::{
+    AddOperation, BroadcastInDimOperation, MulOperation, ReshapeOperation, RevOperation,
+    SelectOperation, TransposeOperation,
 };
 
-use crate::TransformError;
 use crate::ad::def::{defbilinear, defjvp, deflinear, deftranspose};
 use crate::util::inverse;
 
@@ -36,28 +35,15 @@ deftranspose!(
 deflinear!(BroadcastInDimOperation, |cx, ct, [x]| {
     let mapping = cx.operation::<BroadcastInDimOperation>()?.dims();
     let (input, output) = (x.dims()?, ct.dims()?);
-    if input
-        .iter()
-        .zip(mapping)
-        .any(|(&size, &axis)| output[axis] != size)
-    {
-        return Err(TransformError::invalid(
-            "transposing a broadcast that expands size-1 axes is not supported",
-        ));
-    }
     let axes: Vec<_> = (0..output.len())
-        .filter(|axis| !mapping.contains(axis))
+        .filter(|&axis| {
+            mapping
+                .iter()
+                .position(|&destination| destination == axis)
+                .is_none_or(|source| input[source] != output[axis])
+        })
         .collect();
-    ct.reduce_sum(&axes)
-});
-
-deflinear!(ReduceSumOperation, |cx, ct, [x]| {
-    let axes = cx.operation::<ReduceSumOperation>()?.axes();
-    let input = x.dims()?;
-    let mapping: Vec<_> = (0..input.len())
-        .filter(|axis| !axes.contains(axis))
-        .collect();
-    ct.broadcast_in_dim(&input, &mapping)
+    Ok(ct.reduce_sum(&axes)?.reshape(x.info()))
 });
 
 deflinear!(TransposeOperation, |cx, ct, _| ct

@@ -45,7 +45,7 @@ pub use gnx_math::device::{Device, ExecOpts};
 
 pub use gnx_transforms::{
     Callable, ExpandTransforms, Function, Jit, Jitable, TryCallable, TryJitable, grad, hessian,
-    jit, jit_fn, jittable, jvp, map, try_jit_fn, value_and_grad, vjp,
+    jit, jit_fn, jittable, jvp, map, stop_gradient, try_jit_fn, value_and_grad, vjp,
 };
 
 extern crate self as gnx;

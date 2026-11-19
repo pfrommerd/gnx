@@ -1,6 +1,7 @@
 extern crate self as gnx_transforms;
 
 pub mod ad;
+pub use ad::stop_gradient;
 pub mod body;
 mod cache;
 pub mod callable;
@@ -58,9 +59,13 @@ pub mod __private {
 /// [`TransposeRule`] and [`BatchRule`] directly.
 pub mod rules {
     pub use crate::ad::def::{Arg, Ctx, Val};
+    pub use crate::ad::rules::reduction::{
+        ReduceJvpRule, additive_reducer, copy_reduction_primal, reducer_body,
+    };
     pub use crate::ad::{Dual, JvpRule, Operand, Tangent, TransposeRule};
     pub use crate::map::batch::materialize;
     pub use crate::map::def::{leading, shifted};
+    pub use crate::map::rules::array::batch_reduce;
     pub use crate::map::{BatchRule, Batched};
     pub use crate::{TransformError, TransformResult};
     pub use crate::{defbatch, defbilinear, defbroadcasting, defjvp, deflinear, deftranspose};
@@ -70,6 +75,7 @@ pub mod rules {
 pub mod ops {
     pub mod ad {
         use crate::ad::DiffParameters;
+        pub use crate::ad::stop_gradient_op as stop_gradient;
         use gnx_expr::Op;
 
         pub fn jvp(wrt: &[usize], of: &[usize]) -> Op {

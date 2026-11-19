@@ -1,0 +1,1785 @@
+#include "xla_rs.h"
+#include "xla/hlo/builder/lib/math.h"
+#include "xla/hlo/builder/lib/qr.h"
+#include "xla/hlo/builder/lib/self_adjoint_eig.h"
+#include "xla/service/custom_call_target_registry.h"
+#include "xla/ffi/api/c_api.h"
+#include "xla/layout_util.h"
+
+#define ASSIGN_OR_RETURN_STATUS(lhs, rexpr)                                    \
+  ASSIGN_OR_RETURN_STATUS_IMPL(                                                \
+      TF_STATUS_MACROS_CONCAT_NAME(_statusor, __COUNTER__), lhs, rexpr)
+
+#define ASSIGN_OR_RETURN_STATUS_IMPL(statusor, lhs, rexpr)                     \
+  auto statusor = (rexpr);                                                     \
+  if (!statusor.ok())                                                          \
+    return new Status(statusor.status());                                      \
+  auto lhs = std::move(statusor.value());
+
+#define MAYBE_RETURN_STATUS(rexpr)                                             \
+  MAYBE_RETURN_STATUS_IMPL(TF_STATUS_MACROS_CONCAT_NAME(_status, __COUNTER__), \
+                           rexpr)
+
+#define MAYBE_RETURN_STATUS_IMPL(statusor, rexpr)                              \
+  auto statusor = (rexpr);                                                     \
+  if (!statusor.ok())                                                          \
+    return new Status(statusor);
+
+#define BEGIN_PROTECT_OP try {
+#define END_PROTECT_OP_B(builder)                                              \
+  }                                                                            \
+  catch (std::exception e) {                                                   \
+    return new XlaOp(builder->ReportError(tsl::errors::Internal(e.what())));   \
+  }
+#define END_PROTECT_OP(arg)                                                    \
+  }                                                                            \
+  catch (std::exception e) {                                                   \
+    return new XlaOp(                                                          \
+        arg->builder()->ReportError(tsl::errors::Internal(e.what())));         \
+  }
+
+status pjrt_cpu_client_create(pjrt_client *output) {
+  CpuClientOptions options;
+  options.asynchronous = false;
+  ASSIGN_OR_RETURN_STATUS(client, xla::GetXlaPjrtCpuClient(std::move(options)));
+  *output = new std::shared_ptr(std::move(client));
+  return nullptr;
+}
+
+status pjrt_gpu_client_create(pjrt_client *output, double memory_fraction,
+                              bool preallocate) {
+  xla::GpuAllocatorConfig allocator = {.memory_fraction = memory_fraction,
+                                       .preallocate = preallocate};
+  xla::GpuClientOptions options;
+  options.allocator_config = allocator;
+  ASSIGN_OR_RETURN_STATUS(client, xla::GetStreamExecutorGpuClient(options));
+  *output = new std::shared_ptr(std::move(client));
+  return nullptr;
+}
+
+static absl::StatusOr<PjRtValueType> parse_plugin_option(int tag,
+                                                          const char *value) {
+  std::string v(value);
+  switch (tag) {
+  case 0:
+    return PjRtValueType(v);
+  case 1:
+    if (v == "true")
+      return PjRtValueType(true);
+    if (v == "false")
+      return PjRtValueType(false);
+    return absl::InvalidArgumentError("bool option must be true or false");
+  case 2: {
+    int64_t i;
+    if (!absl::SimpleAtoi(v, &i))
+      return absl::InvalidArgumentError("invalid int64 option " + v);
+    return PjRtValueType(i);
+  }
+  case 3: {
+    float f;
+    if (!absl::SimpleAtof(v, &f))
+      return absl::InvalidArgumentError("invalid float option " + v);
+    return PjRtValueType(f);
+  }
+  case 4: {
+    std::vector<int64_t> is;
+    for (absl::string_view part : absl::StrSplit(v, ',', absl::SkipEmpty())) {
+      int64_t i;
+      if (!absl::SimpleAtoi(part, &i))
+        return absl::InvalidArgumentError("invalid int64 list option " + v);
+      is.push_back(i);
+    }
+    return PjRtValueType(is);
+  }
+  default:
+    return absl::InvalidArgumentError("unknown option tag");
+  }
+}
+
+status pjrt_plugin_client_create(pjrt_client *output, const char *device_type,
+                                 const char *library_path, int n,
+                                 const char *const *keys, const int *tags,
+                                 const char *const *values) {
+  // The registry is process-wide: a second client on the same plugin reuses
+  // the loaded library rather than failing on the duplicate registration.
+  if (!pjrt::PjrtApi(device_type).ok()) {
+    ASSIGN_OR_RETURN_STATUS(api,
+                            pjrt::LoadPjrtPlugin(device_type, library_path));
+    (void)api;
+  }
+  // LoadPjrtPlugin only calls SetPjrtApi; the plugin's own init
+  // (PJRT_Plugin_Initialize) must run before a client is created, otherwise
+  // e.g. libtpu aborts trying to access the TPU device files before init.
+  ASSIGN_OR_RETURN_STATUS(initialized,
+                          pjrt::IsPjrtPluginInitialized(device_type));
+  if (!initialized) {
+    MAYBE_RETURN_STATUS(pjrt::InitializePjrtPlugin(device_type));
+  }
+  absl::flat_hash_map<std::string, PjRtValueType> options;
+  for (int i = 0; i < n; ++i) {
+    ASSIGN_OR_RETURN_STATUS(value, parse_plugin_option(tags[i], values[i]));
+    options[keys[i]] = std::move(value);
+  }
+  ASSIGN_OR_RETURN_STATUS(client, xla::GetCApiClient(device_type, options));
+  *output = new std::shared_ptr(std::move(client));
+  return nullptr;
+}
+
+status pjrt_tpu_client_create(pjrt_client *output,
+                              int max_inflight_computations) {
+  (void)max_inflight_computations;
+  const char *env = std::getenv("TPU_LIBRARY_PATH");
+  std::string library_path = env != nullptr ? env : "libtpu.so";
+  // The registry is case insensitive, so this matches EXLA (elixir-nx) which
+  // registers "tpu" and creates the client with the device type "TPU".
+  return pjrt_plugin_client_create(output, "tpu", library_path.c_str(), 0,
+                                   nullptr, nullptr, nullptr);
+}
+
+int pjrt_client_device_count(pjrt_client c) { return (*c)->device_count(); }
+
+int pjrt_client_addressable_device_count(pjrt_client c) {
+  return (*c)->addressable_device_count();
+}
+
+void pjrt_client_devices(pjrt_client c, pjrt_device *outputs) {
+  size_t index = 0;
+  for (auto device : (*c)->devices()) {
+    outputs[index++] = device;
+  }
+}
+
+void pjrt_client_addressable_devices(pjrt_client c, pjrt_device *outputs) {
+  size_t index = 0;
+  for (auto device : (*c)->addressable_devices()) {
+    outputs[index++] = device;
+  }
+}
+
+char *pjrt_client_platform_name(pjrt_client c) {
+  // TODO: Avoid the double allocation when converting string views.
+  return strdup(std::string((*c)->platform_name()).c_str());
+}
+
+char *pjrt_client_platform_version(pjrt_client c) {
+  return strdup(std::string((*c)->platform_version()).c_str());
+}
+
+void pjrt_client_free(pjrt_client b) { delete b; }
+
+void pjrt_loaded_executable_free(pjrt_loaded_executable b) { delete b; }
+
+status pjrt_buffer_from_host_buffer(const pjrt_client client,
+                                    const pjrt_device device, const void *d,
+                                    int pr_type, int dsize, const int64_t *ds,
+                                    pjrt_buffer *output) {
+  PjRtDevice *device_ = device == nullptr ? (*client)->devices()[0] : device;
+  ASSIGN_OR_RETURN_STATUS(memory_space, device_->default_memory_space());
+  ASSIGN_OR_RETURN_STATUS(
+      buffer,
+      (*client)->BufferFromHostBuffer(
+          d, (PrimitiveType)pr_type, absl::Span<const int64_t>(ds, dsize), {},
+          PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall, []() {},
+          memory_space, /*device_layout=*/nullptr));
+  *output = buffer.release();
+  return nullptr;
+}
+
+status pjrt_buffer_from_host_literal(const pjrt_client client,
+                                     const pjrt_device device, const literal l,
+                                     pjrt_buffer *output) {
+  PjRtDevice *d = device == nullptr ? (*client)->devices()[0] : device;
+  ASSIGN_OR_RETURN_STATUS(memory_space, d->default_memory_space());
+  ASSIGN_OR_RETURN_STATUS(buffer,
+                          (*client)->BufferFromHostLiteral(*l, memory_space));
+  *output = buffer.release();
+  return nullptr;
+}
+
+status pjrt_buffer_to_literal_sync(pjrt_buffer b, literal *output) {
+  ASSIGN_OR_RETURN_STATUS(literal, b->ToLiteralSync());
+  *output = new Literal();
+  **output = std::move(*literal);
+  return nullptr;
+}
+
+shape pjrt_buffer_on_device_shape(pjrt_buffer b) {
+  return new Shape(b->on_device_shape());
+}
+
+status pjrt_buffer_copy_to_device(pjrt_buffer b, pjrt_device device,
+                                  pjrt_buffer *output) {
+  ASSIGN_OR_RETURN_STATUS(memory_space, device->default_memory_space());
+  ASSIGN_OR_RETURN_STATUS(copied_b, b->CopyToMemorySpace(memory_space));
+  *output = copied_b.release();
+  return nullptr;
+}
+
+status pjrt_buffer_copy_raw_to_host_sync(pjrt_buffer b, void *dst,
+                                         size_t offset, size_t transfer_size) {
+  MAYBE_RETURN_STATUS(b->CopyRawToHost(dst, offset, transfer_size).Await());
+  return nullptr;
+}
+
+void pjrt_buffer_free(pjrt_buffer b) { delete b; }
+
+int pjrt_device_id(pjrt_device d) { return d->id(); }
+
+int pjrt_device_process_index(pjrt_device d) { return d->process_index(); }
+
+int pjrt_device_local_hardware_id(pjrt_device d) {
+  return d->local_hardware_id().value();
+}
+
+status pjrt_device_transfer_to_infeed(pjrt_device d, const literal l) {
+  MAYBE_RETURN_STATUS(d->TransferToInfeed(*l));
+  return nullptr;
+}
+
+status pjrt_device_transfer_from_outfeed(pjrt_device d, literal l) {
+  MAYBE_RETURN_STATUS(d->TransferFromOutfeed(l));
+  return nullptr;
+}
+
+char *pjrt_device_kind(pjrt_device d) {
+  return strdup(std::string(d->device_kind()).c_str());
+}
+
+char *pjrt_device_debug_string(pjrt_device d) {
+  return strdup(std::string(d->DebugString()).c_str());
+}
+
+char *pjrt_device_to_string(pjrt_device d) {
+  return strdup(std::string(d->ToString()).c_str());
+}
+
+xla_builder xla_builder_create(const char *name) {
+  return new XlaBuilder(name);
+}
+
+void xla_builder_free(xla_builder b) { delete b; }
+
+xla_op constant_literal(const xla_builder b, const literal l) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(ConstantLiteral(b, *l));
+  END_PROTECT_OP_B(b)
+}
+
+#define CONST_OP_R01(native_type, primitive_type)                              \
+  xla_op constant_r0_##native_type(const xla_builder b, native_type f) {       \
+    return new XlaOp(ConstantR0<native_type>(b, f));                           \
+  }                                                                            \
+  xla_op constant_r1c_##native_type(const xla_builder b, native_type f,        \
+                                    size_t len) {                              \
+    return new XlaOp(ConstantR1<native_type>(b, len, f));                      \
+  }                                                                            \
+  xla_op constant_r1_##native_type(const xla_builder b, const native_type *f,  \
+                                   size_t len) {                               \
+    return new XlaOp(                                                          \
+        ConstantR1<native_type>(b, absl::Span<const native_type>(f, len)));    \
+  }                                                                            \
+  literal create_r0_##native_type(native_type f) {                             \
+    return new Literal(LiteralUtil::CreateR0<native_type>(f));                 \
+  }                                                                            \
+  literal create_r1_##native_type(const native_type *f, size_t nel) {          \
+    return new Literal(LiteralUtil::CreateR1<native_type>(                     \
+        absl::Span<const native_type>(f, nel)));                               \
+  }                                                                            \
+  native_type literal_get_first_element_##native_type(const literal l) {       \
+    return l->GetFirstElement<native_type>();                                  \
+  }
+
+FOR_EACH_NATIVE_TYPE(CONST_OP_R01)
+#undef CONST_OP_R01
+
+Shape make_shape_internal(int pr_type, int dsize, const int64_t *ds) {
+  bool has_negative_dim = false;
+  for (int i = 0; i < dsize; ++i) {
+    if (ds[i] < 0) {
+      has_negative_dim = true;
+      break;
+    }
+  }
+  Shape shape;
+  if (has_negative_dim) {
+    std::vector<bool> dynamic;
+    std::vector<int64_t> bounds;
+    for (int i = 0; i < dsize; ++i) {
+      if (ds[i] < 0) {
+        bounds.push_back(-ds[i]);
+        dynamic.push_back(true);
+      } else {
+        bounds.push_back(ds[i]);
+        dynamic.push_back(false);
+      }
+    }
+    shape = ShapeUtil::MakeShape(
+        (PrimitiveType)pr_type,
+        absl::Span<const int64_t>(bounds.data(), bounds.size()), dynamic);
+  } else {
+    shape = ShapeUtil::MakeShape((PrimitiveType)pr_type,
+                                 absl::Span<const int64_t>(ds, dsize));
+  }
+  return shape;
+}
+
+shape make_shape_array(int pr_type, size_t dsize, const int64_t *ds) {
+  return new Shape(make_shape_internal(pr_type, dsize, ds));
+}
+
+shape make_shape_tuple(size_t dsize, const shape *ds) {
+  std::vector<Shape> elts;
+  for (size_t i = 0; i < dsize; ++i) {
+    elts.push_back(*ds[i]);
+  }
+  return new Shape(ShapeUtil::MakeTupleShape(elts));
+}
+
+xla_op parameter(const xla_builder b, int64_t id, int pr_type, int dsize,
+                 const int64_t *ds, const char *name) {
+  BEGIN_PROTECT_OP
+  Shape shape = make_shape_internal(pr_type, dsize, ds);
+  return new XlaOp(Parameter(b, id, shape, std::string(name)));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op parameter_s(const xla_builder b, int64_t id, const shape s,
+                   const char *name) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Parameter(b, id, *s, std::string(name)));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op infeed(const xla_builder b, int pr_type, int dsize, const int64_t *ds,
+              const char *config) {
+  BEGIN_PROTECT_OP
+  Shape shape = make_shape_internal(pr_type, dsize, ds);
+  return new XlaOp(Infeed(b, shape, std::string(config)));
+  END_PROTECT_OP_B(b)
+}
+
+void outfeed(const xla_op op, int pr_type, int dsize, const int64_t *ds,
+             const char *outfeed_config) {
+  Shape shape = make_shape_internal(pr_type, dsize, ds);
+  Outfeed(*op, shape, std::string(outfeed_config));
+}
+
+xla_op op_add(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Add(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+// Cross-replica all-reduce with the given scalar reduction computation, over
+// the default (all-replica) group of a replicated executable.
+xla_op op_all_reduce(const xla_op operand, const xla_computation reduction) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(AllReduce(*operand, *reduction));
+  END_PROTECT_OP(operand)
+}
+
+xla_op op_sub(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Sub(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_mul(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Mul(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_div(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Div(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_rem(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Rem(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_max(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Max(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_min(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Min(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_and(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(And(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_or(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Or(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_xor(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Xor(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_atan2(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Atan2(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_pow(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Pow(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_dot(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Dot(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_dot_general(const xla_op lhs, const xla_op rhs, const int64_t *lhs_c,
+                      size_t nlhs_c, const int64_t *rhs_c, size_t nrhs_c,
+                      const int64_t *lhs_b, size_t nlhs_b, const int64_t *rhs_b,
+                      size_t nrhs_b) {
+  BEGIN_PROTECT_OP
+  DotDimensionNumbers dnums;
+  for (size_t i = 0; i < nlhs_c; ++i)
+    dnums.add_lhs_contracting_dimensions(lhs_c[i]);
+  for (size_t i = 0; i < nrhs_c; ++i)
+    dnums.add_rhs_contracting_dimensions(rhs_c[i]);
+  for (size_t i = 0; i < nlhs_b; ++i)
+    dnums.add_lhs_batch_dimensions(lhs_b[i]);
+  for (size_t i = 0; i < nrhs_b; ++i)
+    dnums.add_rhs_batch_dimensions(rhs_b[i]);
+  return new XlaOp(DotGeneral(*lhs, *rhs, dnums));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_dot_general_typed(const xla_op lhs, const xla_op rhs,
+                            const int64_t *lhs_c, size_t nlhs_c,
+                            const int64_t *rhs_c, size_t nrhs_c,
+                            const int64_t *lhs_b, size_t nlhs_b,
+                            const int64_t *rhs_b, size_t nrhs_b, int pr_type) {
+  BEGIN_PROTECT_OP
+  DotDimensionNumbers dnums;
+  for (size_t i = 0; i < nlhs_c; ++i)
+    dnums.add_lhs_contracting_dimensions(lhs_c[i]);
+  for (size_t i = 0; i < nrhs_c; ++i)
+    dnums.add_rhs_contracting_dimensions(rhs_c[i]);
+  for (size_t i = 0; i < nlhs_b; ++i)
+    dnums.add_lhs_batch_dimensions(lhs_b[i]);
+  for (size_t i = 0; i < nrhs_b; ++i)
+    dnums.add_rhs_batch_dimensions(rhs_b[i]);
+  return new XlaOp(DotGeneral(*lhs, *rhs, dnums, nullptr,
+                              (PrimitiveType)pr_type));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_conv_general_dilated(
+    const xla_op lhs, const xla_op rhs, const int64_t *window_strides,
+    size_t n_strides, const int64_t *padding_low, const int64_t *padding_high,
+    size_t n_padding, const int64_t *lhs_dilation, size_t n_lhs_dilation,
+    const int64_t *rhs_dilation, size_t n_rhs_dilation,
+    const int64_t *input_spatial, const int64_t *output_spatial,
+    const int64_t *kernel_spatial, size_t n_spatial, int64_t input_batch,
+    int64_t input_feature, int64_t output_batch, int64_t output_feature,
+    int64_t kernel_input_feature, int64_t kernel_output_feature,
+    int64_t feature_group_count, int64_t batch_group_count,
+    bool window_reversal) {
+  BEGIN_PROTECT_OP
+  ConvolutionDimensionNumbers dnums;
+  dnums.set_input_batch_dimension(input_batch);
+  dnums.set_input_feature_dimension(input_feature);
+  dnums.set_output_batch_dimension(output_batch);
+  dnums.set_output_feature_dimension(output_feature);
+  dnums.set_kernel_input_feature_dimension(kernel_input_feature);
+  dnums.set_kernel_output_feature_dimension(kernel_output_feature);
+  for (size_t i = 0; i < n_spatial; ++i) {
+    dnums.add_input_spatial_dimensions(input_spatial[i]);
+    dnums.add_output_spatial_dimensions(output_spatial[i]);
+    dnums.add_kernel_spatial_dimensions(kernel_spatial[i]);
+  }
+  std::vector<std::pair<int64_t, int64_t>> padding;
+  padding.reserve(n_padding);
+  for (size_t i = 0; i < n_padding; ++i)
+    padding.emplace_back(padding_low[i], padding_high[i]);
+  std::optional<std::vector<bool>> reversal;
+  if (window_reversal)
+    reversal = std::vector<bool>(n_spatial, true);
+  return new XlaOp(ConvGeneralDilated(
+      *lhs, *rhs, absl::Span<const int64_t>(window_strides, n_strides), padding,
+      absl::Span<const int64_t>(lhs_dilation, n_lhs_dilation),
+      absl::Span<const int64_t>(rhs_dilation, n_rhs_dilation), dnums,
+      feature_group_count, batch_group_count, /*precision_config=*/nullptr,
+      /*preferred_element_type=*/std::nullopt, reversal));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_eq(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Eq(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_ne(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Ne(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_ge(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Ge(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_gt(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Gt(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_le(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Le(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_lt(const xla_op lhs, const xla_op rhs) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Lt(*lhs, *rhs));
+  END_PROTECT_OP(lhs)
+}
+
+xla_op op_not(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Not(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_abs(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Abs(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_exp(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Exp(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_expm1(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Expm1(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_floor(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Floor(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_ceil(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Ceil(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_round(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Round(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_log(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Log(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_log1p(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Log1p(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_logistic(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Logistic(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_sign(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Sign(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_clz(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Clz(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_cos(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Cos(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_sin(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Sin(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_tanh(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Tanh(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_erf(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Erf(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_rev(const xla_op arg, const int64_t *dims, size_t ndims) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Rev(*arg, absl::Span<const int64_t>(dims, ndims)));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_real(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Real(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_imag(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Imag(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_sqrt(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Sqrt(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_rsqrt(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Rsqrt(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_cbrt(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Cbrt(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_is_finite(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(IsFinite(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_neg(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Neg(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_lower_triangle(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(LowerTriangle(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_upper_triangle(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(UpperTriangle(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_einsum1(const xla_op arg, const char *config) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Einsum(*arg, config));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_einsum2(const xla_op arg1, const xla_op arg2, const char *config) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Einsum(*arg1, *arg2, config));
+  END_PROTECT_OP(arg1)
+}
+
+xla_op op_copy(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Copy(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_clone(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(*arg);
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_zeros_like(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(ZerosLike(*arg));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_zero_like(const xla_op arg) {
+  BEGIN_PROTECT_OP
+  const Shape *shape = arg->builder()->GetShapePtr(*arg).value();
+  return new XlaOp(Zero(arg->builder(), shape->element_type()));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_rng_bit_generator(int algorithm, const xla_op initial_state,
+                            int pr_type, size_t dsize, const int64_t *ds) {
+  BEGIN_PROTECT_OP
+  auto shape = ShapeUtil::MakeShape((PrimitiveType)pr_type,
+                                    absl::Span<const int64_t>(ds, dsize));
+  return new XlaOp(
+      RngBitGenerator((RandomAlgorithm)algorithm, *initial_state, shape));
+  END_PROTECT_OP(initial_state)
+}
+
+xla_op op_approx_top_k(const xla_op operand, int64_t top_k,
+                       int64_t reduction_dim, float recall_target, bool largest, bool aggregate, int64_t original_size) {
+  BEGIN_PROTECT_OP
+  auto builder = operand->builder();
+  const Shape *shape = builder->GetShapePtr(*operand).value();
+  auto ty = shape->element_type();
+  // Iota indices along the reduction dim, same dimensions as the operand.
+  auto iota_shape =
+      ShapeUtil::MakeShape(PrimitiveType::S32, shape->dimensions());
+  XlaOp iota = Iota(builder, iota_shape, reduction_dim);
+  // The comparator receives scalar (value, value, index, index) pairs and
+  // keeps the larger value.
+  XlaBuilder cb("approx_top_k_gt");
+  auto p0 = Parameter(&cb, 0, ShapeUtil::MakeShape(ty, {}), "lhs_value");
+  auto p1 = Parameter(&cb, 1, ShapeUtil::MakeShape(ty, {}), "rhs_value");
+  Parameter(&cb, 2, ShapeUtil::MakeShape(PrimitiveType::S32, {}), "lhs_index");
+  Parameter(&cb, 3, ShapeUtil::MakeShape(PrimitiveType::S32, {}), "rhs_index");
+  if (largest) Gt(p0, p1); else Lt(p0, p1);
+  auto comparator = cb.Build().value();
+  XlaOp init_value = largest ? MinValue(builder, ty) : MaxValue(builder, ty);
+  XlaOp init_index = ConstantR0<int32_t>(builder, -1);
+  return new XlaOp(ApproxTopKFallback(builder, {*operand, iota},
+                              {init_value, init_index}, top_k, reduction_dim,
+                              comparator, recall_target, aggregate, original_size));
+  END_PROTECT_OP(operand)
+}
+
+xla_op op_reshape(const xla_op arg, size_t dsize, const int64_t *ds) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Reshape(*arg, absl::Span<const int64_t>(ds, dsize)));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_broadcast(const xla_op arg, size_t dsize, const int64_t *ds) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Broadcast(*arg, absl::Span<const int64_t>(ds, dsize)));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_broadcast_in_dim(const xla_op arg, size_t out_dsize,
+                           const int64_t *out_ds, size_t broadcast_dsize,
+                           const int64_t *broadcast_ds) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(
+      BroadcastInDim(*arg, absl::Span<const int64_t>(out_ds, out_dsize),
+                     absl::Span<const int64_t>(broadcast_ds, broadcast_dsize)));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_collapse(const xla_op arg, size_t dsize, const int64_t *ds) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Collapse(*arg, absl::Span<const int64_t>(ds, dsize)));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_transpose(const xla_op arg, size_t dsize, const int64_t *ds) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Transpose(*arg, absl::Span<const int64_t>(ds, dsize)));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_clamp(const xla_op arg1, const xla_op arg2, const xla_op arg3) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Clamp(*arg1, *arg2, *arg3));
+  END_PROTECT_OP(arg1)
+}
+
+xla_op op_select(const xla_op arg1, const xla_op arg2, const xla_op arg3) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Select(*arg1, *arg2, *arg3));
+  END_PROTECT_OP(arg1)
+}
+
+xla_op op_rng_uniform(const xla_op arg1, const xla_op arg2, int pr_type,
+                      int dsize, const int64_t *ds) {
+  BEGIN_PROTECT_OP
+  auto shape = ShapeUtil::MakeShape((PrimitiveType)pr_type,
+                                    absl::Span<const int64_t>(ds, dsize));
+  return new XlaOp(RngUniform(*arg1, *arg2, shape));
+  END_PROTECT_OP(arg1)
+}
+
+xla_op op_rng_normal(const xla_op arg1, const xla_op arg2, int pr_type,
+                     int dsize, const int64_t *ds) {
+  BEGIN_PROTECT_OP
+  auto shape = ShapeUtil::MakeShape((PrimitiveType)pr_type,
+                                    absl::Span<const int64_t>(ds, dsize));
+  return new XlaOp(RngNormal(*arg1, *arg2, shape));
+  END_PROTECT_OP(arg1)
+}
+
+xla_op op_slice_in_dim(const xla_op arg, int64_t start, int64_t stop,
+                       int64_t stride, int64_t dim) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(SliceInDim(*arg, start, stop, stride, dim));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_concat_in_dim(const xla_op arg, const xla_op *args, size_t nargs,
+                        int64_t dim) {
+  BEGIN_PROTECT_OP
+  std::vector<XlaOp> args_ = {*arg};
+  for (size_t i = 0; i < nargs; ++i) {
+    args_.push_back(*args[i]);
+  }
+  return new XlaOp(
+      ConcatInDim(arg->builder(), absl::Span<const XlaOp>(args_), dim));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_custom_call(const xla_builder b, const char *target_name,
+                      const xla_op *operands, size_t noperands, int pr_type,
+                      const int64_t *dims, size_t ndims, const char *opaque,
+                      size_t opaque_len) {
+  BEGIN_PROTECT_OP
+  std::vector<XlaOp> operands_;
+  for (size_t i = 0; i < noperands; ++i) {
+    operands_.push_back(*operands[i]);
+  }
+  auto shape = ShapeUtil::MakeShape((PrimitiveType)pr_type,
+                                    absl::Span<const int64_t>(dims, ndims));
+  return new XlaOp(CustomCall(b, std::string(target_name),
+                              absl::Span<const XlaOp>(operands_), shape,
+                              std::string(opaque, opaque_len)));
+  END_PROTECT_OP_B(b)
+}
+
+void register_custom_call_target(const char *name, void *fn,
+                                 const char *platform) {
+  xla::CustomCallTargetRegistry::Global()->Register(std::string(name), fn,
+                                               std::string(platform));
+}
+
+xla_op op_custom_call_ffi(const xla_builder b, const char *target_name,
+                          const xla_op *operands, size_t noperands,
+                          int pr_type, const int64_t *dims, size_t ndims,
+                          const char *attributes, size_t attributes_len,
+                          bool has_side_effect) {
+  BEGIN_PROTECT_OP
+  std::vector<XlaOp> operands_;
+  for (size_t i = 0; i < noperands; ++i) {
+    operands_.push_back(*operands[i]);
+  }
+  auto shape = ShapeUtil::MakeShape((PrimitiveType)pr_type,
+                                    absl::Span<const int64_t>(dims, ndims));
+  // With the typed FFI api, the backend config is the attribute dictionary.
+  return new XlaOp(CustomCall(
+      b, std::string(target_name), absl::Span<const XlaOp>(operands_), shape,
+      std::string(attributes, attributes_len), has_side_effect, {}, nullptr,
+      CustomCallSchedule::SCHEDULE_NONE,
+      CustomCallApiVersion::API_VERSION_TYPED_FFI));
+  END_PROTECT_OP_B(b)
+}
+
+status register_ffi_handler(const char *name, const char *platform,
+                            void *execute, uint32_t traits) {
+  const XLA_FFI_Api *api = XLA_FFI_GetApi();
+  XLA_FFI_Handler_Bundle bundle = {};
+  bundle.execute = reinterpret_cast<XLA_FFI_Handler *>(execute);
+  XLA_FFI_Handler_Register_Args args = {};
+  args.struct_size = XLA_FFI_Handler_Register_Args_STRUCT_SIZE;
+  args.name = XLA_FFI_ByteSpan{name, strlen(name)};
+  args.platform = XLA_FFI_ByteSpan{platform, strlen(platform)};
+  args.bundle = bundle;
+  args.traits = traits;
+  XLA_FFI_Error *error = api->XLA_FFI_Handler_Register(&args);
+  if (error == nullptr) {
+    return nullptr;
+  }
+  // XLA_FFI_Error_GetMessage (FFI api 0.2) became XLA_FFI_Error_GetDetails
+  // (0.4) with an extra `errc` out field: this layout fits both.
+  struct {
+    size_t struct_size;
+    void *extension_start;
+    XLA_FFI_Error *error;
+    const char *message;
+    int errc;
+  } details = {};
+  details.struct_size = offsetof(decltype(details), errc) + sizeof(int);
+  details.error = error;
+  using GetMessageFn = void(decltype(details) *);
+  reinterpret_cast<GetMessageFn *const *>(&api->XLA_FFI_Error_Create)[1](
+      &details);
+  std::string message =
+      std::string("failed to register the FFI handler ") + name + " for " +
+      platform + ": " + (details.message ? details.message : "unknown error");
+  XLA_FFI_Error_Destroy_Args destroy = {};
+  destroy.struct_size = XLA_FFI_Error_Destroy_Args_STRUCT_SIZE;
+  destroy.error = error;
+  api->XLA_FFI_Error_Destroy(&destroy);
+  return new Status(absl::InternalError(message));
+}
+
+xla_op op_tuple(const xla_builder b, const xla_op *args, size_t nargs) {
+  BEGIN_PROTECT_OP
+  std::vector<XlaOp> args_;
+  for (size_t i = 0; i < nargs; ++i) {
+    args_.push_back(*args[i]);
+  }
+  return new XlaOp(Tuple(b, absl::Span<const XlaOp>(args_)));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op op_get_tuple_element(const xla_op arg, int64_t index) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(GetTupleElement(*arg, index));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_gather(const xla_op arg1, const xla_op arg2,
+                 const int64_t *offset_dims, size_t noffset_dims,
+                 const int64_t *collapsed_slice_dims,
+                 size_t ncollapsed_slice_dims, const int64_t *start_index_map,
+                 size_t nstart_index_map, const int64_t *set_index_vector_dim,
+                 const int64_t *slice_sizes, size_t nslice_sizes,
+                 const int64_t *operand_batch, const int64_t *index_batch,
+                 size_t n_batch, bool indices_are_sorted) {
+  BEGIN_PROTECT_OP
+  GatherDimensionNumbers dn;
+  for (size_t i = 0; i < noffset_dims; ++i) {
+    dn.add_offset_dims(offset_dims[i]);
+  }
+  for (size_t i = 0; i < ncollapsed_slice_dims; ++i) {
+    dn.add_collapsed_slice_dims(collapsed_slice_dims[i]);
+  }
+  for (size_t i = 0; i < nstart_index_map; ++i) {
+    dn.add_start_index_map(start_index_map[i]);
+  }
+  if (set_index_vector_dim) {
+    dn.set_index_vector_dim(*set_index_vector_dim);
+  }
+  auto ss = absl::Span<const int64_t>(slice_sizes, nslice_sizes);
+  for (size_t i = 0; i < n_batch; ++i) {
+    dn.add_operand_batching_dims(operand_batch[i]);
+    dn.add_start_indices_batching_dims(index_batch[i]);
+  }
+  return new XlaOp(Gather(*arg1, *arg2, dn, ss, indices_are_sorted));
+  END_PROTECT_OP(arg1)
+}
+
+xla_op op_scatter(const xla_op operand, const xla_op scatter_indices,
+                  const xla_op updates, const xla_computation update_comp,
+                  const int64_t *update_window_dims,
+                  size_t n_update_window_dims,
+                  const int64_t *inserted_window_dims,
+                  size_t n_inserted_window_dims,
+                  const int64_t *scatter_dims_to_operand_dims,
+                  size_t n_scatter_dims_to_operand_dims,
+                  int64_t index_vector_dim, const int64_t *operand_batch,
+                  const int64_t *index_batch, size_t n_batch,
+                  bool indices_are_sorted, bool unique_indices) {
+  BEGIN_PROTECT_OP
+  ScatterDimensionNumbers dn;
+  for (size_t i = 0; i < n_update_window_dims; ++i) {
+    dn.add_update_window_dims(update_window_dims[i]);
+  }
+  for (size_t i = 0; i < n_inserted_window_dims; ++i) {
+    dn.add_inserted_window_dims(inserted_window_dims[i]);
+  }
+  for (size_t i = 0; i < n_scatter_dims_to_operand_dims; ++i) {
+    dn.add_scatter_dims_to_operand_dims(scatter_dims_to_operand_dims[i]);
+  }
+  dn.set_index_vector_dim(index_vector_dim);
+  for (size_t i = 0; i < n_batch; ++i) {
+    dn.add_input_batching_dims(operand_batch[i]);
+    dn.add_scatter_indices_batching_dims(index_batch[i]);
+  }
+  return new XlaOp(Scatter(*operand, *scatter_indices, *updates, *update_comp,
+                           dn, indices_are_sorted, unique_indices));
+  END_PROTECT_OP(operand)
+}
+
+xla_op op_pad(const xla_op arg, const xla_op padding_value, size_t n_dims,
+              const int64_t *edge_padding_low, const int64_t *edge_padding_high,
+              const int64_t *interior_padding) {
+  BEGIN_PROTECT_OP
+  PaddingConfig config;
+  for (size_t i = 0; i < n_dims; ++i) {
+    auto dim = config.add_dimensions();
+    dim->set_edge_padding_low(edge_padding_low[i]);
+    dim->set_edge_padding_high(edge_padding_high[i]);
+    dim->set_interior_padding(interior_padding[i]);
+  }
+  return new XlaOp(Pad(*arg, *padding_value, config));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_dynamic_slice(const xla_op operand, const xla_op *start_indices,
+                        size_t n_start_indices, const int64_t *slice_sizes,
+                        size_t n_slice_sizes) {
+  BEGIN_PROTECT_OP
+  std::vector<XlaOp> indices;
+  for (size_t i = 0; i < n_start_indices; ++i) {
+    indices.push_back(*start_indices[i]);
+  }
+  return new XlaOp(
+      DynamicSlice(*operand, absl::Span<const XlaOp>(indices),
+                   absl::Span<const int64_t>(slice_sizes, n_slice_sizes)));
+  END_PROTECT_OP(operand)
+}
+
+xla_op op_dynamic_update_slice(const xla_op operand, const xla_op update,
+                               const xla_op *start_indices,
+                               size_t n_start_indices) {
+  BEGIN_PROTECT_OP
+  std::vector<XlaOp> indices;
+  for (size_t i = 0; i < n_start_indices; ++i) {
+    indices.push_back(*start_indices[i]);
+  }
+  return new XlaOp(DynamicUpdateSlice(*operand, *update,
+                                      absl::Span<const XlaOp>(indices)));
+  END_PROTECT_OP(operand)
+}
+
+xla_op op_sort(const xla_op *operands, size_t n_operands,
+               const xla_computation comparator, int64_t dimension,
+               bool is_stable) {
+  BEGIN_PROTECT_OP
+  std::vector<XlaOp> operands_;
+  for (size_t i = 0; i < n_operands; ++i) {
+    operands_.push_back(*operands[i]);
+  }
+  return new XlaOp(Sort(absl::Span<const XlaOp>(operands_), *comparator,
+                        dimension, is_stable));
+  END_PROTECT_OP(operands[0])
+}
+
+xla_op op_top_k(const xla_op operand, int64_t k, bool largest) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(TopK(*operand, k, largest));
+  END_PROTECT_OP(operand)
+}
+
+xla_op op_arg_min_max(const xla_op operand, int index_pr_type, int axis,
+                      bool is_min) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(
+      ArgMinMax(*operand, (PrimitiveType)index_pr_type, axis, is_min));
+  END_PROTECT_OP(operand)
+}
+
+xla_op op_convert_element_type(const xla_op arg, int pr_type) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(ConvertElementType(*arg, (PrimitiveType)pr_type));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_dimensions_size(const xla_op arg, int64_t dim) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(GetDimensionSize(*arg, dim));
+  END_PROTECT_OP(arg)
+}
+
+xla_op op_reduce(const xla_op arg, const xla_op init,
+                 const xla_computation comp, const int64_t *dims,
+                 size_t ndims) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(
+      Reduce(*arg, *init, *comp, absl::Span<const int64_t>(dims, ndims)));
+  END_PROTECT_OP(arg)
+}
+
+#define GNX_UNARY(name, op) \
+  xla_op gnx_op_##name(const xla_op arg) { \
+    BEGIN_PROTECT_OP \
+    return new XlaOp(xla::op(*arg)); \
+    END_PROTECT_OP(arg) \
+  }
+#define GNX_BINARY(name, op) \
+  xla_op gnx_op_##name(const xla_op lhs, const xla_op rhs) { \
+    BEGIN_PROTECT_OP \
+    return new XlaOp(xla::op(*lhs, *rhs)); \
+    END_PROTECT_OP(lhs) \
+  }
+
+GNX_UNARY(population_count, PopulationCount)
+GNX_UNARY(tan, Tan)
+GNX_UNARY(asin, Asin)
+GNX_UNARY(acos, Acos)
+GNX_UNARY(atan, Atan)
+GNX_UNARY(sinh, Sinh)
+GNX_UNARY(cosh, Cosh)
+GNX_UNARY(asinh, Asinh)
+GNX_UNARY(acosh, Acosh)
+GNX_UNARY(atanh, Atanh)
+GNX_UNARY(conj, Conj)
+GNX_UNARY(erfc, Erfc)
+GNX_UNARY(erf_inv, ErfInv)
+GNX_UNARY(lgamma, Lgamma)
+GNX_UNARY(digamma, Digamma)
+GNX_UNARY(bessel_i0e, BesselI0e)
+GNX_UNARY(bessel_i1e, BesselI1e)
+GNX_BINARY(nextafter, NextAfter)
+GNX_BINARY(eq_to, EqTotalOrder)
+GNX_BINARY(lt_to, LtTotalOrder)
+GNX_BINARY(le_to, LeTotalOrder)
+GNX_BINARY(shift_left, ShiftLeft)
+GNX_BINARY(shift_right_arithmetic, ShiftRightArithmetic)
+GNX_BINARY(shift_right_logical, ShiftRightLogical)
+GNX_BINARY(complex, Complex)
+GNX_BINARY(igamma, Igamma)
+GNX_BINARY(igammac, Igammac)
+GNX_BINARY(igamma_grad_a, IgammaGradA)
+GNX_BINARY(polygamma, Polygamma)
+GNX_BINARY(zeta, Zeta)
+GNX_UNARY(round_even, RoundNearestEven)
+#undef GNX_UNARY
+#undef GNX_BINARY
+
+xla_op gnx_op_betainc(const xla_op a, const xla_op b, const xla_op x) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(RegularizedIncompleteBeta(*a, *b, *x));
+  END_PROTECT_OP(a)
+}
+
+xla_op gnx_op_bitcast(const xla_op arg, int dtype) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(BitcastConvertType(*arg, static_cast<PrimitiveType>(dtype)));
+  END_PROTECT_OP(arg)
+}
+
+xla_op gnx_op_reduce_precision(const xla_op arg, int exponent, int mantissa) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(ReducePrecision(*arg, exponent, mantissa));
+  END_PROTECT_OP(arg)
+}
+
+static std::vector<XlaOp> gnx_ops(const xla_op* values, size_t count) {
+  std::vector<XlaOp> ops;
+  ops.reserve(count);
+  for (size_t i = 0; i < count; ++i) ops.push_back(*values[i]);
+  return ops;
+}
+
+xla_op gnx_op_reduce(const xla_op* operands, const xla_op* init, size_t count,
+                     const xla_computation comp, const int64_t* axes, size_t rank) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Reduce(operands[0]->builder(), gnx_ops(operands, count),
+                          gnx_ops(init, count), *comp,
+                          absl::Span<const int64_t>(axes, rank)));
+  END_PROTECT_OP(operands[0])
+}
+
+xla_op gnx_op_reduce_window(const xla_op* operands, const xla_op* init, size_t count,
+                            const xla_computation comp, size_t rank,
+                            const int64_t* window, const int64_t* stride,
+                            const int64_t* base_dilation, const int64_t* dilation,
+                            const int64_t* low, const int64_t* high) {
+  BEGIN_PROTECT_OP
+  std::vector<std::pair<int64_t, int64_t>> padding;
+  padding.reserve(rank);
+  for (size_t i = 0; i < rank; ++i) padding.emplace_back(low[i], high[i]);
+  return new XlaOp(ReduceWindowWithGeneralPadding(
+      gnx_ops(operands, count), gnx_ops(init, count), *comp,
+      absl::Span<const int64_t>(window, rank),
+      absl::Span<const int64_t>(stride, rank),
+      absl::Span<const int64_t>(base_dilation, rank),
+      absl::Span<const int64_t>(dilation, rank), padding));
+  END_PROTECT_OP(operands[0])
+}
+
+xla_op gnx_op_ffi(const xla_op* inputs, size_t num_inputs, const char* name,
+                  const char* attributes, size_t attributes_size,
+                  const shape* output_shapes, size_t num_outputs) {
+  BEGIN_PROTECT_OP
+  auto operands = gnx_ops(inputs, num_inputs);
+  auto builder = operands[0].builder();
+  std::vector<Shape> inputs_with_layout, outputs_with_layout;
+  for (auto operand : operands) {
+    auto operand_shape = builder->GetShape(operand);
+    if (!operand_shape.ok()) return new XlaOp(builder->ReportError(operand_shape.status()));
+    inputs_with_layout.push_back(*operand_shape);
+    LayoutUtil::SetToDefaultLayout(&inputs_with_layout.back());
+  }
+  for (size_t i = 0; i < num_outputs; ++i) {
+    outputs_with_layout.push_back(*output_shapes[i]);
+    LayoutUtil::SetToDefaultLayout(&outputs_with_layout.back());
+  }
+  Shape result = num_outputs == 1 ? outputs_with_layout[0] : ShapeUtil::MakeTupleShape(outputs_with_layout);
+  return new XlaOp(CustomCallWithLayout(
+      builder, name, operands, result, inputs_with_layout,
+      std::string(attributes, attributes_size), false, {}, nullptr,
+      CustomCallSchedule::SCHEDULE_NONE, CustomCallApiVersion::API_VERSION_TYPED_FFI));
+  END_PROTECT_OP(inputs[0])
+}
+
+xla_op gnx_op_cholesky(const xla_op x, bool lower) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Cholesky(*x, lower));
+  END_PROTECT_OP(x)
+}
+xla_op gnx_op_householder(const xla_op x, const xla_op taus) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(ProductOfElementaryHouseholderReflectors(*x, *taus));
+  END_PROTECT_OP(x)
+}
+xla_op gnx_op_triangular_solve(const xla_op a, const xla_op b, bool left,
+                              bool lower, bool unit, int transpose) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(TriangularSolve(*a, *b, left, lower, unit,
+      static_cast<TriangularSolveOptions::Transpose>(transpose)));
+  END_PROTECT_OP(a)
+}
+xla_op gnx_op_qr(const xla_op x, bool full) {
+  BEGIN_PROTECT_OP
+  XlaOp q, r;
+  QrExplicit(*x, full, q, r);
+  return new XlaOp(Tuple(x->builder(), {q, r}));
+  END_PROTECT_OP(x)
+}
+xla_op gnx_op_eigh(const xla_op x, bool lower, bool sort) {
+  BEGIN_PROTECT_OP
+  auto result = SelfAdjointEig(*x, lower, 100, 1e-7f, sort);
+  return new XlaOp(Tuple(x->builder(), {result.v, result.w}));
+  END_PROTECT_OP(x)
+}
+xla_op gnx_op_fft(const xla_op arg, int mode, const int64_t* lengths, size_t rank) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Fft(*arg, static_cast<FftType>(mode),
+                       absl::Span<const int64_t>(lengths, rank)));
+  END_PROTECT_OP(arg)
+}
+
+
+xla_op op_internal_error(const xla_builder b, const char *error) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(b->ReportError(tsl::errors::Internal(error)));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op op_unknown_error(const xla_builder b, const char *error) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(b->ReportError(tsl::errors::Unknown(error)));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op op_invalid_argument_error(const xla_builder b, const char *error) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(b->ReportError(tsl::errors::InvalidArgument(error)));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op op_zero(const xla_builder b, int pr_type) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Zero(b, (PrimitiveType)pr_type));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op op_one(const xla_builder b, int pr_type) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(One(b, (PrimitiveType)pr_type));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op op_min_value(const xla_builder b, int pr_type) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(MinValue(b, (PrimitiveType)pr_type));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op op_max_value(const xla_builder b, int pr_type) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(MaxValue(b, (PrimitiveType)pr_type));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op op_iota1(const xla_builder b, int pr_type, size_t sz) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(Iota(b, (PrimitiveType)pr_type, (int64_t)sz));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op op_iota(const xla_builder b, int pr_type, size_t dsize,
+               const int64_t *ds, int64_t increasing_dim) {
+  BEGIN_PROTECT_OP
+  auto shape = ShapeUtil::MakeShape((PrimitiveType)pr_type,
+                                    absl::Span<const int64_t>(ds, dsize));
+  return new XlaOp(Iota(b, shape, increasing_dim));
+  END_PROTECT_OP_B(b)
+}
+
+xla_op op_while(const xla_computation cond, const xla_computation body,
+                const xla_op init) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(While(*cond, *body, *init));
+  END_PROTECT_OP(init)
+}
+
+xla_op op_conditional(const xla_op pred, const xla_op true_op,
+                      const xla_computation true_comp, const xla_op false_op,
+                      const xla_computation false_comp) {
+  BEGIN_PROTECT_OP
+  return new XlaOp(
+      Conditional(*pred, *true_op, *true_comp, *false_op, *false_comp));
+  END_PROTECT_OP(pred)
+}
+
+xla_builder op_builder(const xla_op arg) { return arg->builder(); }
+
+int xla_op_valid(const xla_op op) { return op->valid(); }
+
+void xla_op_free(xla_op o) { delete o; }
+
+size_t shape_tuple_shapes_size(const shape s) { return s->tuple_shapes_size(); }
+
+shape shape_tuple_shapes(const shape s, int i) {
+  return (shape)&s->tuple_shapes(i);
+}
+
+int shape_dimensions_size(const shape s) { return s->dimensions_size(); }
+
+int shape_element_type(const shape s) { return s->element_type(); }
+
+int64_t shape_dimensions(const shape s, int i) { return s->dimensions(i); }
+
+void shape_free(shape s) { delete s; }
+
+status get_shape(const xla_builder b, const xla_op o, shape *out_shape) {
+  ASSIGN_OR_RETURN_STATUS(shape, b->GetShape(*o));
+  *out_shape = new Shape(shape);
+  return nullptr;
+}
+
+status get_element_type(const xla_builder b, const xla_op o,
+                        int *out_element_type) {
+  ASSIGN_OR_RETURN_STATUS(shape, b->GetShapePtr(*o));
+  *out_element_type = shape->element_type();
+  return nullptr;
+}
+
+status get_dimensions_size(const xla_builder b, const xla_op o, int *out_rank) {
+  ASSIGN_OR_RETURN_STATUS(shape, b->GetShapePtr(*o));
+  *out_rank = shape->dimensions_size();
+  return nullptr;
+}
+
+status get_dimensions(const xla_builder b, const xla_op o, size_t *out_dims) {
+  ASSIGN_OR_RETURN_STATUS(shape, b->GetShapePtr(*o));
+  size_t dim_size = shape->dimensions_size();
+  for (size_t i = 0; i < dim_size; ++i) {
+    out_dims[i] = shape->dimensions(i);
+  }
+  return nullptr;
+}
+
+void xla_builder_setup_alias(const xla_builder b, int64_t output_index,
+                             int64_t param_number) {
+  // The `output_index`-th element of the root tuple aliases the whole
+  // parameter `param_number`. May-alias: the alias is realized when the input
+  // buffer is donated at execution time, otherwise a copy is inserted.
+  b->SetUpAlias(ShapeIndex({output_index}), param_number, ShapeIndex({}));
+}
+
+status build(const xla_builder b, const xla_op o, xla_computation *output) {
+  ASSIGN_OR_RETURN_STATUS(computation, b->Build(o));
+  *output = new XlaComputation();
+  **output = std::move(computation);
+  return nullptr;
+}
+
+status compile(const pjrt_client client, const xla_computation computation,
+               pjrt_loaded_executable *output) {
+  CompileOptions options;
+  ASSIGN_OR_RETURN_STATUS(executable,
+                          (*client)->CompileAndLoad(*computation, options));
+  *output = executable.release();
+  return nullptr;
+}
+
+status compile_replicated(const pjrt_client client,
+                          const xla_computation computation, int num_replicas,
+                          pjrt_loaded_executable *output) {
+  CompileOptions options;
+  auto devices = (*client)->addressable_devices();
+  if (num_replicas < 1 || num_replicas > (int)devices.size()) {
+    return new Status(absl::InvalidArgumentError(
+        absl::StrCat("num_replicas ", num_replicas, " out of range (",
+                     devices.size(), " addressable devices)")));
+  }
+  options.executable_build_options.set_num_replicas(num_replicas);
+  options.executable_build_options.set_num_partitions(1);
+  xla::DeviceAssignment assignment(num_replicas, 1);
+  for (int r = 0; r < num_replicas; ++r) {
+    assignment(r, 0) = devices[r]->id();
+  }
+  options.executable_build_options.set_device_assignment(assignment);
+  ASSIGN_OR_RETURN_STATUS(executable,
+                          (*client)->CompileAndLoad(*computation, options));
+  *output = executable.release();
+  return nullptr;
+}
+
+status execute_replicated_b(const pjrt_loaded_executable exe,
+                            const pjrt_buffer *const *inputs,
+                            const int *ninputs, int nreplicas,
+                            pjrt_buffer ***outputs) {
+  ExecuteOptions options;
+  options.strict_shape_checking = false;
+  std::vector<std::vector<PjRtBuffer *>> args;
+  args.reserve(nreplicas);
+  for (int r = 0; r < nreplicas; ++r) {
+    args.emplace_back(inputs[r], inputs[r] + ninputs[r]);
+  }
+  ASSIGN_OR_RETURN_STATUS(results, exe->Execute(args, options));
+  pjrt_buffer **out =
+      (pjrt_buffer **)malloc((results.size() + 1) * sizeof(pjrt_buffer *));
+  for (size_t i = 0; i < results.size(); ++i) {
+    auto &replica_results = results[i];
+    pjrt_buffer *per_replica_outputs = (pjrt_buffer *)malloc(
+        (replica_results.size() + 1) * sizeof(pjrt_buffer));
+    for (size_t j = 0; j < replica_results.size(); ++j) {
+      per_replica_outputs[j] = replica_results[j].release();
+    }
+    per_replica_outputs[replica_results.size()] = nullptr;
+    out[i] = per_replica_outputs;
+  }
+  out[results.size()] = nullptr;
+  *outputs = out;
+  return nullptr;
+}
+
+// Compile with the gemm autotuner results pinned to a file: load_from reuses
+// previously dumped results (making the kernel selection deterministic and
+// skipping the tuning), dump_to writes the results of this compilation.
+// Either can be null. This maps to the xla_gpu_load_autotune_results_from /
+// xla_gpu_dump_autotune_results_to debug options, scoped to this compilation
+// rather than set process-wide through XLA_FLAGS. Other debug options keep
+// their XLA_FLAGS provided or default values.
+status compile_with_autotune_cache(const pjrt_client client,
+                                   const xla_computation computation,
+                                   const char *load_from, const char *dump_to,
+                                   pjrt_loaded_executable *output) {
+  CompileOptions options;
+  DebugOptions &debug_options =
+      *options.executable_build_options.mutable_debug_options();
+  debug_options = GetDebugOptionsFromFlags();
+  if (load_from != nullptr) {
+    debug_options.set_xla_gpu_load_autotune_results_from(load_from);
+  }
+  if (dump_to != nullptr) {
+    debug_options.set_xla_gpu_dump_autotune_results_to(dump_to);
+  }
+  ASSIGN_OR_RETURN_STATUS(executable,
+                          (*client)->CompileAndLoad(*computation, options));
+  *output = executable.release();
+  return nullptr;
+}
+
+
+// Sets the minimum severity for the abseil logging used by recent parts of
+// xla (0=info, 1=warning, 2=error, 3=fatal). This complements the
+// TF_CPP_MIN_LOG_LEVEL environment variable which only covers the tsl logging
+// path, and being a runtime setting it can be called at any time.
+void set_min_log_level(int severity) {
+  absl::SetMinLogLevel(static_cast<absl::LogSeverityAtLeast>(severity));
+  absl::SetStderrThreshold(static_cast<absl::LogSeverityAtLeast>(severity));
+}
+
+status first_error(const xla_builder b) {
+  MAYBE_RETURN_STATUS(b->first_error());
+  return nullptr;
+}
+
+status get_current_status(const xla_builder b) {
+  MAYBE_RETURN_STATUS(b->GetCurrentStatus());
+  return nullptr;
+}
+
+status execute(const pjrt_loaded_executable exe, const literal *inputs,
+               int ninputs, pjrt_buffer ***outputs) {
+  auto client = exe->client();
+  ExecuteOptions options;
+  options.strict_shape_checking = false;
+  std::vector<PjRtBuffer *> input_buffer_ptrs;
+  PjRtDevice *device = client->devices()[0];
+  ASSIGN_OR_RETURN_STATUS(memory_space, device->default_memory_space());
+  for (int i = 0; i < ninputs; ++i) {
+    ASSIGN_OR_RETURN_STATUS(
+        buffer, client->BufferFromHostLiteral(*inputs[i], memory_space));
+    // Wait for the transfer to have completed to avoid the literal potentially
+    // getting out of scope before it has been transfered.
+    MAYBE_RETURN_STATUS(buffer->GetReadyFuture().Await());
+    input_buffer_ptrs.push_back(buffer.release());
+  }
+  ASSIGN_OR_RETURN_STATUS(results, exe->Execute({input_buffer_ptrs}, options));
+  pjrt_buffer **out =
+      (pjrt_buffer **)malloc((results.size() + 1) * sizeof(pjrt_buffer *));
+  for (size_t i = 0; i < results.size(); ++i) {
+    auto &replica_results = results[i];
+    pjrt_buffer *per_replica_outputs = (pjrt_buffer *)malloc(
+        (replica_results.size() + 1) * sizeof(pjrt_buffer));
+    for (size_t j = 0; j < replica_results.size(); ++j) {
+      per_replica_outputs[j] = replica_results[j].release();
+    }
+    per_replica_outputs[replica_results.size()] = nullptr;
+    out[i] = per_replica_outputs;
+  }
+  out[results.size()] = nullptr;
+  *outputs = out;
+  return nullptr;
+}
+
+status execute_b(const pjrt_loaded_executable exe, const pjrt_buffer *inputs,
+                 int ninputs, pjrt_buffer ***outputs) {
+  auto client = exe->client();
+  ExecuteOptions options;
+  options.strict_shape_checking = false;
+  std::vector<PjRtBuffer *> input_buffer_ptrs(inputs, inputs + ninputs);
+  ASSIGN_OR_RETURN_STATUS(results, exe->Execute({input_buffer_ptrs}, options));
+  pjrt_buffer **out =
+      (pjrt_buffer **)malloc((results.size() + 1) * sizeof(pjrt_buffer *));
+  for (size_t i = 0; i < results.size(); ++i) {
+    auto &replica_results = results[i];
+    pjrt_buffer *per_replica_outputs = (pjrt_buffer *)malloc(
+        (replica_results.size() + 1) * sizeof(pjrt_buffer));
+    for (size_t j = 0; j < replica_results.size(); ++j) {
+      per_replica_outputs[j] = replica_results[j].release();
+    }
+    per_replica_outputs[replica_results.size()] = nullptr;
+    out[i] = per_replica_outputs;
+  }
+  out[results.size()] = nullptr;
+  *outputs = out;
+  return nullptr;
+}
+
+literal literal_create_from_shape(int pr_type, const int64_t *dims,
+                                  size_t ndims) {
+  auto shape = ShapeUtil::MakeShape((PrimitiveType)pr_type,
+                                    absl::Span<const int64_t>(dims, ndims));
+  Literal l = Literal::CreateFromShape(shape);
+  return new Literal(std::move(l));
+}
+
+literal literal_create_from_shape_and_data(int pr_type, const int64_t *dims,
+                                           size_t ndims, const void *data,
+                                           size_t data_len) {
+  auto shape = ShapeUtil::MakeShape((PrimitiveType)pr_type,
+                                    absl::Span<const int64_t>(dims, ndims));
+  Literal l = Literal::CreateFromShape(shape);
+  if (l.size_bytes() != data_len) {
+    return nullptr;
+  }
+  memcpy(l.untyped_data(), data, data_len);
+  return new Literal(std::move(l));
+}
+
+literal literal_clone(const literal l) {
+  return new Literal(std::move(l->Clone()));
+}
+
+status literal_reshape(const literal l, const int64_t *dims, size_t ndims,
+                       literal *output) {
+  ASSIGN_OR_RETURN_STATUS(literal,
+                          l->Reshape(absl::Span<const int64_t>(dims, ndims)));
+  *output = new Literal(std::move(literal));
+  return nullptr;
+}
+
+status literal_convert(const literal l, int pr_type, literal *output) {
+  ASSIGN_OR_RETURN_STATUS(literal, l->Convert((PrimitiveType)pr_type));
+  *output = new Literal(std::move(literal));
+  return nullptr;
+}
+
+int64_t literal_element_count(const literal l) { return l->element_count(); }
+
+int64_t literal_size_bytes(const literal l) { return l->size_bytes(); }
+
+void literal_shape(const literal l, shape *out_shape) {
+  *out_shape = new Shape(l->shape());
+}
+
+void literal_decompose_tuple(literal l, literal *outputs, size_t noutputs) {
+  auto tuple = l->DecomposeTuple();
+  for (int i = 0; i < std::min(noutputs, tuple.size()); ++i) {
+    outputs[i] = new Literal(std::move(tuple[i]));
+  }
+}
+
+int literal_element_type(const literal l) { return l->shape().element_type(); }
+
+void literal_copy_to(const literal l, void *dst, size_t size_in_bytes) {
+  std::memcpy(dst, l->untyped_data(), size_in_bytes);
+}
+
+void literal_copy_from(literal l, const void *src, size_t size_in_bytes) {
+  std::memcpy(l->untyped_data(), src, size_in_bytes);
+}
+
+literal literal_make_tuple(const literal *l, size_t n) {
+  Literal out = LiteralUtil::MakeTuple(absl::MakeSpan(l, n));
+  return new Literal(std::move(out));
+}
+
+literal literal_make_tuple_owned(const literal *l, size_t n) {
+  std::vector<xla::Literal> elems;
+  for (size_t i = 0; i < n; ++i) {
+    elems.push_back(std::move(*(l[i])));
+  }
+  Literal out = LiteralUtil::MakeTupleOwned(std::move(elems));
+  return new Literal(std::move(out));
+}
+
+void literal_free(literal l) { delete l; }
+
+void status_free(status s) { delete s; }
+
+char *xla_computation_name(xla_computation c) {
+  return strdup(std::string(c->name()).c_str());
+}
+
+void xla_computation_free(xla_computation c) { delete c; }
+
+char *status_error_message(status s) {
+  return strdup(std::string(s->message()).c_str());
+}
+
+status hlo_module_proto_parse_and_return_unverified_module(
+    const char *data, size_t len, hlo_module_proto *output) {
+  ASSIGN_OR_RETURN_STATUS(
+      hmp, ParseAndReturnUnverifiedModule(std::string(data, len)));
+  *output = new HloModuleProto(hmp->ToProto());
+  return nullptr;
+}
+
+status hlo_module_proto_parse_proto(const char *d, size_t len, bool binary,
+                                    hlo_module_proto *output) {
+  std::string data(d, len);
+  HloSnapshot proto;
+  if (binary) {
+    if (!proto.ParseFromString(data) &&
+        !proto.mutable_hlo()->ParseFromString(data) &&
+        !proto.mutable_hlo()->mutable_hlo_module()->ParseFromString(data)) {
+      return new Status(
+          InvalidArgument("Failed to parse input as HLO protobuf binary"));
+    }
+  } else {
+    if (!tsl::protobuf::TextFormat::ParseFromString(data, &proto) &&
+        !tsl::protobuf::TextFormat::ParseFromString(data,
+                                                    proto.mutable_hlo()) &&
+        !tsl::protobuf::TextFormat::ParseFromString(
+            data, proto.mutable_hlo()->mutable_hlo_module())) {
+      return new Status(
+          InvalidArgument("Failed to parse input as HLO protobuf text"));
+    }
+  }
+  ASSIGN_OR_RETURN_STATUS(config, HloModule::CreateModuleConfigFromProto(
+                                      proto.hlo().hlo_module(), {}));
+  ASSIGN_OR_RETURN_STATUS(
+      hmp, HloModule::CreateFromProto(proto.hlo().hlo_module(), config));
+  *output = new HloModuleProto(hmp->ToProto());
+  return nullptr;
+}
+
+xla_computation
+xla_computation_from_hlo_module_proto(const hlo_module_proto p) {
+  return new XlaComputation(*p);
+}
+
+status hlo_module_proto_to_string(const hlo_module_proto p, char **output) {
+  ASSIGN_OR_RETURN_STATUS(config, HloModule::CreateModuleConfigFromProto(*p, {}));
+  ASSIGN_OR_RETURN_STATUS(hm, HloModule::CreateFromProto(*p, config));
+  *output = strdup(hm->ToString().c_str());
+  return nullptr;
+}
+
+status hlo_module_proto_to_pbtxt(const hlo_module_proto p, char **output) {
+  std::string data;
+  if (!tsl::protobuf::TextFormat::PrintToString(*p, &data)) {
+    return new Status(
+        InvalidArgument("Failed to serialize HLO module as protobuf text"));
+  }
+  *output = strdup(data.c_str());
+  return nullptr;
+}
+
+// The serialized proto is not null terminated and can contain null bytes so
+// the length is returned separately. The buffer is malloc'ed and has to be
+// freed by the caller.
+status hlo_module_proto_serialize(const hlo_module_proto p, char **output,
+                                  size_t *output_len) {
+  std::string data;
+  if (!p->SerializeToString(&data)) {
+    return new Status(
+        InvalidArgument("Failed to serialize HLO module as protobuf binary"));
+  }
+  char *buf = (char *)malloc(data.size());
+  if (buf == nullptr && data.size() != 0) {
+    return new Status(ResourceExhausted(
+        "Failed to allocate %d bytes for the serialized HLO module",
+        data.size()));
+  }
+  memcpy(buf, data.data(), data.size());
+  *output = buf;
+  *output_len = data.size();
+  return nullptr;
+}
+
+status hlo_module_proto_to_stablehlo_string(const hlo_module_proto p,
+                                            char **output) {
+  mlir::MLIRContext context;
+  ASSIGN_OR_RETURN_STATUS(module, ConvertHloToStablehlo(context, p));
+  std::string data;
+  llvm::raw_string_ostream os(data);
+  module->print(os);
+  os.flush();
+  *output = strdup(data.c_str());
+  return nullptr;
+}
+
+void hlo_module_proto_free(hlo_module_proto p) { delete p; }
+
+hlo_module_proto xla_computation_proto(const xla_computation c) {
+  return new HloModuleProto(c->proto());
+}

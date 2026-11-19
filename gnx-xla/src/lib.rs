@@ -4,8 +4,3 @@
 mod native;
 #[cfg(feature = "native")]
 pub use native::*;
-
-#[cfg(feature = "mesh")]
-pub mod mesh;
-#[cfg(feature = "mesh")]
-pub use mesh::{Mesh, MeshExecutable, Worker, WorkerInfo};

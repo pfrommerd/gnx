@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use futures_executor::block_on;
 use gnx::graph::util::dag;
 use gnx::{Array, Callable, Eval, Graph, TryCallable, jit};
-use gnx_expr::{Invocation, Op, ValueInfo};
-use gnx_math::ops::{add_op, mul_op, reduce_sum_op};
+use gnx_expr::{Invocation, Op, ValueInfo, hexpr};
+use gnx_math::ops::{self, add_op, mul_op, reduction::reduce_op, zeros_op};
 use gnx_math::{ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, Shape, TransferPolicy};
 use gnx_transforms::{grad, hessian, jvp, map, value_and_grad, vjp};
 use gnx_xla::XlaDevice;
@@ -58,11 +58,26 @@ fn mul(a: &Array, b: &Array) -> Array {
 
 fn sum(a: &Array) -> Array {
     let axes: Vec<_> = (0..a.shape().dims().len()).collect();
-    apply(
-        reduce_sum_op(&axes),
-        &[a],
-        ArrayInfo::new(Shape::fixed([]), a.dtype()),
+    let scalar = ArrayInfo::new(Shape::fixed([]), a.dtype());
+    let metadata = ValueInfo::new(scalar.clone());
+    let reducer = hexpr! {
+        |x: &metadata, y: &metadata| => {
+            result: &metadata = array::add x, y;
+            in (result)
+        }
+    };
+    let initial = apply(zeros_op(), &[], scalar);
+    Invocation::invoke(
+        reduce_op(&axes),
+        vec![(reducer.into(), vec![])],
+        vec![a.tracer().clone(), initial.tracer().clone()],
+        vec![metadata],
     )
+    .remove(0)
+    .try_cast::<Array>()
+    .ok()
+    .unwrap()
+    .into()
 }
 
 fn values(device: &XlaDevice, array: &Array) -> Vec<f32> {
@@ -237,4 +252,16 @@ fn transformations_compose() {
     close(&values(&device, &h), &[6., 0., 0., 12.]);
     close(&values(&device, &dw), &[1., 2., 3., 4.]);
     close(&values(&device, &d1), &[12.]);
+}
+
+#[test]
+fn stop_gradient_passes_through_the_primal_and_stops_both_derivatives() {
+    let device = XlaDevice::cpu().unwrap();
+    let f = |x: Array| mul(&x, &gnx::stop_gradient(&x));
+    let (y, dy) = jvp(f).invoke(((scalar(3.),), (scalar(2.),)));
+    let (_, (dx,)) = vjp(f).invoke(((scalar(3.),), scalar(1.)));
+    eval(&device, &(y.clone(), dy.clone(), dx.clone()));
+    close(&values(&device, &y), &[9.]);
+    close(&values(&device, &dy), &[6.]);
+    close(&values(&device, &dx), &[3.]);
 }

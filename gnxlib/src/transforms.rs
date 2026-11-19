@@ -596,3 +596,8 @@ impl PyVjpFunction {
         self.function = None;
     }
 }
+
+#[pyfunction]
+pub fn stop_gradient(x: &crate::tracer::PyArray) -> crate::tracer::PyArray {
+    crate::tracer::PyArray(gnx::stop_gradient(&x.0))
+}

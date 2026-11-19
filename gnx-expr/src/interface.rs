@@ -2,7 +2,8 @@
 //! operations.
 //!
 //! An *interface* is any object-safe trait, used as `dyn Trait`. Crates that
-//! define either the trait or the operation implement it and register the pair
+//! define either the trait or the operation can implement it on the operation.
+//! Other crates can supply a stateless provider. Both forms register the pair
 //! with [`register_op_interface!`](crate::register_op_interface). Consumers
 //! then query an operation at run time:
 //!
@@ -48,7 +49,10 @@ impl InterfaceImpl {
 
 inventory::collect!(InterfaceImpl);
 
-/// Register implementations of an interface for one or more operation types:
+/// Register implementations of an interface for one or more operation types.
+///
+/// Use `OperationType => Provider` to register a unit struct as a stateless
+/// provider. Its methods can read operation parameters from the equation.
 ///
 /// ```ignore
 /// impl XlaLowering for AddOperation { ... }
@@ -57,6 +61,15 @@ inventory::collect!(InterfaceImpl);
 /// ```
 #[macro_export]
 macro_rules! register_op_interface {
+    ($iface:ty : $op:ty => $provider:path $(,)?) => {
+        $crate::__private::inventory::submit! {
+            $crate::InterfaceImpl::new::<$iface, $op>(|| {
+                static PROVIDER: $provider = $provider;
+                static CASTER: $crate::Caster<$iface> = $crate::Caster(|_| Some(&PROVIDER));
+                &CASTER
+            })
+        }
+    };
     ($iface:ty : $($op:ty),+ $(,)?) => {$(
         $crate::__private::inventory::submit! {
             $crate::InterfaceImpl::new::<$iface, $op>(|| {

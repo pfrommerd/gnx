@@ -1,7 +1,7 @@
-pub mod array;
-pub mod buffer;
+pub use gnx_array::{array, buffer};
 pub mod device;
 pub mod ops;
+mod rules;
 pub mod shard;
 
 pub use array::*;

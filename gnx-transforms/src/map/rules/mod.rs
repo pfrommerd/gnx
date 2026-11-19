@@ -1,5 +1,4 @@
-//! Batching rule registrations for the `array` and `cf` dialects. They live
-//! here (not next to the operations) because `BatchRule` is defined here.
+//! Rules for foundational array operations and control flow.
 
-mod array;
+pub(crate) mod array;
 mod cf;

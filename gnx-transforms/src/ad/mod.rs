@@ -27,10 +27,12 @@
 //! [`Dag`]: gnx_graph::util::Dag
 
 mod api;
+mod stop_gradient;
+pub use stop_gradient::{StopGradientOperation, stop_gradient, stop_gradient_op};
 pub mod def;
 pub mod jvp;
 pub mod region;
-mod rules;
+pub(crate) mod rules;
 pub mod transpose;
 
 pub use api::{Grad, Hessian, Jvp, ValueAndGrad, Vjp, grad, hessian, jvp, value_and_grad, vjp};
@@ -124,7 +126,7 @@ impl DiffParameters {
         strictly_increasing(&self.of, body.outputs.len())?;
         let wrt: Vec<_> = self.wrt.iter().map(|&i| body.inputs[i].clone()).collect();
         let of: Vec<_> = self.of.iter().map(|&i| body.outputs[i].clone()).collect();
-        if wrt.iter().chain(&of).any(|info| !util::is_float(info)) {
+        if wrt.iter().chain(&of).any(|info| !util::is_inexact(info)) {
             return Err(signature(
                 "differentiated inputs and results must be floating-point arrays",
             ));

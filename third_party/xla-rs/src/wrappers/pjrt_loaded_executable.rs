@@ -1,0 +1,102 @@
+use super::{Literal, PjRtBuffer};
+use crate::{c_lib, Result};
+
+pub struct PjRtLoadedExecutable {
+    pub(super) exe: c_lib::pjrt_loaded_executable,
+    pub(super) client: super::PjRtClient,
+}
+
+// SAFETY: PJRT executables are thread-safe in the C++ API (execution can be
+// triggered concurrently), and the embedded client handle is reference-counted
+// through an `Arc`.
+unsafe impl Send for PjRtLoadedExecutable {}
+unsafe impl Sync for PjRtLoadedExecutable {}
+
+impl PjRtLoadedExecutable {
+    /// The client that owns this executable.
+    pub fn client(&self) -> &super::PjRtClient {
+        &self.client
+    }
+
+    fn process_execute_outputs(
+        &self,
+        outputs: *mut *mut c_lib::pjrt_buffer,
+    ) -> Vec<Vec<PjRtBuffer>> {
+        unsafe {
+            let mut vec = vec![];
+            loop {
+                let outputs = *outputs.add(vec.len());
+                if outputs.is_null() {
+                    break;
+                }
+                let mut replica_vec = vec![];
+                loop {
+                    let buffer = *outputs.add(replica_vec.len());
+                    if buffer.is_null() {
+                        break;
+                    }
+                    replica_vec.push(PjRtBuffer { buffer, client: self.client.clone() });
+                }
+                libc::free(outputs as *mut libc::c_void);
+                vec.push(replica_vec);
+            }
+            libc::free(outputs as *mut libc::c_void);
+            vec
+        }
+    }
+
+    pub fn execute<L: std::borrow::Borrow<Literal>>(
+        &self,
+        args: &[L],
+    ) -> Result<Vec<Vec<PjRtBuffer>>> {
+        let mut outputs = std::ptr::null_mut();
+        let args: Vec<_> = args.iter().map(|x| x.borrow().0).collect();
+        let status =
+            unsafe { c_lib::execute(self.exe, args.as_ptr(), args.len() as i32, &mut outputs) };
+        super::handle_status(status)?;
+        Ok(self.process_execute_outputs(outputs))
+    }
+
+    pub fn execute_b<L: std::borrow::Borrow<PjRtBuffer>>(
+        &self,
+        args: &[L],
+    ) -> Result<Vec<Vec<PjRtBuffer>>> {
+        let mut outputs = std::ptr::null_mut();
+        let args: Vec<_> = args.iter().map(|x| x.borrow().buffer).collect();
+        let status =
+            unsafe { c_lib::execute_b(self.exe, args.as_ptr(), args.len() as i32, &mut outputs) };
+        super::handle_status(status)?;
+        Ok(self.process_execute_outputs(outputs))
+    }
+
+    /// Execute a replicated executable (see
+    /// [`PjRtClient::compile_replicated`]) with one argument list per
+    /// replica; each replica's buffers must live on that replica's device.
+    /// Returns one output vector per replica.
+    ///
+    /// [`PjRtClient::compile_replicated`]: crate::PjRtClient::compile_replicated
+    pub fn execute_replicated_b(&self, args: &[Vec<&PjRtBuffer>]) -> Result<Vec<Vec<PjRtBuffer>>> {
+        let mut outputs = std::ptr::null_mut();
+        let per_replica: Vec<Vec<c_lib::pjrt_buffer>> =
+            args.iter().map(|a| a.iter().map(|x| x.buffer).collect()).collect();
+        let ptrs: Vec<*const c_lib::pjrt_buffer> = per_replica.iter().map(|a| a.as_ptr()).collect();
+        let lens: Vec<i32> = per_replica.iter().map(|a| a.len() as i32).collect();
+        let status = unsafe {
+            c_lib::execute_replicated_b(
+                self.exe,
+                ptrs.as_ptr(),
+                lens.as_ptr(),
+                args.len() as i32,
+                &mut outputs,
+            )
+        };
+        super::handle_status(status)?;
+        Ok(self.process_execute_outputs(outputs))
+    }
+}
+
+impl Drop for PjRtLoadedExecutable {
+    fn drop(&mut self) {
+        unsafe { c_lib::pjrt_loaded_executable_free(self.exe) }
+    }
+}

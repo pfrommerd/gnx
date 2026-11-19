@@ -1,7 +1,7 @@
 """Symbolic arrays, graphs, and JIT tracing for Python."""
 
 from . import _native
-from . import array as array, dtype as dtype, graph as graph, jax as jax
+from . import array as array, dtype as dtype, graph as graph
 from ._native import (
     Capture as Capture,
     Jit as Jit,
@@ -14,6 +14,7 @@ from ._native import (
     jit as jit,
     jvp as jvp,
     scan as scan,
+    stop_gradient as stop_gradient,
     switch as switch,
     vjp as vjp,
     while_loop as while_loop,

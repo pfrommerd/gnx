@@ -1,13 +1,21 @@
+mod contraction;
+mod elementwise;
+mod indexing;
+mod linalg;
+mod ordering;
+mod reduction;
+mod structural;
+
 use std::collections::HashMap;
 use std::io;
 
 use gnx_expr::{Eqn, Expr, ValueInfo, Var};
 use gnx_math::ops::{
     AddOperation, BroadcastInDimOperation, EyeOperation, MulOperation, OnesOperation,
-    ReduceSumOperation, ReshapeOperation, RevOperation, SelectOperation, TransposeOperation,
-    ZerosOperation,
+    ReshapeOperation, RevOperation, SelectOperation, TransposeOperation, ZerosOperation,
 };
 use gnx_math::{ArrayInfo, DType, Dim};
+use gnx_transforms::ad::StopGradientOperation;
 use gnx_transforms::cf::{
     CallOperation, CondOperation, ScanOperation, SwitchOperation, WhileOperation,
 };
@@ -86,6 +94,10 @@ pub(super) fn element(dtype: DType) -> ElementType {
         DType::I16 => ElementType::S16,
         DType::I32 => ElementType::S32,
         DType::I64 => ElementType::S64,
+        DType::BF16 => ElementType::Bf16,
+        DType::F8E4M3FN => ElementType::F8E4M3FN,
+        DType::F8E5M2 => ElementType::F8E5M2,
+        DType::F8E8M0FNU => ElementType::F8E8M0FNU,
         DType::F16 => ElementType::F16,
         DType::F32 => ElementType::F32,
         DType::F64 => ElementType::F64,
@@ -218,6 +230,19 @@ fn unary<'a>(name: &str, inputs: &'a [XlaOp]) -> io::Result<&'a XlaOp> {
     }
 }
 
+impl XlaLowering for StopGradientOperation {
+    fn lower_xla(
+        &self,
+        _: &LoweringContext<'_>,
+        _: &Eqn,
+        inputs: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        Ok(vec![unary("stop_gradient", inputs)?.clone()])
+    }
+}
+
+crate::register_xla_lowering!(StopGradientOperation);
+
 impl XlaLowering for AddOperation {
     fn lower_xla(
         &self,
@@ -343,33 +368,6 @@ impl XlaLowering for BroadcastInDimOperation {
     }
 }
 
-impl XlaLowering for ReduceSumOperation {
-    fn lower_xla(
-        &self,
-        ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
-        inputs: &[XlaOp],
-    ) -> io::Result<Vec<XlaOp>> {
-        let input = unary("reduce_sum", inputs)?;
-        let ty = element(result_info(eqn)?.dtype());
-        let combine = XlaBuilder::new("sum");
-        let x = native(combine.parameter(0, ty, &[], "x"))?;
-        let y = native(combine.parameter(1, ty, &[], "y"))?;
-        let sum = if ty == ElementType::Pred {
-            native(x.or(&y))?
-        } else {
-            native(x.add_(&y))?
-        };
-        let init = native(ctx.builder.zero(ty))?;
-        Ok(vec![native(input.reduce(
-            init,
-            native(sum.build())?,
-            &indices(self.axes())?,
-            false,
-        ))?])
-    }
-}
-
 impl XlaLowering for TransposeOperation {
     fn lower_xla(
         &self,
@@ -403,7 +401,6 @@ crate::register_xla_lowering!(
     EyeOperation,
     ReshapeOperation,
     BroadcastInDimOperation,
-    ReduceSumOperation,
     TransposeOperation,
     RevOperation,
 );
@@ -415,7 +412,9 @@ fn local_sharding(eqn: &Eqn, inputs: &[XlaOp]) -> io::Result<Vec<XlaOp>> {
     let spec = gnx_math::shard::Sharding::from_op(eqn.op(), metadata(info)?.shape().dims().len())
         .map_err(io::Error::other)?;
     if !spec.is_replicated() {
-        return Err(unsupported("named sharding axes require a Mesh device"));
+        return Err(unsupported(
+            "named sharding axes are unavailable on the local XLA device",
+        ));
     }
     Ok(inputs.to_vec())
 }
@@ -622,7 +621,9 @@ impl XlaLowering for WhileOperation {
         let [predicate] = predicate.as_slice() else {
             return Err(invalid("while predicate arity"));
         };
-        let condition = native(predicate.build())?;
+        // Emit the predicate last even when the region forwards an input.
+        let inverted = native(predicate.not())?;
+        let condition = native(native(inverted.not())?.build())?;
         let body_builder = XlaBuilder::new("while_body");
         let args = items(
             &native(body_builder.parameter_s(0, &shape, "state"))?,

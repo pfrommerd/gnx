@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use crate::Error;
 use crate::{GraphContext, GraphId};
-use gnx_math::array::Array;
+use gnx_array::array::Array;
 
 mod builtins;
 

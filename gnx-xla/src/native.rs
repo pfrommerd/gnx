@@ -107,25 +107,6 @@ impl XlaDevice {
         })
     }
 
-    #[cfg(feature = "mesh")]
-    pub(crate) fn compile_partition(&self, bytes: &[u8]) -> io::Result<Executable> {
-        self.0.client.compile(bytes)
-    }
-
-    #[cfg(feature = "mesh")]
-    pub(crate) fn run_partition(
-        &self,
-        executable: &Executable,
-        inputs: &[DataHandle],
-        output: &[ArrayInfo],
-    ) -> io::Result<Vec<DataHandle>> {
-        let inputs = inputs
-            .iter()
-            .map(|data| self.import_native(data, TransferPolicy::AllowCopy))
-            .collect::<io::Result<Vec<_>>>()?;
-        self.run_native(executable, &inputs, output)
-    }
-
     fn run_native(
         &self,
         executable: &Executable,

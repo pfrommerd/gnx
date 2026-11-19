@@ -502,8 +502,7 @@ impl Lowerer {
         })
     }
     fn lower_equation(&mut self, eqn: &HEqn) -> Result<(), LoweringError> {
-        eqn.op()
-            .lower(eqn, &mut LoweringContext { lowerer: self })
+        eqn.op().lower(eqn, &mut LoweringContext { lowerer: self })
     }
 }
 
@@ -512,6 +511,57 @@ impl LoweringContext<'_> {
         if !eqn.subexprs().is_empty() {
             return Err(LoweringError::UnsupportedNestedOperation);
         }
+        self.lower_value_apply_with_regions(eqn, vec![])
+    }
+
+    /// Lower an operation whose regions accept independent value arguments and
+    /// have no captures or mutable state, such as a reduction combiner.
+    pub fn lower_closed_regions_apply(&mut self, eqn: &HEqn) -> Result<(), LoweringError> {
+        let regions = eqn
+            .subexprs()
+            .iter()
+            .map(|region| {
+                let body = region.expr();
+                if !region.closure().is_empty()
+                    || !body.closure().is_empty()
+                    || body
+                        .inputs()
+                        .iter()
+                        .any(|(_, kind)| !matches!(kind, Kind::Value(_)))
+                    || body
+                        .outputs()
+                        .iter()
+                        .any(|var| !matches!(body.kind(var), Some(Kind::Value(_))))
+                {
+                    return Err(LoweringError::RegionSignature(
+                        "expected a closed value region",
+                    ));
+                }
+                let spec = InputSpec {
+                    closure: vec![],
+                    inputs: body
+                        .inputs()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, kind))| (InputId::Input(i), kind.clone()))
+                        .collect(),
+                };
+                let program = lower(body, &spec)?;
+                Ok(RegionUse {
+                    expr: program.expr,
+                    trace_body: body.clone(),
+                    captures: vec![],
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        self.lower_value_apply_with_regions(eqn, regions)
+    }
+
+    fn lower_value_apply_with_regions(
+        &mut self,
+        eqn: &HEqn,
+        regions: Vec<RegionUse>,
+    ) -> Result<(), LoweringError> {
         let inputs = eqn
             .inputs()
             .iter()
@@ -526,7 +576,7 @@ impl LoweringContext<'_> {
             self.lowerer.values.insert(*output, var);
             outputs.push((var, info.clone()));
         }
-        self.emit(eqn.op().clone(), inputs, outputs, vec![]);
+        self.emit(eqn.op().clone(), inputs, outputs, regions);
         Ok(())
     }
 

@@ -1,7 +1,7 @@
 from collections.abc import Callable, Sequence
 from typing import Any, Generic, NoReturn, ParamSpec, TypeAlias, TypeVar, final
 
-from . import array as array, dtype as dtype, graph as graph, jax as jax
+from . import array as array, dtype as dtype, graph as graph
 from .graph import Graph as Graph
 
 _P = ParamSpec("_P")
@@ -25,6 +25,7 @@ class Capture:
     def outputs(self) -> tuple[_Binding, ...]: ...
 
 def expr(roots: object) -> Capture: ...
+ndef stop_gradient(x: array.Array) -> array.Array: ...
 
 @final
 class Trace:

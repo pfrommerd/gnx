@@ -1,12 +1,11 @@
 //! Array metadata helpers and typed emitters shared by transformation rules.
 
+use gnx_array::{ArrayInfo, DType, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
 use gnx_expr::{Eqn, SubExpr, ValueInfo, Var};
-use gnx_math::ops::{
-    add_op, broadcast_in_dim_op, fixed_dims, mul_op, reduce_sum_op, rev_op, select_op,
-    transpose_op, zeros_op,
+use gnx_math_base::ops::{
+    add_op, broadcast_in_dim_op, mul_op, rev_op, select_op, transpose_op, zeros_op,
 };
-use gnx_math::{ArrayInfo, DType, Shape};
 
 use crate::{TransformError, TransformResult};
 
@@ -49,7 +48,10 @@ pub fn without_axis(value: &ValueInfo, axis: usize) -> TransformResult<(usize, V
 }
 
 pub fn is_float(value: &ValueInfo) -> bool {
-    matches!(dtype(value), Ok(DType::F16 | DType::F32 | DType::F64))
+    matches!(
+        dtype(value),
+        Ok(DType::F16 | DType::BF16 | DType::F32 | DType::F64)
+    )
 }
 
 pub fn zeros(b: &mut Builder, value: &ValueInfo) -> Var {
@@ -82,17 +84,7 @@ pub fn broadcast_in_dim(
 }
 
 pub fn reduce_sum(b: &mut Builder, x: Var, axes: &[usize]) -> TransformResult<Var> {
-    if axes.is_empty() {
-        return Ok(x);
-    }
-    let value = b.info(x).clone();
-    let shape: Vec<_> = dims(&value)?
-        .into_iter()
-        .enumerate()
-        .filter(|(axis, _)| !axes.contains(axis))
-        .map(|(_, size)| size)
-        .collect();
-    Ok(b.emit1(reduce_sum_op(axes), &[x], info(&shape, dtype(&value)?)))
+    Ok(gnx_math_base::ops::reduction::reduce_add(b, x, axes)?)
 }
 
 /// Result axis `i` is operand axis `perm[i]`.
@@ -176,4 +168,8 @@ pub fn union(lhs: &mut [bool], rhs: &[bool]) -> bool {
         }
     }
     changed
+}
+
+pub fn is_inexact(value: &ValueInfo) -> bool {
+    is_float(value) || matches!(dtype(value), Ok(DType::C64 | DType::C128))
 }

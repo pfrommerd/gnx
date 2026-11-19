@@ -2,9 +2,9 @@
 
 use std::fmt;
 
+use gnx_array::{ArrayInfo, Dim};
 use gnx_expr::lower::{LoweringContext, RegionArgument};
 use gnx_expr::{Capture, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace, ValueInfo};
-use gnx_math::{ArrayInfo, Dim};
 
 use super::{
     BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, add_state, check_child, defer_regions,

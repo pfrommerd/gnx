@@ -1,7 +1,7 @@
 use gnx_expr::{
     Capture, CellKey, HInstr, Invocation, ObjectTracer, TraceContext, Tracer, TracerKey, ValueInfo,
 };
-use gnx_math::{Array, ArrayInfo, ArrayRef, DType, Shape};
+use gnx_array::{Array, ArrayInfo, ArrayRef, DType, Shape};
 use gnx_transforms::{Callable, TryCallable, jit};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};

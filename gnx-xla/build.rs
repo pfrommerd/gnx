@@ -17,11 +17,21 @@ fn main() {
             .warnings(false)
             .include(root.join("include"))
             .file("src/native/cpu.cc");
-        #[cfg(feature = "mesh")]
-        {
-            println!("cargo:rerun-if-changed=src/mesh/shardy.cc");
-            bridge.file("src/mesh/shardy.cc");
+        println!("cargo:rerun-if-changed=src/native/lapack.cc");
+        println!("cargo:rerun-if-env-changed=LAPACKE_INCLUDE_DIR");
+        println!("cargo:rerun-if-env-changed=LAPACKE_LIB_DIR");
+        if let Some(dir) = std::env::var_os("LAPACKE_INCLUDE_DIR") {
+            bridge.include(dir);
         }
-        bridge.compile("gnx_xla_bridge");
+        if let Some(dir) = std::env::var_os("LAPACKE_LIB_DIR") {
+            println!(
+                "cargo:rustc-link-search=native={}",
+                std::path::Path::new(&dir).display()
+            );
+        }
+        bridge
+            .file("src/native/lapack.cc")
+            .compile("gnx_xla_bridge");
+        println!("cargo:rustc-link-lib=lapacke");
     }
 }

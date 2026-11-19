@@ -1,5 +1,5 @@
-//! Rule registrations for the `array` and `cf` dialects. They live here (not
-//! next to the operations) because the rule traits are defined in this crate.
+//! Rules for foundational array operations and control flow.
 
 mod array;
 mod control_flow;
+pub(crate) mod reduction;

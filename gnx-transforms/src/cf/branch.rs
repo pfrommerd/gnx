@@ -2,11 +2,11 @@
 
 use std::fmt;
 
+use gnx_array::DType;
 use gnx_expr::lower::{LoweringContext, RegionArgument};
 use gnx_expr::{
     Capture, CellAccess, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace, Var,
 };
-use gnx_math::DType;
 
 use super::{
     BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, add_state, check_child, check_state_len,

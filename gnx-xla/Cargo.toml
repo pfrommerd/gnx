@@ -5,30 +5,20 @@ edition = "2024"
 
 [features]
 default = []
-native = ["dep:cc", "dep:xla", "dep:futures-channel", "dep:gnx-transforms"]
-mesh = ["native", "dep:futures", "dep:serde", "dep:tarpc", "dep:tokio", "dep:uuid"]
+native = ["dep:cc", "dep:xla", "dep:futures-channel", "dep:gnx-math-base", "dep:gnx-transforms"]
 
 [dependencies]
 futures-channel = { version = "0.3", optional = true }
 gnx-expr = { path = "../gnx-expr" }
 gnx-math = { path = "../gnx-math" }
+gnx-math-base = { path = "../gnx-math-base", optional = true }
 gnx-transforms = { path = "../gnx-transforms", optional = true }
 xla = { version = "=0.5.5", optional = true }
-futures = { version = "0.3", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
-tarpc = { version = "0.38", features = ["tcp", "serde-transport-bincode"], optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"], optional = true }
-uuid = { version = "1.19.0", features = ["v4", "serde"], optional = true }
 
 [build-dependencies]
 cc = { version = "1", optional = true }
 
-[[bin]]
-name = "gnx-xla-worker"
-path = "src/bin/worker.rs"
-required-features = ["mesh"]
-
 [dev-dependencies]
 futures-executor = "0.3"
 gnx = { path = "../gnx" }
-tokio = { version = "1", features = ["io-util", "process", "time"] }
+gnx-graph = { path = "../gnx-graph" }

@@ -1,10 +1,11 @@
-use gnx_expr::pass::{Dce, Pipeline};
+use gnx_array::{ArrayInfo, DType, Shape};
+use gnx_expr::pass::{Builder, Dce, Pipeline};
 use gnx_expr::{
-    Capture, CellTrace, Expr, InputSpec, Invocation, LoweringError, ObjectTracer, Op, Operation, Trace,
-    TraceContext, ValueInfo,
+    Capture, CellTrace, Expr, InputSpec, Invocation, LoweringError, ObjectTracer, Op, Operation,
+    Trace, TraceContext, ValueInfo,
 };
-use gnx_math::ops::{add_op, mul_op};
-use gnx_math::{ArrayInfo, DType, Shape};
+use gnx_math_base::ops::reduction::{ReduceAddOperation, reduce_add};
+use gnx_math_base::ops::{add_op, mul_op};
 use gnx_transforms::ExpandTransforms;
 use gnx_transforms::ad::region::{jvp, vjp};
 use gnx_transforms::ad::{DiffParameters, JvpOperation, VjpOperation};
@@ -82,6 +83,46 @@ fn contains_ad(expr: &Expr) -> bool {
             || is::<VjpOperation>(eqn.op())
             || eqn.subexprs().iter().any(|sub| contains_ad(sub.expr()))
     })
+}
+
+#[test]
+fn additive_reduction_expands_without_a_math_rule_provider() {
+    use gnx_expr::SubExpr;
+    use gnx_transforms::ops::{ad, map};
+
+    let mut body = Builder::new();
+    let x = body.input(info(&[3]));
+    let sum = reduce_add(&mut body, x, &[0]).unwrap();
+    let body = SubExpr::new(body.finish(vec![sum]).into(), vec![]);
+
+    let mut program = Builder::new();
+    let x = program.input(info(&[3]));
+    let scalar = program.input(info(&[]));
+    let batch = program.input(info(&[2, 3]));
+    let mut outputs = program.emit(
+        ad::vjp(&[0], &[0]),
+        &[x, scalar],
+        [info(&[]), info(&[3])],
+        vec![body.clone()],
+    );
+    outputs.extend(program.emit(
+        ad::jvp(&[0], &[0]),
+        &[x, x],
+        [info(&[]), info(&[])],
+        vec![body.clone()],
+    ));
+    outputs.extend(program.emit(map::map(2, &[0], &[0]), &[batch], [info(&[2])], vec![body]));
+    let expanded = gnx_transforms::expand_transforms(&program.finish(outputs)).unwrap();
+    expanded.check().unwrap();
+    assert!(!contains_ad(&expanded));
+    let reductions: Vec<_> = expanded
+        .eqns()
+        .iter()
+        .filter_map(|eqn| eqn.op().downcast_ref::<ReduceAddOperation>().map(|op| (eqn, op)))
+        .collect();
+    assert!(reductions.iter().any(|(_, op)| op.axes() == [0]));
+    assert!(reductions.iter().any(|(_, op)| op.axes() == [1]));
+    assert!(reductions.iter().all(|(eqn, _)| eqn.subexprs().is_empty()));
 }
 
 #[test]

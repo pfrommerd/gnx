@@ -5,11 +5,11 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use gnx_array::Array;
 use gnx_expr::{Kind, ObjectTracer, Trace, ValueInfo};
 use gnx_graph::util::Dag;
 use gnx_graph::{Graph, GraphEq, GraphHash, Leaf, OwnedGraph};
-use gnx_math::Array;
-use gnx_math::ops::{eye_op, reshape_op};
+use gnx_math_base::ops::{eye_op, reshape_op};
 
 use super::region;
 use crate::body::{Body, BodySignature};
@@ -76,7 +76,7 @@ impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
     /// Floating-point results, which get tangents and cotangents.
     fn of(&self) -> Vec<usize> {
         (0..self.outputs.len())
-            .filter(|&i| util::is_float(&self.outputs[i]))
+            .filter(|&i| util::is_inexact(&self.outputs[i]))
             .collect()
     }
 

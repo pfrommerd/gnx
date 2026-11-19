@@ -1,13 +1,18 @@
 [workspace]
 members = [
     "gnx",
+    "gnx-array",
+    "gnx-math-base",
     "gnx-transforms",
     "gnx-derive",
     "gnx-expr",
     "gnx-graph",
     "gnx-io",
-    "gnx-jax",
     "gnx-xla",
     "gnxlib", "gnx-math",
 ]
+exclude = ["third_party/xla-rs"]
 resolver = "3"
+
+[patch.crates-io]
+xla = { path = "third_party/xla-rs" }
