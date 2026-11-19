@@ -31,24 +31,30 @@ enum Kernel : int64_t {
 };
 
 template <typename T> struct Lapack;
+#ifdef GNX_SCIPY_OPENBLAS
+#define GNX_LAPACKE(name) scipy_LAPACKE_##name
+#else
+#define GNX_LAPACKE(name) LAPACKE_##name
+#endif
 #define GNX_LAPACK(T, R, prefix, reduce, qr)                                   \
   template <> struct Lapack<T> {                                               \
     using Real = R;                                                            \
-    static constexpr auto getrf = LAPACKE_##prefix##getrf;                     \
-    static constexpr auto gehrd = LAPACKE_##prefix##gehrd;                     \
-    static constexpr auto trd = LAPACKE_##prefix##reduce;                      \
-    static constexpr auto gees = LAPACKE_##prefix##gees;                       \
-    static constexpr auto geev = LAPACKE_##prefix##geev;                       \
-    static constexpr auto gesvd = LAPACKE_##prefix##gesvd;                     \
-    static constexpr auto geqp3 = LAPACKE_##prefix##geqp3;                     \
-    static constexpr auto gqr = LAPACKE_##prefix##qr;                          \
-    static constexpr auto gtsv = LAPACKE_##prefix##gtsv;                       \
+    static constexpr auto getrf = GNX_LAPACKE(prefix##getrf);                  \
+    static constexpr auto gehrd = GNX_LAPACKE(prefix##gehrd);                  \
+    static constexpr auto trd = GNX_LAPACKE(prefix##reduce);                   \
+    static constexpr auto gees = GNX_LAPACKE(prefix##gees);                    \
+    static constexpr auto geev = GNX_LAPACKE(prefix##geev);                    \
+    static constexpr auto gesvd = GNX_LAPACKE(prefix##gesvd);                  \
+    static constexpr auto geqp3 = GNX_LAPACKE(prefix##geqp3);                  \
+    static constexpr auto gqr = GNX_LAPACKE(prefix##qr);                       \
+    static constexpr auto gtsv = GNX_LAPACKE(prefix##gtsv);                    \
   };
 GNX_LAPACK(float, float, s, sytrd, orgqr)
 GNX_LAPACK(double, double, d, sytrd, orgqr)
 GNX_LAPACK(std::complex<float>, float, c, hetrd, ungqr)
 GNX_LAPACK(std::complex<double>, double, z, hetrd, ungqr)
 #undef GNX_LAPACK
+#undef GNX_LAPACKE
 
 template <typename T> constexpr DataType Type();
 template <> constexpr DataType Type<float>() { return DataType::F32; }

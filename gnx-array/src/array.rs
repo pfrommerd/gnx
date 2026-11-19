@@ -343,6 +343,21 @@ impl Array {
         &self.0.info().shape
     }
 
+    /// Reshape to fixed dimensions while preserving element order and dtype.
+    pub fn reshape(&self, dims: impl IntoIterator<Item = usize>) -> Self {
+        let info = ArrayInfo::new(Shape::fixed(dims), self.dtype());
+        gnx_expr::Invocation::invoke(
+            crate::ops::reshape_op(),
+            vec![],
+            vec![self.tracer().clone()],
+            vec![gnx_expr::ValueInfo::new(info)],
+        )
+        .remove(0)
+        .try_cast::<Array>()
+        .expect("reshape produces an array")
+        .into()
+    }
+
     pub fn tracer(&self) -> &Tracer<Array> {
         &self.0
     }

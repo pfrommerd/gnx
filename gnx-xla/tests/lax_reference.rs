@@ -1,4 +1,3 @@
-#![cfg(feature = "native")]
 // Reference values generated with jax.lax and jax.jvp on CPU (JAX 0.12.0.1).
 
 use gnx_expr::pass::Builder;

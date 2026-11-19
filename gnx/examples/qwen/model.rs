@@ -54,9 +54,9 @@ fn delta_rule(
 ) -> (Array, Array) {
     let s = dims(&state);
     let (h, d, f) = (s[0], s[1], s[2]);
-    let state = state * reshape(&decay, &[h, 1, 1]);
-    let delta = (v - dot(&k, &state, 1, 1, 1)) * reshape(&beta, &[h, 1]);
-    let next = state + reshape(&k, &[h, d, 1]) * reshape(&delta, &[h, 1, f]);
+    let state = state * decay.reshape([h, 1, 1]);
+    let delta = (v - dot(&k, &state, 1, 1, 1)) * beta.reshape([h, 1]);
+    let next = state + k.reshape([h, d, 1]) * delta.reshape([h, 1, f]);
     (dot(&q, &next, 1, 1, 1), next)
 }
 
@@ -165,7 +165,7 @@ impl Config {
             self.num_key_value_heads,
             self.head_dim,
         );
-        let qg = reshape(&linear(x, &w("q_proj.weight")), &[h, 2 * d]);
+        let qg = linear(x, &w("q_proj.weight")).reshape([h, 2 * d]);
         let gate = sigmoid(&view(&qg, 1, d, 2 * d));
         let q = self.rope(
             &rms(&view(&qg, 1, 0, d), &w("q_norm.weight"), self.rms_norm_eps),
@@ -173,14 +173,14 @@ impl Config {
         );
         let key = self.rope(
             &rms(
-                &reshape(&linear(x, &w("k_proj.weight")), &[k, d]),
+                &linear(x, &w("k_proj.weight")).reshape([k, d]),
                 &w("k_norm.weight"),
                 self.rms_norm_eps,
             ),
             pos,
         );
         let append = |v: Array, index: usize| {
-            let v = reshape(&v, &[k, 1, d]);
+            let v = v.reshape([k, 1, d]);
             if prev.is_empty() {
                 v
             } else {
@@ -189,13 +189,12 @@ impl Config {
         };
         let key = append(key, 0);
         let value = append(linear(x, &w("v_proj.weight")), 1);
-        let scores =
-            dot(&reshape(&q, &[k, h / k, d]), &key, 2, 2, 1) * scalar(1. / (d as f64).sqrt());
+        let scores = dot(&q.reshape([k, h / k, d]), &key, 2, 2, 1) * scalar(1. / (d as f64).sqrt());
         let exp = unary(e::exp(), &(&scores - top1(&scores).0));
         let probs = &exp / keep_sum(&exp);
-        let y = reshape(&dot(&probs, &value, 2, 1, 1), &[h, d]) * gate;
+        let y = dot(&probs, &value, 2, 1, 1).reshape([h, d]) * gate;
         (
-            linear(&reshape(&y, &[h * d]), &w("o_proj.weight")),
+            linear(&y.reshape([h * d]), &w("o_proj.weight")),
             [key, value],
         )
     }
@@ -217,22 +216,18 @@ impl Config {
         let c = 2 * kd + vd;
         let proj = |name: &str| linear(x, &w(&format!("in_proj_{name}.weight")));
         let history = prev.first().cloned().unwrap_or_else(|| zeros(&[c, t - 1]));
-        let window = cat(&history, &reshape(&proj("qkv"), &[c, 1]), 1);
+        let window = cat(&history, &proj("qkv").reshape([c, 1]), 1);
         let qkv = silu(&sum(
-            &(&window * reshape(&cast(&w("conv1d.weight"), DType::F32), &[c, t])),
+            &(&window * cast(&w("conv1d.weight"), DType::F32).reshape([c, t])),
             1,
         ));
         let heads = |start| {
-            let x = norm(
-                &reshape(&view(&qkv, 0, start, start + kd), &[kh, d]),
-                1.,
-                1e-6,
-            );
-            reshape(&broadcast(&x, &[kh, h / kh, d], &[0, 2]), &[h, d])
+            let x = norm(&view(&qkv, 0, start, start + kd).reshape([kh, d]), 1., 1e-6);
+            broadcast(&x, &[kh, h / kh, d], &[0, 2]).reshape([h, d])
         };
         let q = heads(0) * scalar(1. / (d as f64).sqrt());
         let k = heads(kd);
-        let v = reshape(&view(&qkv, 0, 2 * kd, c), &[h, f]);
+        let v = view(&qkv, 0, 2 * kd, c).reshape([h, f]);
         let a = proj("a") + cast(&w("dt_bias"), DType::F32);
         let softplus = binary_max_zero(&a)
             + unary(
@@ -250,9 +245,9 @@ impl Config {
         let (out, state) = delta_rule(q, k, v, sigmoid(&proj("b")), decay, state);
         let gated = norm(&out, f as f64, self.rms_norm_eps)
             * cast(&w("norm.weight"), DType::F32)
-            * silu(&reshape(&proj("z"), &[h, f]));
+            * silu(&proj("z").reshape([h, f]));
         (
-            linear(&reshape(&gated, &[vd]), &w("out_proj.weight")),
+            linear(&gated.reshape([vd]), &w("out_proj.weight")),
             [view(&window, 1, 1, t), state],
         )
     }
@@ -266,10 +261,8 @@ impl Config {
         predict: bool,
     ) -> (Vec<Array>, Option<Array>) {
         let embed = &w[&format!("{ROOT}.embed_tokens.weight")];
-        let mut x = reshape(
-            &cast(&view(embed, 0, id as usize, id as usize + 1), DType::F32),
-            &[self.hidden_size],
-        );
+        let mut x = cast(&view(embed, 0, id as usize, id as usize + 1), DType::F32)
+            .reshape([self.hidden_size]);
         let mut cache = Vec::with_capacity(2 * self.num_hidden_layers);
         for (n, ty) in self.layer_types.iter().enumerate() {
             let wt = |key: &str| w[&format!("{ROOT}.layers.{n}.{key}")].clone();

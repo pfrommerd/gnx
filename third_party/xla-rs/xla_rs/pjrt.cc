@@ -1,13 +1,14 @@
-// The public xla-rs runtime wrapper does not expose PJRT host buffer semantics.
-// Keep xla-rs for lowering; this bridge owns the CPU PJRT execution handles.
+// Single-device PJRT ownership and transfer semantics for the Rust bindings.
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
 
 #include "xla/hlo/builder/xla_computation.h"
+#include "gpu_client.h"
 #include "xla/literal.h"
 #include "xla/pjrt/common_pjrt_client.h"
+#include "xla/pjrt/gpu/se_gpu_pjrt_client.h"
 #include "xla/pjrt/plugin/xla_cpu/xla_cpu_pjrt_client.h"
 #include "xla/shape_util.h"
 
@@ -28,7 +29,7 @@ int Report(GnxReport report, const absl::Status& status) {
 }
 }  // namespace
 
-extern "C" int gnx_cpu_new(xla::PjRtClient** out, GnxReport report) {
+extern "C" int gnx_pjrt_new(xla::PjRtClient** out, GnxReport report) {
   auto client = xla::GetXlaPjrtCpuClient(xla::CpuClientOptions{});
   if (!client.ok()) return Report(report, client.status());
   if ((*client)->device_count() != 1 || (*client)->addressable_device_count() != 1) {
@@ -38,27 +39,37 @@ extern "C" int gnx_cpu_new(xla::PjRtClient** out, GnxReport report) {
   return 0;
 }
 
-extern "C" void gnx_cpu_info(xla::PjRtClient* client, int* ordinal, GnxReport kind) {
+extern "C" int gnx_pjrt_cuda_new(int ordinal, xla::PjRtClient** out, GnxReport report) {
+  auto client = xla_rs_gpu_client(0.75, false, ordinal);
+  if (!client.ok()) return Report(report, client.status());
+  auto devices = (*client)->addressable_devices();
+  if (devices.size() != 1 || devices.front()->local_hardware_id().value() != ordinal)
+    return Report(report, absl::InvalidArgumentError("requested CUDA device is not addressable"));
+  *out = client->release();
+  return 0;
+}
+
+extern "C" void gnx_pjrt_info(xla::PjRtClient* client, int* ordinal, GnxReport kind) {
   auto* device = client->addressable_devices().front();
-  *ordinal = device->id();
+  *ordinal = device->local_hardware_id().value();
   auto name = device->device_kind();
   kind.write(kind.context, name.data(), name.size());
 }
 
-extern "C" int gnx_cpu_compile(xla::PjRtClient* client, const void* data,
+extern "C" int gnx_pjrt_compile(xla::PjRtClient* client, const void* data,
                                int size, xla::PjRtLoadedExecutable** out,
                                GnxReport report) {
   xla::HloModuleProto proto;
   if (!proto.ParseFromArray(data, size)) {
     return Report(report, absl::InvalidArgumentError("invalid XLA HLO module"));
   }
-  auto executable = client->CompileAndLoad(xla::XlaComputation(std::move(proto)), {});
+  auto executable = client->CompileAndLoad(xla::XlaComputation(std::move(proto)), xla_rs_compile_options(client));
   if (!executable.ok()) return Report(report, executable.status());
   *out = executable->release();
   return 0;
 }
 
-extern "C" int gnx_cpu_import(xla::PjRtClient* client, const void* data,
+extern "C" int gnx_pjrt_import(xla::PjRtClient* client, const void* data,
                               int type, const int64_t* dims, size_t rank,
                               bool require_alias, void* lease,
                               void (*release)(void*), xla::PjRtBuffer** out,
@@ -72,7 +83,7 @@ extern "C" int gnx_cpu_import(xla::PjRtClient* client, const void* data,
   const auto primitive = static_cast<xla::PrimitiveType>(type);
   const absl::Span<const int64_t> dimensions(dims, rank);
   bool alias = false;
-  if (cpu != nullptr) {
+  if (client->platform_name() == "cpu" && cpu != nullptr) {
     auto shape = cpu->MakeDefaultShapeForMemorySpace(
         *memory, xla::ShapeUtil::MakeShape(primitive, dimensions), nullptr);
     if (!shape.ok()) return Report(report, shape.status());
@@ -81,7 +92,7 @@ extern "C" int gnx_cpu_import(xla::PjRtClient* client, const void* data,
   }
   if (require_alias && !alias) {
     return Report(report, absl::UnimplementedError(
-        "PJRT cannot alias this host allocation (alignment or layout)"));
+        "PJRT cannot alias this host allocation; use AllowCopy to transfer it"));
   }
   const auto semantics = alias ? xla::PjRtClient::HostBufferSemantics::kImmutableZeroCopy
                                : xla::PjRtClient::HostBufferSemantics::kImmutableOnlyDuringCall;
@@ -93,14 +104,14 @@ extern "C" int gnx_cpu_import(xla::PjRtClient* client, const void* data,
   return 0;
 }
 
-extern "C" bool gnx_cpu_matches(xla::PjRtBuffer* buffer, int type,
+extern "C" bool gnx_pjrt_matches(xla::PjRtBuffer* buffer, int type,
                                 const int64_t* dims, size_t rank) {
   auto shape = buffer->on_device_shape();
   return shape.IsArray() && shape.element_type() == type &&
          shape.dimensions() == absl::Span<const int64_t>(dims, rank);
 }
 
-extern "C" int gnx_cpu_execute(xla::PjRtLoadedExecutable* executable,
+extern "C" int gnx_pjrt_execute(xla::PjRtLoadedExecutable* executable,
                                xla::PjRtBuffer* const* inputs, size_t ninputs,
                                xla::PjRtBuffer** outputs, size_t noutputs,
                                GnxReport report) {
@@ -116,15 +127,18 @@ extern "C" int gnx_cpu_execute(xla::PjRtLoadedExecutable* executable,
   return 0;
 }
 
-extern "C" int gnx_cpu_download(xla::PjRtBuffer* buffer, char* destination,
-                                GnxReport report) {
+extern "C" int gnx_pjrt_download(xla::PjRtBuffer* buffer, char* destination,
+                                size_t size, GnxReport report) {
   auto shape = buffer->on_device_shape();
+  if (!shape.IsArray()) return Report(report, absl::InvalidArgumentError("expected array buffer"));
   auto packed = xla::ShapeUtil::MakeShape(shape.element_type(), shape.dimensions());
+  if (size != xla::ShapeUtil::ByteSizeOf(packed))
+    return Report(report, absl::InvalidArgumentError("destination size does not match buffer"));
   xla::MutableBorrowingLiteral literal(destination, packed);
   return Report(report, buffer->ToLiteralSync(&literal));
 }
 
-extern "C" int gnx_cpu_address(xla::PjRtBuffer* buffer, const void** out,
+extern "C" int gnx_pjrt_address(xla::PjRtBuffer* buffer, const void** out,
                                GnxReport report) {
   auto lease = buffer->AcquireExternalReference();
   if (!lease.ok()) return Report(report, lease.status());
@@ -132,6 +146,6 @@ extern "C" int gnx_cpu_address(xla::PjRtBuffer* buffer, const void** out,
   return 0;
 }
 
-extern "C" void gnx_cpu_free_client(xla::PjRtClient* client) { delete client; }
-extern "C" void gnx_cpu_free_buffer(xla::PjRtBuffer* buffer) { delete buffer; }
-extern "C" void gnx_cpu_free_executable(xla::PjRtLoadedExecutable* executable) { delete executable; }
+extern "C" void gnx_pjrt_free_client(xla::PjRtClient* client) { delete client; }
+extern "C" void gnx_pjrt_free_buffer(xla::PjRtBuffer* buffer) { delete buffer; }
+extern "C" void gnx_pjrt_free_executable(xla::PjRtLoadedExecutable* executable) { delete executable; }

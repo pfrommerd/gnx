@@ -1,4 +1,3 @@
-#![cfg(feature = "native")]
 //! The jit-based transformation builders and macros (`map`, `jvp`, `vjp`,
 //! `grad`, `value_and_grad`, `hessian`), executed by the XLA backend.
 

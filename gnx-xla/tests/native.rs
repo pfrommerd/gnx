@@ -1,4 +1,3 @@
-#![cfg(feature = "native")]
 
 use futures_executor::block_on;
 use gnx::Eval;
@@ -461,6 +460,7 @@ fn popcount_uses_the_operand_width() {
 }
 
 #[test]
+#[cfg(feature = "lapack")]
 fn lapack_factorizations_execute_on_the_local_device() {
     use gnx_expr::pass::Builder;
     use gnx_math::ops::linalg::{lu, svd};

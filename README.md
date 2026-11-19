@@ -4,24 +4,77 @@ A JAX- and PyTorch-compatible library for generative modeling.
 
 ## Native XLA backend
 
-The `native` Cargo feature enables single-device CPU execution through
-`xla-rs` and PJRT. `XlaDevice::compile` returns a reusable executable.
-Matrix decompositions that use LAPACKE run as CPU XLA FFI operations.
+`gnx-xla` provides single-device execution through `xla-rs` and PJRT.
+`XlaDevice::cpu()` selects the CPU; `XlaDevice::cuda(0)` selects the first
+CUDA-visible GPU. `XlaDevice::compile` returns a reusable executable.
+The default `lapack` feature adds CPU LAPACKE decompositions; Qwen omits it.
 
-Use clang, libclang, LAPACKE, and the matching
-[`xla_extension` v0.11.0](https://github.com/elixir-nx/xla/releases/tag/v0.11.0)
-build for `xla-rs` 0.5.5. On Linux, point Cargo and the loader at the unpacked
-runtime:
+With a C++17 compiler, `curl`, and `tar` on PATH, run:
 
 ```sh
-export XLA_EXTENSION_DIR=/path/to/xla_extension
-export CXX=clang++
-export LD_LIBRARY_PATH="$XLA_EXTENSION_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-cargo test --locked -p gnx-xla --features native
+cargo test --locked -p gnx-xla
 ```
 
-Set `LIBCLANG_PATH` if libclang is outside the default search path. Set
-`LAPACKE_INCLUDE_DIR` and `LAPACKE_LIB_DIR` for a custom LAPACKE installation.
+On GNU/Linux and macOS (x86_64 or aarch64), `xla-rs` downloads the matching
+[`xla_extension` v0.11.0](https://github.com/elixir-nx/xla/releases/tag/v0.11.0)
+CPU archive with `curl`, verifies its pinned SHA-256 before extracting it with
+`tar`, and caches it in Cargo's build output. On GNU/Linux x86_64 and aarch64,
+`qwen-example` enables the managed CUDA 13 bundle. This additionally downloads
+a SHA-256-pinned PJRT plugin, NVIDIA runtime libraries (including `libcudart`,
+cuBLAS and cuDNN), and GPU compiler tools. Allow several GB for the first build.
+No Python installation, system CUDA toolkit, or `LD_LIBRARY_PATH` setup is needed.
+Use `XLA_EXTENSION_VARIANT=cuda12` for CUDA 12 or `cpu` to skip the GPU downloads.
+macOS builds are CPU-only.
+
+The plugin and driver are opened only when a GPU client is requested. The same
+managed binary runs on CPU with no NVIDIA driver installed; explicit `--cuda`
+requires a compatible host driver and an addressable GPU. To test CUDA, run:
+
+```sh
+cargo test --locked -p gnx-xla --no-default-features --features cuda \
+  --test cuda -- --ignored --nocapture
+```
+
+The tests execute a matrix multiplication and verify GNX evaluation, copies,
+device-buffer reuse, and readback. On a host **without** the NVIDIA driver, use
+`--test cuda_driverless -- --ignored` instead to check CPU startup and the
+explicit CUDA error path. For arrays initially stored on the host:
+
+```rust
+use gnx::{Eval, ExecOpts, buffer::TransferPolicy};
+use gnx_xla::XlaDevice;
+
+let gpu = XlaDevice::cuda(0)?;
+gpu.eval(&result, ExecOpts { transfers: TransferPolicy::AllowCopy }).await?;
+let host = gpu.download(result.data().unwrap())?;
+```
+
+`ExecOpts::default()` requires zero-copy inputs. To upload a persistent weight
+once, use `gpu.import(&data, TransferPolicy::AllowCopy)`; subsequent evaluations
+on that GPU can reuse the returned handle under the default policy.
+
+For an offline build or a custom runtime, set `XLA_EXTENSION_DIR` to the
+unpacked `xla_extension` directory to bypass the managed XLA and CUDA downloads.
+A custom extension retains its own driver and toolkit requirements. On Linux, vendored
+`xla-rs` links its C++ bindings as `libxla_rs.so`. Executables record the absolute
+path to that library in Cargo's build output; the library carries the search
+paths for XLA and its native dependencies. Native NixOS CUDA builds also search
+`/run/opengl-driver/lib` for `libcuda.so.1`, so the NVIDIA driver directory does
+not need to be in `LD_LIBRARY_PATH`. Keep the build output and runtime libraries in place; the
+executable alone is not a portable bundle.
+
+Bindgen uses a local libclang if available. On GNU/Linux and macOS build hosts
+(x86_64 or aarch64), it otherwise downloads and caches a SHA-256-verified
+libclang 18.1.1 from PyPI; Python is not required. To use a specific local
+library, set `LIBCLANG_PATH` to its directory.
+
+The native bridge first tries to compile and link against system LAPACKE. On
+GNU/Linux x86_64 and aarch64 (glibc 2.27 or newer), if that fails, Cargo downloads a pinned,
+SHA-256-verified `scipy-openblas32` wheel and uses its LAPACKE headers and
+libraries. The download is cached in Cargo’s build output; neither Python nor
+environment variables are required. On other targets, install system LAPACKE.
+For an offline or custom installation, `LAPACKE_INCLUDE_DIR` and
+`LAPACKE_LIB_DIR` override the header and library search paths.
 
 Run `maturin develop --features xla` from `gnxlib/` to enable
 `from gnxlib import xla`. `array.from_host_bytes`, `array.from_numpy`, and
@@ -50,6 +103,16 @@ To chat interactively with the same checkpoint:
 cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
   --model-dir Qwen3.5-0.8B --chat --max-new-tokens 64
 ```
+
+On an NVIDIA host, pass `--cuda`:
+
+```sh
+cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
+  --model-dir Qwen3.5-0.8B --cuda --chat
+```
+
+`--cuda` selects ordinal 0; `--cuda 1` selects the second visible GPU. Weights
+and layer caches stay on that device, so it must have enough VRAM for both.
 
 Enter one message per line. Replies stream as they are generated. `/reset` clears
 history; `/quit` or Ctrl-D exits. The token limit applies to each reply. Chat

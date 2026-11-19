@@ -20,4 +20,4 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP"
           export XLA_EXTENSION_DIR="$RUNNER_TEMP/xla_extension"
           export LD_LIBRARY_PATH="$XLA_EXTENSION_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          CXX=clang++ cargo test --locked -p gnx-xla --features native
+          CXX=clang++ cargo test --locked -p gnx-xla

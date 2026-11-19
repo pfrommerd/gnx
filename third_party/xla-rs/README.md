@@ -1,20 +1,25 @@
 # xla-rs
 Experimentation using the xla compiler from rust
 
-Pre-compiled binaries for the xla library can be downloaded from the
-[elixir-nx/xla repo](https://github.com/elixir-nx/xla/releases/tag/v0.11.0).
-These should be extracted at the root of this repository, resulting
-in a `xla_extension` subdirectory being created, the currently supported version
-is 0.11.0.
+Set `XLA_EXTENSION_DIR` to use an existing unpacked `xla_extension` directory.
+Otherwise the build downloads a [v0.11.0 release archive](https://github.com/elixir-nx/xla/releases/tag/v0.11.0)
+with `curl`, checks its pinned SHA-256 digest, and extracts it with `tar` into
+Cargo's build output for reuse.
 
-For a linux platform, this can be done via:
-```bash
-wget https://github.com/elixir-nx/xla/releases/download/v0.11.0/xla_extension-0.11.0-x86_64-linux-gnu-cpu.tar.gz
-tar -xzvf xla_extension-0.11.0-x86_64-linux-gnu-cpu.tar.gz
-```
+The managed build links the CPU archive at startup. With the `cuda` feature on
+GNU/Linux, it additionally installs the CUDA 13 PJRT plugin and userspace runtime
+from checksum-pinned packages. GPU client creation loads the host driver and
+plugin dynamically; CPU operation does not require a GPU or a driver. Set
+`XLA_EXTENSION_VARIANT` to override the managed variant. GNU/Linux
+(x86_64 and aarch64) supports `cpu`, `cuda12`, and `cuda13`; macOS (Intel and
+Apple Silicon) supports `cpu` only. Other targets require `XLA_EXTENSION_DIR`.
 
-If the `xla_extension` directory is not in the main project directory, the path
-can be specified via the `XLA_EXTENSION_DIR` environment variable.
+Bindgen first tries to load libclang locally. If discovery fails and
+`LIBCLANG_PATH` is unset, the build downloads a SHA-256-pinned libclang 18.1.1
+wheel from PyPI for the **host** (GNU/Linux or macOS, x86_64 or aarch64) and
+extracts the shared library without installing Python packages. Set
+`LIBCLANG_PATH` and `XLA_EXTENSION_DIR` for a fully local native-toolchain build.
+A C++ compiler and its headers are still required.
 
 ## Generating some Text Samples with Qwen3.5
 

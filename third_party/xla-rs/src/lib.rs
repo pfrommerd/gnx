@@ -34,6 +34,11 @@
 //! ```
 
 mod c_lib;
+#[cfg(feature = "pjrt")]
+pub mod pjrt;
+#[cfg(feature = "cpu-pjrt")]
+pub use pjrt as cpu;
+pub mod lapack;
 mod error;
 pub mod ffi;
 mod npy;

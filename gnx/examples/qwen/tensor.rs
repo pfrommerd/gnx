@@ -40,9 +40,6 @@ pub fn cast(x: &Array, t: DType) -> Array {
         apply(ops::dtype::convert_element_type(), &[x], &dims(x), t)
     }
 }
-pub fn reshape(x: &Array, s: &[usize]) -> Array {
-    apply(ops::reshape_op(), &[x], s, x.dtype())
-}
 pub fn view(x: &Array, axis: usize, start: usize, end: usize) -> Array {
     let mut s = dims(x);
     let mut ranges: Vec<_> = s.iter().map(|&n| (0, n, 1)).collect();
@@ -94,7 +91,7 @@ pub fn keep_sum(x: &Array) -> Array {
     let mut s = dims(x);
     let axis = s.len() - 1;
     s[axis] = 1;
-    reshape(&sum(x, axis), &s)
+    sum(x, axis).reshape(s)
 }
 pub fn norm(x: &Array, divisor: f64, eps: f64) -> Array {
     let sq = keep_sum(&(x * x));

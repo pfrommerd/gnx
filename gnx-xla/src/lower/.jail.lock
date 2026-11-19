@@ -1,0 +1,40 @@
+{
+  "nodes": {
+    "jail-lib": {
+      "locked": {
+        "lastModified": 1,
+        "narHash": "sha256-2Ch3OISozupmh5WwkaUU4EoYE4ncLvZ7hPQFqOpZ1tU=",
+        "path": "/nix/store/w0m913a7z60xx9xd8ba1l7b180pi11cl-jail-library",
+        "type": "path"
+      },
+      "original": {
+        "path": "/nix/store/w0m913a7z60xx9xd8ba1l7b180pi11cl-jail-library",
+        "type": "path"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1793726008,
+        "narHash": "sha256-jQp1wKvbwWdLBASTXkSi/VYmDJ5AbBi1WvcMt9HWJC8=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "1d060086d60cb76a40cf37109f979d88a5bd6396",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "1d060086d60cb76a40cf37109f979d88a5bd6396",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "jail-lib": "jail-lib",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

@@ -1,23 +1,20 @@
-//! Ownership wrappers for the CPU PJRT bridge. XLA computation construction
-//! still uses xla-rs; no dependency-private Rust pointers cross this boundary.
+//! Single-device CPU or CUDA PJRT execution with leased, immutable host buffers.
 
 use std::ffi::{c_char, c_int, c_void};
 use std::io::{self, ErrorKind};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
-use gnx_math::{ArrayInfo, HostBuffer, TransferPolicy};
+use crate::ElementType;
 
-use super::lower::{dimensions, element};
+pub struct Client(NonNull<c_void>);
 
-pub(crate) struct Client(NonNull<c_void>);
-
-pub(crate) struct Buffer {
+pub struct Buffer {
     raw: NonNull<c_void>,
     _client: Arc<Client>,
 }
 
-pub(crate) struct Executable {
+pub struct Executable {
     raw: NonNull<c_void>,
     client: Arc<Client>,
 }
@@ -33,16 +30,24 @@ unsafe impl Sync for Executable {}
 
 impl Client {
     pub fn new() -> io::Result<Arc<Self>> {
-        output(|out, report| unsafe { gnx_cpu_new(out, report) }).map(|raw| Arc::new(Self(raw)))
+        output(|out, report| unsafe { gnx_pjrt_new(out, report) }).map(|raw| Arc::new(Self(raw)))
+    }
+
+    /// Create a client restricted to one CUDA-visible device, without preallocating VRAM.
+    pub fn cuda(ordinal: usize) -> io::Result<Arc<Self>> {
+        let ordinal = c_int::try_from(ordinal)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "CUDA ordinal out of range"))?;
+        output(|out, report| unsafe { gnx_pjrt_cuda_new(ordinal, out, report) })
+            .map(|raw| Arc::new(Self(raw)))
     }
 
     pub fn device_info(&self) -> io::Result<(u64, String)> {
         let mut ordinal = 0;
         let mut name = String::new();
-        // SAFETY: the CPU client owns one addressable device. The callback is synchronous.
-        unsafe { gnx_cpu_info(self.0.as_ptr(), &mut ordinal, report_to(&mut name)) };
+        // SAFETY: the client owns one addressable device. The callback is synchronous.
+        unsafe { gnx_pjrt_info(self.0.as_ptr(), &mut ordinal, report_to(&mut name)) };
         let ordinal =
-            u64::try_from(ordinal).map_err(|_| io::Error::other("invalid CPU ordinal"))?;
+            u64::try_from(ordinal).map_err(|_| io::Error::other("invalid device ordinal"))?;
         Ok((ordinal, name))
     }
 
@@ -50,7 +55,7 @@ impl Client {
         let size = c_int::try_from(computation.len())
             .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "HLO module is too large"))?;
         let raw = output(|out, report| unsafe {
-            gnx_cpu_compile(
+            gnx_pjrt_compile(
                 self.0.as_ptr(),
                 computation.as_ptr().cast(),
                 size,
@@ -64,27 +69,44 @@ impl Client {
         })
     }
 
-    pub fn import(
+    /// Import contiguous, row-major bytes. PJRT retains the boxed owner until
+    /// it releases the data, including when it aliases the caller's storage.
+    pub fn import<T: Send + Sync + 'static>(
         self: &Arc<Self>,
-        host: HostBuffer,
-        policy: TransferPolicy,
+        host: T,
+        bytes: fn(&T) -> &[u8],
+        dtype: ElementType,
+        dims: &[i64],
+        require_alias: bool,
     ) -> io::Result<Buffer> {
-        let dims = dimensions(host.info())?;
-        let primitive = element(host.info().dtype()).primitive_type() as c_int;
-        let data = host.bytes().as_ptr().cast();
-        let lease = Box::into_raw(Box::new(host)).cast();
+        let host = Box::new(host);
+        let bytes = bytes(&host);
+        let size = dims
+            .iter()
+            .try_fold(dtype.element_size_in_bytes(), |n, &d| {
+                n.checked_mul(usize::try_from(d).ok()?)
+            });
+        if dtype == ElementType::F4E2M1FN || size != Some(bytes.len()) {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "expected whole-byte elements matching host shape",
+            ));
+        }
+        let primitive = dtype.primitive_type() as c_int;
+        let data = bytes.as_ptr().cast();
+        let lease = Box::into_raw(host).cast();
         // SAFETY: the host allocation is immutable and the bridge always adopts
         // its lease, including on error. The shape describes the entire buffer.
         let raw = output(|out, report| unsafe {
-            gnx_cpu_import(
+            gnx_pjrt_import(
                 self.0.as_ptr(),
                 data,
                 primitive,
                 dims.as_ptr(),
                 dims.len(),
-                policy == TransferPolicy::RequireZeroCopy,
+                require_alias,
                 lease,
-                release_host,
+                release_host::<T>,
                 out,
                 report,
             )
@@ -97,11 +119,10 @@ impl Client {
 }
 
 impl Buffer {
-    pub fn check(&self, info: &ArrayInfo) -> io::Result<()> {
-        let dims = dimensions(info)?;
-        let ty = element(info.dtype()).primitive_type() as c_int;
+    pub fn check(&self, dtype: ElementType, dims: &[i64]) -> io::Result<()> {
+        let ty = dtype.primitive_type() as c_int;
         // SAFETY: live native buffer and a rank-sized slice.
-        if !unsafe { gnx_cpu_matches(self.raw.as_ptr(), ty, dims.as_ptr(), dims.len()) } {
+        if !unsafe { gnx_pjrt_matches(self.raw.as_ptr(), ty, dims.as_ptr(), dims.len()) } {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,
                 "XLA returned mismatched array metadata",
@@ -110,20 +131,22 @@ impl Buffer {
         Ok(())
     }
 
-    pub fn download(&self, info: ArrayInfo) -> io::Result<HostBuffer> {
-        self.check(&info)?;
-        HostBuffer::try_fill(info, |bytes| {
-            // SAFETY: the destination holds the entire checked buffer in packed form.
-            checked(|report| unsafe {
-                gnx_cpu_download(self.raw.as_ptr(), bytes.as_mut_ptr().cast(), report)
-            })
+    pub fn download_into(&self, bytes: &mut [u8]) -> io::Result<()> {
+        // The bridge checks the packed size before writing to the destination.
+        checked(|report| unsafe {
+            gnx_pjrt_download(
+                self.raw.as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+                report,
+            )
         })
     }
 
-    #[cfg(test)]
+    /// Address for alias comparisons, not a host dereference capability.
     pub fn address(&self) -> io::Result<*const u8> {
         let mut data = ptr::null();
-        checked(|report| unsafe { gnx_cpu_address(self.raw.as_ptr(), &mut data, report) })?;
+        checked(|report| unsafe { gnx_pjrt_address(self.raw.as_ptr(), &mut data, report) })?;
         // Only used for comparing addresses, never for dereferencing the result.
         Ok(data.cast())
     }
@@ -145,7 +168,7 @@ impl Executable {
         // SAFETY: all inputs belong to this executable's client and are kept
         // alive during dispatch. The bridge fills outputs only on success.
         checked(|report| unsafe {
-            gnx_cpu_execute(
+            gnx_pjrt_execute(
                 self.raw.as_ptr(),
                 input.as_ptr(),
                 input.len(),
@@ -164,24 +187,24 @@ impl Executable {
     }
 }
 
-unsafe extern "C" fn release_host(lease: *mut c_void) {
+unsafe extern "C" fn release_host<T>(lease: *mut c_void) {
     // SAFETY: this is the unique release of the Box transferred to PJRT.
-    unsafe { drop(Box::from_raw(lease.cast::<HostBuffer>())) };
+    unsafe { drop(Box::from_raw(lease.cast::<T>())) };
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
-        unsafe { gnx_cpu_free_client(self.0.as_ptr()) }
+        unsafe { gnx_pjrt_free_client(self.0.as_ptr()) }
     }
 }
 impl Drop for Buffer {
     fn drop(&mut self) {
-        unsafe { gnx_cpu_free_buffer(self.raw.as_ptr()) }
+        unsafe { gnx_pjrt_free_buffer(self.raw.as_ptr()) }
     }
 }
 impl Drop for Executable {
     fn drop(&mut self) {
-        unsafe { gnx_cpu_free_executable(self.raw.as_ptr()) }
+        unsafe { gnx_pjrt_free_executable(self.raw.as_ptr()) }
     }
 }
 
@@ -228,16 +251,17 @@ fn output(f: impl FnOnce(*mut *mut c_void, Report) -> c_int) -> io::Result<NonNu
 }
 
 unsafe extern "C" {
-    fn gnx_cpu_new(out: *mut *mut c_void, report: Report) -> c_int;
-    fn gnx_cpu_info(client: *mut c_void, ordinal: *mut c_int, report: Report);
-    fn gnx_cpu_compile(
+    fn gnx_pjrt_new(out: *mut *mut c_void, report: Report) -> c_int;
+    fn gnx_pjrt_cuda_new(ordinal: c_int, out: *mut *mut c_void, report: Report) -> c_int;
+    fn gnx_pjrt_info(client: *mut c_void, ordinal: *mut c_int, report: Report);
+    fn gnx_pjrt_compile(
         client: *mut c_void,
         data: *const c_void,
         size: c_int,
         out: *mut *mut c_void,
         report: Report,
     ) -> c_int;
-    fn gnx_cpu_import(
+    fn gnx_pjrt_import(
         client: *mut c_void,
         data: *const c_void,
         dtype: c_int,
@@ -249,8 +273,8 @@ unsafe extern "C" {
         out: *mut *mut c_void,
         report: Report,
     ) -> c_int;
-    fn gnx_cpu_matches(buffer: *mut c_void, dtype: c_int, dims: *const i64, rank: usize) -> bool;
-    fn gnx_cpu_execute(
+    fn gnx_pjrt_matches(buffer: *mut c_void, dtype: c_int, dims: *const i64, rank: usize) -> bool;
+    fn gnx_pjrt_execute(
         executable: *mut c_void,
         inputs: *const *mut c_void,
         ninputs: usize,
@@ -258,10 +282,14 @@ unsafe extern "C" {
         noutputs: usize,
         report: Report,
     ) -> c_int;
-    fn gnx_cpu_download(buffer: *mut c_void, destination: *mut c_char, report: Report) -> c_int;
-    #[cfg(test)]
-    fn gnx_cpu_address(buffer: *mut c_void, out: *mut *const c_void, report: Report) -> c_int;
-    fn gnx_cpu_free_client(client: *mut c_void);
-    fn gnx_cpu_free_buffer(buffer: *mut c_void);
-    fn gnx_cpu_free_executable(executable: *mut c_void);
+    fn gnx_pjrt_download(
+        buffer: *mut c_void,
+        destination: *mut c_char,
+        size: usize,
+        report: Report,
+    ) -> c_int;
+    fn gnx_pjrt_address(buffer: *mut c_void, out: *mut *const c_void, report: Report) -> c_int;
+    fn gnx_pjrt_free_client(client: *mut c_void);
+    fn gnx_pjrt_free_buffer(buffer: *mut c_void);
+    fn gnx_pjrt_free_executable(executable: *mut c_void);
 }

@@ -1,4 +1,3 @@
-#![cfg(feature = "native")]
 //! `ad.map` / `ad.jvp` / `ad.vjp` traced, lowered with the transformations
 //! preserved, then expanded and executed by the XLA pipeline.
 

@@ -1,4 +1,8 @@
 #include "xla_rs.h"
+#include "gpu_client.h"
+#ifdef XLA_RS_CUDA_DIR
+#include <dlfcn.h>
+#endif
 #include "xla/hlo/builder/lib/math.h"
 #include "xla/hlo/builder/lib/qr.h"
 #include "xla/hlo/builder/lib/self_adjoint_eig.h"
@@ -46,13 +50,71 @@ status pjrt_cpu_client_create(pjrt_client *output) {
   return nullptr;
 }
 
-status pjrt_gpu_client_create(pjrt_client *output, double memory_fraction,
-                              bool preallocate) {
+absl::StatusOr<std::unique_ptr<xla::PjRtClient>> xla_rs_gpu_client(
+    double memory_fraction, bool preallocate, std::optional<int> ordinal) {
+#ifdef XLA_RS_CUDA_DIR
+  // This is the first point at which a managed build touches any CUDA DSO.
+  // Hold handles for the process lifetime, like PJRT's plugin registry.
+  static const absl::Status initialized = []() -> absl::Status {
+    auto driver = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!driver) driver = dlopen("/run/opengl-driver/lib/libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!driver) return absl::UnavailableError("No CUDA devices available: could not load the NVIDIA driver (libcuda.so.1)");
+    if (!dlopen("libnvidia-ml.so.1", RTLD_NOW | RTLD_LOCAL))
+      dlopen("/run/opengl-driver/lib/libnvidia-ml.so.1", RTLD_NOW | RTLD_LOCAL);
+#if XLA_RS_CUDA_MAJOR == 13
+    const char* libs[] = {"libcudart.so.13", "libnvrtc.so.13", "libcublasLt.so.13", "libcublas.so.13", "libnvJitLink.so.13", "libcusparse.so.12", "libcusolver.so.12", "libcufft.so.12", "libcupti.so.13", "libnccl.so.2", "libcudnn.so.9"};
+#else
+    const char* libs[] = {"libcudart.so.12", "libnvrtc.so.12", "libcublasLt.so.12", "libcublas.so.12", "libnvJitLink.so.12", "libcusparse.so.12", "libcusolver.so.11", "libcufft.so.11", "libcupti.so.12", "libnccl.so.2", "libcudnn.so.9"};
+#endif
+    for (auto name : libs) {
+      auto path = std::string(XLA_RS_CUDA_DIR "/lib/") + name;
+      if (!dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL)) return absl::UnavailableError(dlerror());
+    }
+    if (!pjrt::PjrtApi("cuda").ok()) {
+      auto api = pjrt::LoadPjrtPlugin("cuda", XLA_RS_CUDA_DIR "/lib/xla_cuda_plugin.so");
+      if (!api.ok()) return api.status();
+    }
+    auto ready = pjrt::IsPjrtPluginInitialized("cuda");
+    if (!ready.ok()) return ready.status();
+    return *ready ? absl::OkStatus() : pjrt::InitializePjrtPlugin("cuda");
+  }();
+  if (!initialized.ok()) return initialized;
+  absl::flat_hash_map<std::string, PjRtValueType> options = {
+      {"memory_fraction", static_cast<float>(memory_fraction)}, {"preallocate", preallocate}};
+  if (ordinal) options["visible_devices"] = std::vector<int64_t>{*ordinal};
+  return xla::GetCApiClient("cuda", options);
+#else
   xla::GpuAllocatorConfig allocator = {.memory_fraction = memory_fraction,
                                        .preallocate = preallocate};
   xla::GpuClientOptions options;
   options.allocator_config = allocator;
-  ASSIGN_OR_RETURN_STATUS(client, xla::GetStreamExecutorGpuClient(options));
+  if (ordinal) options.allowed_devices = std::set<int>{*ordinal};
+  return xla::GetStreamExecutorGpuClient(options);
+#endif
+}
+
+static xla::DebugOptions gpu_debug_options(xla::PjRtClient* client) {
+  auto flags = xla::GetDebugOptionsFromFlags();
+#ifdef XLA_RS_CUDA_DIR
+  if (client->platform_name() == "cuda" && flags.xla_gpu_cuda_data_dir() ==
+      xla::DefaultDebugOptionsIgnoringFlags().xla_gpu_cuda_data_dir())
+    flags.set_xla_gpu_cuda_data_dir(XLA_RS_CUDA_DIR);
+#endif
+  return flags;
+}
+
+xla::CompileOptions xla_rs_compile_options(xla::PjRtClient* client) {
+  xla::CompileOptions options;
+#ifdef XLA_RS_CUDA_DIR
+  if (client->platform_name() == "cuda")
+    *options.executable_build_options.mutable_debug_options() = gpu_debug_options(client);
+#endif
+  return options;
+}
+
+status pjrt_gpu_client_create(pjrt_client *output, double memory_fraction,
+                              bool preallocate) {
+  ASSIGN_OR_RETURN_STATUS(client, xla_rs_gpu_client(memory_fraction, preallocate, std::nullopt));
   *output = new std::shared_ptr(std::move(client));
   return nullptr;
 }
@@ -1429,7 +1491,7 @@ status build(const xla_builder b, const xla_op o, xla_computation *output) {
 
 status compile(const pjrt_client client, const xla_computation computation,
                pjrt_loaded_executable *output) {
-  CompileOptions options;
+  CompileOptions options = xla_rs_compile_options(client->get());
   ASSIGN_OR_RETURN_STATUS(executable,
                           (*client)->CompileAndLoad(*computation, options));
   *output = executable.release();
@@ -1439,7 +1501,7 @@ status compile(const pjrt_client client, const xla_computation computation,
 status compile_replicated(const pjrt_client client,
                           const xla_computation computation, int num_replicas,
                           pjrt_loaded_executable *output) {
-  CompileOptions options;
+  CompileOptions options = xla_rs_compile_options(client->get());
   auto devices = (*client)->addressable_devices();
   if (num_replicas < 1 || num_replicas > (int)devices.size()) {
     return new Status(absl::InvalidArgumentError(
@@ -1502,7 +1564,7 @@ status compile_with_autotune_cache(const pjrt_client client,
   CompileOptions options;
   DebugOptions &debug_options =
       *options.executable_build_options.mutable_debug_options();
-  debug_options = GetDebugOptionsFromFlags();
+  debug_options = gpu_debug_options(client->get());
   if (load_from != nullptr) {
     debug_options.set_xla_gpu_load_autotune_results_from(load_from);
   }

@@ -1,19 +1,20 @@
-//! Greedy text completion with Qwen3.5-0.8B or Qwen3.8-27B on native GNX/XLA.
+//! Greedy text completion with Qwen3.5-0.8B or Qwen3.8-27B on GNX/XLA.
 mod model;
 mod tensor;
 
+use clap::Parser;
 use futures_executor::block_on;
 use gnx::{
     Array, Eval, ExecOpts, Shape,
     array::{ArrayInfo, DType},
-    buffer::{DataHandle, HostBuffer},
+    buffer::{DataHandle, HostBuffer, TransferPolicy},
 };
 use gnx_xla::XlaDevice;
 use model::{Config, Weights};
 use safetensors::SafeTensors;
 use serde::Deserialize;
 use std::{
-    env, fs,
+    fs,
     io::{self, Write},
     path::{Path, PathBuf},
 };
@@ -55,35 +56,59 @@ fn weights(dir: &Path) -> Result<Weights> {
     }
     Ok(weights)
 }
-const USAGE: &str = "qwen [--model-dir DIR] [--prompt TEXT | --chat] [--max-new-tokens N]";
+/// Generate text or chat with a local Qwen checkpoint.
+#[derive(Parser)]
+#[command(name = "qwen")]
+struct Args {
+    /// Run on a CUDA-visible GPU (default ordinal: 0). Omit to use the CPU.
+    #[arg(long, num_args = 0..=1, default_missing_value = "0", value_name = "ORDINAL")]
+    cuda: Option<usize>,
+    /// Directory containing the checkpoint, config.json and tokenizer.json.
+    #[arg(long, value_name = "DIR", default_value = "Qwen3.5-0.8B")]
+    model_dir: PathBuf,
+    /// Text to complete in one-shot mode.
+    #[arg(long, value_name = "TEXT", default_value = "The capital of France is")]
+    prompt: String,
+    /// Start an interactive conversation.
+    #[arg(long, conflicts_with = "prompt")]
+    chat: bool,
+    /// Maximum tokens to generate per reply.
+    #[arg(long, value_name = "N", default_value_t = 16)]
+    max_new_tokens: usize,
+}
+
 fn main() -> Result<()> {
-    let mut dir = PathBuf::from("Qwen3.5-0.8B");
-    let mut prompt = None;
-    let mut chat = false;
-    let mut limit = 16usize;
-    let mut args = env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--model-dir" => dir = args.next().ok_or("missing model directory")?.into(),
-            "--prompt" => prompt = Some(args.next().ok_or("missing prompt")?),
-            "--chat" => chat = true,
-            "--max-new-tokens" => limit = args.next().ok_or("missing token count")?.parse()?,
-            "--help" | "-h" => {
-                println!("{USAGE}");
-                return Ok(());
-            }
-            _ => return Err(format!("unknown option {arg}; usage: {USAGE}").into()),
+    let Args {
+        model_dir: dir,
+        prompt,
+        chat,
+        max_new_tokens: limit,
+        cuda,
+    } = Args::parse();
+    let device = match cuda {
+        Some(ordinal) => XlaDevice::cuda(ordinal)?,
+        None => XlaDevice::cpu()?,
+    };
+    let config_path = dir.join("config.json");
+    let config = fs::read(&config_path).map_err(|e| {
+        format!(
+            "cannot read {}: {e}. Check --model-dir; it must point to a downloaded Qwen checkpoint",
+            config_path.display()
+        )
+    })?;
+    let Checkpoint { text_config: model } = serde_json::from_slice(&config)?;
+    let tokenizer_path = dir.join("tokenizer.json");
+    let tokenizer = Tokenizer::from_file(&tokenizer_path)
+        .map_err(|e| format!("cannot load {}: {e}", tokenizer_path.display()))?;
+    let mut w = weights(&dir)?;
+    model.validate(&w)?;
+    if cuda.is_some() {
+        // Upload each weight once; subsequent token steps reuse its device buffer.
+        for array in w.values_mut() {
+            *array =
+                Array::from_data(device.import(array.data().unwrap(), TransferPolicy::AllowCopy)?);
         }
     }
-    if chat && prompt.is_some() {
-        return Err("choose either --chat or --prompt".into());
-    }
-    let Checkpoint { text_config: model } =
-        serde_json::from_slice(&fs::read(dir.join("config.json"))?)?;
-    let tokenizer = Tokenizer::from_file(dir.join("tokenizer.json"))?;
-    let w = weights(&dir)?;
-    model.validate(&w)?;
-    let device = XlaDevice::cpu()?;
     let session = Decoder {
         model,
         w,
@@ -93,8 +118,7 @@ fn main() -> Result<()> {
     if chat {
         return session.chat(limit);
     }
-    let prompt = prompt.as_deref().unwrap_or("The capital of France is");
-    let encoding = session.tokenizer.encode(prompt, false)?;
+    let encoding = session.tokenizer.encode(prompt.as_str(), false)?;
     let generated = session.generate(encoding.get_ids(), limit, |_| Ok(()))?;
     println!("{prompt}{}", session.tokenizer.decode(&generated, true)?);
     Ok(())

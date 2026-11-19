@@ -245,46 +245,15 @@ crate::register_xla_lowering!(
     QrOperation,
 );
 
-#[repr(i64)]
-enum Lapack {
-    Lu,
-    Hessenberg,
-    Tridiagonal,
-    Schur,
-    Eig,
-    Svd,
-    PivotedQr,
-    TridiagonalSolve,
-    PivotsToPermutation,
-}
-
-unsafe extern "C" {
-    fn gnx_lapack_execute(frame: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
-}
+use xla::lapack::Kernel as Lapack;
 
 fn lapack(op: Lapack, flags: i64, eqn: &Eqn, inputs: &[XlaOp]) -> io::Result<Vec<XlaOp>> {
-    let name = c"gnx_lapack";
-    static REGISTRATION: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
-    REGISTRATION
-        .get_or_init(|| {
-            // The callback is a statically linked XLA FFI handler with process lifetime.
-            unsafe {
-                xla::ffi::register_foreign_handler(name, c"Host", gnx_lapack_execute as *const _)
-            }
-            .map_err(|error| error.to_string())
-        })
-        .as_ref()
-        .map_err(|error| io::Error::other(error.clone()))?;
     let outputs = eqn
         .outputs()
         .iter()
         .map(|(_, output)| super::shape(super::metadata(output)?))
         .collect::<io::Result<Vec<_>>>()?;
-    let attrs = format!(
-        "{{operation = {} : i64, flags = {} : i64}}",
-        op as i64, flags
-    );
-    let result = native(XlaOp::ffi_call(inputs, name, &attrs, &outputs))?;
+    let result = native(op.call(flags, inputs, &outputs))?;
     if outputs.len() == 1 {
         Ok(vec![result])
     } else {

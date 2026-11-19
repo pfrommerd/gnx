@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 test = false # The extension is tested from Python.
 
 [features]
-xla = ["dep:gnx-xla", "gnx-xla/native"]
+xla = ["dep:gnx-xla"]
 
 [dependencies]
 gnx-xla = { version = "0.1.0", path = "../gnx-xla", optional = true }
