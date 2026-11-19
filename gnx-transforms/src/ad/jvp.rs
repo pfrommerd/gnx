@@ -310,8 +310,11 @@ pub fn split(
 }
 
 /// Expand `ad.jvp` by running the forward-mode interpreter on its body.
-pub(super) fn expand_jvp(b: &mut Builder, eqn: &Eqn) -> TransformResult<Vec<Var>> {
-    let parameters = DiffParameters::from_op(eqn.op())?;
+pub(super) fn expand_jvp(
+    b: &mut Builder,
+    eqn: &Eqn,
+    parameters: &DiffParameters,
+) -> TransformResult<Vec<Var>> {
     let [sub] = eqn.subexprs() else {
         return Err(TransformError::invalid("jvp takes one body"));
     };

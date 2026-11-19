@@ -1,9 +1,8 @@
 //! Batching rules for the `cf` dialect.
 //!
-//! New region operations are emitted without the `state` attribute: once an
-//! expression is lowered, private cell state is just more carry.
+//! Once an expression is lowered, private cell state is part of the carry.
+//! New region operations start with a private state count of zero.
 
-use std::any::Any;
 use std::sync::Arc;
 
 use gnx_expr::pass::Builder;
@@ -86,7 +85,7 @@ fn batch_branches(
     let (selector, operands) = inputs.split_first().expect("branch selector");
     let infos = output_infos(eqn);
     if selector.axis.is_some() {
-        if !(eqn.op().operation() as &dyn Any).is::<CondOperation>() {
+        if eqn.op().downcast_ref::<CondOperation>().is_none() {
             return Err(TransformError::invalid(
                 "batching a switch over a batched index is not supported",
             ));

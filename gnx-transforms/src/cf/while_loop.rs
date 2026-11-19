@@ -1,19 +1,24 @@
 //! `cf.while_loop`: iterate a captured body while a predicate holds.
 
+use std::fmt;
+
 use gnx_expr::lower::{LoweringContext, RegionArgument};
 use gnx_expr::{Capture, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace};
 use gnx_math::DType;
 
 use super::{
-    BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, check_child, defer_regions,
-    expect_inputs, expr_output_infos, scalar, signature, state_only_attrs, value_infos,
-    value_results, with_state,
+    BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, add_state, check_child, check_state_len,
+    defer_regions, expect_inputs, expr_output_infos, fmt_control_flow, scalar, signature,
+    value_infos, value_results,
 };
 
-pub struct WhileOperation;
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct WhileOperation {
+    state_len: usize,
+}
 
 pub fn while_op() -> Op {
-    Op::new(&WhileOperation)
+    Op::new(WhileOperation { state_len: 0 })
 }
 
 /// Loop over immutable carry values. `predicate` returns a single bool scalar;
@@ -52,6 +57,12 @@ pub fn while_loop(
     )
 }
 
+impl fmt::Display for WhileOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt_control_flow(f, "while_loop", self.state_len)
+    }
+}
+
 impl Operation for WhileOperation {
     fn name(&self) -> &'static str {
         "while_loop"
@@ -74,7 +85,7 @@ impl Operation for WhileOperation {
         if value_infos(eqn.outputs())? != infos {
             return Err(signature("while carry result signature"));
         }
-        state_only_attrs(eqn.op(), infos.len(), infos.len())?;
+        check_state_len(self.state_len, infos.len(), infos.len())?;
         let args = vec![RegionArgument::Value; infos.len()];
         let regions = [
             ctx.lower_structured_region(predicate, &args, &infos)?,
@@ -89,7 +100,9 @@ impl Operation for WhileOperation {
             regions[0].fix(ctx, &state.slots, size, None, &[scalar(DType::Bool)])?,
             regions[1].fix(ctx, &state.slots, size, Some(size), &infos)?,
         ];
-        let op = with_state(eqn.op(), state.cells.len())?;
+        let op = Op::new(Self {
+            state_len: add_state(self.state_len, state.cells.len())?,
+        });
         state.emit(ctx, eqn, op, values, (size, size), &fixed)
     }
 
@@ -101,7 +114,7 @@ impl Operation for WhileOperation {
         if carry.len() != eqn.inputs().len() {
             return Err(signature("while carry count"));
         }
-        state_only_attrs(eqn.op(), carry.len(), carry.len())?;
+        check_state_len(self.state_len, carry.len(), carry.len())?;
         check_child(
             predicate.expr(),
             carry.iter().cloned(),

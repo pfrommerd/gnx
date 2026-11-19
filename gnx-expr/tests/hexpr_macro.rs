@@ -1,4 +1,5 @@
 use gnx_expr::{CellAccess, HInstr, InputId, InputSpec, Kind, ValueInfo, expr, hexpr};
+use gnx_transforms::ops;
 use std::sync::Arc;
 
 #[test]
@@ -97,7 +98,6 @@ fn hexpr_prints_nested_bodies_inline() {
 #[test]
 fn inline_hexpr_captures_cells_and_values_across_regions() {
     let info = ValueInfo::new(0usize);
-    let _ = gnx_transforms::cf::call_op();
     let body = hexpr!(&info; |state[:], replacement| => {
         result = cf::call [|| => {
             old = cf::call [|| => {
@@ -213,4 +213,27 @@ fn arrow_headers_accept_field_access_and_default_metadata_forms() {
         hexpr!(&config.info; { lambda x => in (x) }).to_string(),
         high.to_string()
     );
+}
+
+#[test]
+fn hexpr_passes_constructor_arguments_before_regions_and_operands() {
+    use gnx_transforms::cf::{ScanOperation, scan_op};
+
+    let info = ValueInfo::new(0usize);
+    let body = hexpr!(&info; |x| => {
+        y = cf::scan<1, (2usize.max(3))> [|carry: &info| => (carry)] x;
+        in (y)
+    });
+    let eqn = body.instructions()[0].as_apply().unwrap();
+    assert_eq!(eqn.op(), &scan_op(1, 3));
+    assert_eq!(
+        eqn.op()
+            .downcast_ref::<ScanOperation>()
+            .unwrap()
+            .parameters()
+            .length,
+        3
+    );
+    assert_eq!(eqn.inputs(), &[body.inputs()[0].0]);
+    assert_eq!(eqn.subexprs().len(), 1);
 }

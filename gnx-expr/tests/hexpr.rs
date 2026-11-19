@@ -66,18 +66,20 @@ fn cell() -> CellTrace {
 }
 
 struct TestDialect;
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct Neg;
 static DIALECT: TestDialect = TestDialect;
-static NEG: Neg = Neg;
-gnx_expr::register_dialect!(&DIALECT);
 impl Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "test"
     }
-    fn create(&self, name: &'static str) -> Option<&'static dyn Operation> {
-        (name == "neg").then_some(&NEG as &dyn Operation)
+}
+impl std::fmt::Display for Neg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
+
 impl Operation for Neg {
     fn name(&self) -> &'static str {
         "neg"
@@ -86,8 +88,16 @@ impl Operation for Neg {
         &DIALECT
     }
 }
+mod ops {
+    pub mod test {
+        pub fn neg() -> gnx_expr::Op {
+            gnx_expr::Op::new(super::super::Neg)
+        }
+    }
+}
+
 fn neg(x: Tracer<Generic>) -> Tracer<Generic> {
-    Invocation::invoke(Op::new(&NEG), vec![], vec![x], vec![info()])
+    Invocation::invoke(Op::new(Neg), vec![], vec![x], vec![info()])
         .pop()
         .unwrap()
 }
@@ -97,7 +107,7 @@ fn captured_equation_result_keeps_its_kind_at_the_definition() {
     let input = value();
     let result_info = ValueInfo::new(17usize);
     let result = Invocation::invoke(
-        Op::new(&NEG),
+        Op::new(Neg),
         vec![],
         vec![input.clone()],
         vec![result_info.clone()],
@@ -191,14 +201,6 @@ fn concrete_cell_bindings_detect_cloned_handles_across_captures_and_inputs() {
             (InputId::Input(1), Kind::Cell(info())),
         ]
     );
-}
-
-#[test]
-fn cell_actions_are_not_dialect_operations() {
-    let cf = gnx_transforms::cf::ControlFlowDialect;
-    for name in ["read", "update", "create_cell"] {
-        assert!(cf.create(name).is_none());
-    }
 }
 
 #[test]
@@ -396,7 +398,7 @@ fn escaping_write_retains_its_computation_but_no_cell_equations_reach_expr() {
         })
         .unwrap();
     assert_eq!(lowered.expr.eqns().len(), 1);
-    assert_eq!(lowered.expr.eqns()[0].op().to_string(), "test.neg");
+    assert_eq!(lowered.expr.eqns()[0].op().to_string(), "test::neg");
     assert_eq!(
         state_var(&lowered, 0),
         lowered.expr.eqns()[0].outputs()[0].0
@@ -419,7 +421,7 @@ fn explicit_value_input_cuts_its_producer_out_of_the_dag() {
 fn explicit_multioutput_input_is_not_overwritten_when_its_sibling_is_captured() {
     let guard = TraceContext::enter();
     let x = value();
-    let mut pair = Invocation::invoke(Op::new(&NEG), vec![], vec![x.clone()], vec![info(), info()]);
+    let mut pair = Invocation::invoke(Op::new(Neg), vec![], vec![x.clone()], vec![info(), info()]);
     let second = pair.pop().unwrap();
     let first = pair.pop().unwrap();
     let use_first = neg(first.clone());
@@ -447,7 +449,7 @@ fn local_computation_and_rebinding_do_not_form_an_ownership_cycle() {
         let local = CellTrace::new(x.trace_ref().clone());
         let arc: std::sync::Arc<gnx_expr::TraceCell> = local.clone().into();
         let weak = std::sync::Arc::downgrade(&arc);
-        let result = Invocation::invoke(Op::new(&NEG), vec![], vec![local.get()], vec![info()])
+        let result = Invocation::invoke(Op::new(Neg), vec![], vec![local.get()], vec![info()])
             .pop()
             .unwrap();
         local.set(result.into_trace_ref());
@@ -503,12 +505,12 @@ fn immutable_calls_preserve_the_boundary_without_duplicating_captures_as_argumen
         1,
         "captures must not be duplicated as ordinary call arguments"
     );
-    assert_eq!(call.op().to_string(), "cf.call");
+    assert_eq!(call.op().to_string(), "cf::call");
     assert_eq!(call.subexprs().len(), 1);
     assert_eq!(call.subexprs()[0].closure().len(), 1);
     assert_eq!(
         call.subexprs()[0].expr().eqns()[0].op().to_string(),
-        "test.neg"
+        "test::neg"
     );
     assert_eq!(call.inputs()[0], lowered.expr.inputs()[1].0);
 }

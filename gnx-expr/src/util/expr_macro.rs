@@ -1,17 +1,6 @@
-use crate::dialects::dialects;
-use crate::{Attr, AttrList, AttrMap, Eqn, Expr, Op, SubExpr, ValueInfo, Var, VarScope};
+use crate::{Eqn, Expr, Op, SubExpr, ValueInfo, Var, VarScope};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-
-pub fn op_by_name(dialect_name: &'static str, op_name: &'static str, attrs: AttrMap) -> Op {
-    let dialect = dialects()
-        .get(dialect_name)
-        .unwrap_or_else(|| panic!("unknown dialect `{dialect_name}`"));
-    let operation = dialect
-        .create(op_name)
-        .unwrap_or_else(|| panic!("unknown operation `{dialect_name}::{op_name}`"));
-    Op::new_with_attrs(operation, attrs)
-}
 
 #[doc(hidden)]
 pub struct ExprBuilder<'a> {
@@ -108,13 +97,10 @@ impl ExprBuilder<'_> {
     pub fn eqn(
         &mut self,
         outputs: Vec<(Var, ValueInfo)>,
-        dialect: &'static str,
-        op: &'static str,
-        attrs: AttrMap,
+        op: Op,
         inputs: Vec<Var>,
         subexprs: Vec<SubExpr>,
     ) {
-        let op = op_by_name(dialect, op, attrs);
         self.eqns
             .push(Eqn::new_with_subexprs(op, subexprs, inputs, outputs));
     }
@@ -155,43 +141,6 @@ pub fn subexpr(body: impl Into<Arc<Expr>>, captures: Vec<Var>) -> SubExpr {
     SubExpr::new(body.into(), captures)
 }
 
-pub fn string_attr(value: &'static str) -> Attr {
-    Attr::from(value)
-}
-
-pub fn info_attr<T>(value: T) -> Attr
-where
-    T: crate::value::AnyInfo,
-{
-    Attr::Info(ValueInfo::new(value))
-}
-
-pub fn list_attr(values: AttrList) -> Attr {
-    Attr::List(Box::new(values))
-}
-
-pub fn map_attr(values: AttrMap) -> Attr {
-    Attr::Map(Box::new(values))
-}
-
-#[macro_export]
-macro_rules! attr {
-    (info($value:expr)) => {
-        $crate::expr_macro::info_attr($value)
-    };
-    ([$($value:tt),* $(,)?]) => {
-        $crate::expr_macro::list_attr(vec![$($crate::attr!($value)),*])
-    };
-    ({$($key:ident : $value:tt),* $(,)?}) => {{
-        let mut attrs = $crate::AttrMap::default();
-        $(attrs.insert(stringify!($key).to_string(), $crate::attr!($value));)*
-        $crate::expr_macro::map_attr(attrs)
-    }};
-    ($value:literal) => {
-        $crate::Attr::from($value)
-    };
-}
-
 /// Build an immutable computation expression. Cell actions belong to HExpr.
 /// Annotate definitions with Rust expressions yielding `ValueInfo`. An owned
 /// `ValueInfo` is moved in; `&info` clones it. The older `expr!(info; { ... })`
@@ -200,7 +149,10 @@ macro_rules! attr {
 /// Return values with `in (x)`, `in (x, y)`, or `in ()`. A body with no
 /// equations can be just the result tuple: `|x: &info| => (x, x)`.
 /// Write operation operands without
-/// parentheses: `z: &info = dialect::op captured x;`.
+/// parentheses: `z: &info = dialect::op captured x;`. Import an `ops` module
+/// at the call site. The macro calls `ops::dialect::op()`, or forwards Rust
+/// arguments from `dialect::op<arg, ...>`. Group arguments containing `>`
+/// with parentheses or braces.
 /// If an annotation can be confused with a DSL delimiter, wrap it in braces.
 /// Inline a region with `dialect::op [|x: &info| => { in (outer, x) }] x`.
 /// Only explicit inputs appear in the region's header; references to enclosing
@@ -215,6 +167,15 @@ macro_rules! attr {
 /// ```compile_fail
 /// let info = gnx_expr::ValueInfo::new(0usize);
 /// let _ = gnx_expr::expr!({ lambda x: info => in x }); // missing parentheses
+/// ```
+/// ```compile_fail
+/// mod ops {
+///     pub mod test {
+///         pub fn op(_: usize) -> gnx_expr::Op { unreachable!() }
+///     }
+/// }
+/// let info = gnx_expr::ValueInfo::new(0usize);
+/// let _ = gnx_expr::expr!(&info; |x| => { y = test::op<axis: 1> x; in (y) });
 /// ```
 #[macro_export]
 macro_rules! expr {
@@ -441,84 +402,79 @@ macro_rules! __expr_eqns {
 #[macro_export]
 macro_rules! __expr_operation {
     ($builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident < $($tail:tt)*) => {
-        $crate::__expr_operation!(@attrs $builder, $next; [$($outs)*] $dialect :: $op [] $($tail)*)
-    };
-    (@attrs $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*] > $($tail:tt)*) => {
-        $crate::__expr_operation!(@args $builder, $next; [$($outs)*] $dialect :: $op [$($attrs)*] $($tail)*)
-    };
-    (@attrs $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*] $head:tt $($tail:tt)*) => {
-        $crate::__expr_operation!(@attrs $builder, $next; [$($outs)*] $dialect :: $op [$($attrs)* $head] $($tail)*)
+        $crate::__expr_operation!(@constructor $builder, $next;
+            [$($outs)*] [ops::$dialect::$op] [] $($tail)*)
     };
     ($builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident $($tail:tt)*) => {
-        $crate::__expr_operation!(@args $builder, $next; [$($outs)*] $dialect :: $op [] $($tail)*)
-    };
-    (@args $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
-        $($tail:tt)*) => {
         $crate::__expr_operation!(@nested $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] [] $($tail)*)
+            [$($outs)*] [ops::$dialect::$op()] [] $($tail)*)
     };
-    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@constructor $builder:ident, $next:ident; [$($outs:tt)*] [$constructor:path]
+        [$($args:tt)*] > $($tail:tt)*) => {
+        $crate::__expr_operation!(@nested $builder, $next;
+            [$($outs)*] [$constructor($($args)*)] [] $($tail)*)
+    };
+    (@constructor $builder:ident, $next:ident; [$($outs:tt)*] [$constructor:path]
+        [$($args:tt)*] $head:tt $($tail:tt)*) => {
+        $crate::__expr_operation!(@constructor $builder, $next;
+            [$($outs)*] [$constructor] [$($args)* $head] $($tail)*)
+    };
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         [$($subexprs:tt)*] { lambda $($body:tt)* } $($tail:tt)*) => {
         $crate::__expr_operation!(@nested $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [lambda $($body)*]] $($tail)*)
+            [$($outs)*] [$operation] [$($subexprs)* [lambda $($body)*]] $($tail)*)
     };
-    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         [$($subexprs:tt)*] [{ lambda $($body:tt)* }] $($tail:tt)*) => {
         $crate::__expr_operation!(@nested $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [lambda $($body)*]] $($tail)*)
+            [$($outs)*] [$operation] [$($subexprs)* [lambda $($body)*]] $($tail)*)
     };
-    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         [$($subexprs:tt)*] [lambda $($body:tt)*] $($tail:tt)*) => {
         $crate::__expr_operation!(@nested $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [lambda $($body)*]] $($tail)*)
+            [$($outs)*] [$operation] [$($subexprs)* [lambda $($body)*]] $($tail)*)
     };
-    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         [$($subexprs:tt)*] [|| $($body:tt)*] $($tail:tt)*) => {
         $crate::__expr_operation!(@nested $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [| | $($body)*]] $($tail)*)
+            [$($outs)*] [$operation] [$($subexprs)* [| | $($body)*]] $($tail)*)
     };
-    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         [$($subexprs:tt)*] [| $($body:tt)*] $($tail:tt)*) => {
         $crate::__expr_operation!(@nested $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [| $($body)*]] $($tail)*)
+            [$($outs)*] [$operation] [$($subexprs)* [| $($body)*]] $($tail)*)
     };
-    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         [$($subexprs:tt)*] [@$name:ident $({$($captures:tt)*})?] $($tail:tt)*) => {
         $crate::__expr_operation!(@nested $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [@$name $({$($captures)*})?]] $($tail)*)
+            [$($outs)*] [$operation] [$($subexprs)* [@$name $({$($captures)*})?]] $($tail)*)
     };
-    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         [$($subexprs:tt)*] [$body:expr => ($($captures:tt)*)] $($tail:tt)*) => {
         $crate::__expr_operation!(@nested $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)* [$body => ($($captures)*)]] $($tail)*)
+            [$($outs)*] [$operation] [$($subexprs)* [$body => ($($captures)*)]] $($tail)*)
     };
-    (@nested $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@nested $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         [$($subexprs:tt)*] $($tail:tt)*) => {
         $crate::__expr_operation!(@bare $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)*] [] $($tail)*)
+            [$($outs)*] [$operation] [$($subexprs)*] [] $($tail)*)
     };
-    (@bare $builder:ident, __hexpr_body; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
-        [$($subexprs:tt)*] [] ($($inputs:tt)*) ; $($rest:tt)*) => {
-        $crate::__expr_operation!(@emit $builder, __hexpr_body;
-            [$($outs)*] $dialect :: $op [$($attrs)*] $($subexprs)* ($($inputs)*) ; $($rest)*)
-    };
-    (@bare $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@bare $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         [$($subexprs:tt)*] [$($inputs:tt)*] ; $($rest:tt)*) => {
         $crate::__expr_operation!(@emit $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] $($subexprs)* ($($inputs)*) ; $($rest)*)
+            [$($outs)*] [$operation] $($subexprs)* ($($inputs)*) ; $($rest)*)
     };
-    (@bare $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@bare $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         [$($subexprs:tt)*] [$($inputs:tt)*] $head:tt $($tail:tt)*) => {
         $crate::__expr_operation!(@bare $builder, $next;
-            [$($outs)*] $dialect :: $op [$($attrs)*] [$($subexprs)*] [$($inputs)* $head] $($tail)*)
+            [$($outs)*] [$operation] [$($subexprs)*] [$($inputs)* $head] $($tail)*)
     };
-    (@emit $builder:ident, $next:ident; [$($outs:tt)*] $dialect:ident :: $op:ident [$($attrs:tt)*]
+    (@emit $builder:ident, $next:ident; [$($outs:tt)*] [$operation:expr]
         $([$($region:tt)*])* ($($inputs:tt)*) ; $($rest:tt)*) => {{
         let __inputs = $crate::__expr_inputs!($builder; [] $($inputs)*);
         let __subexprs = vec![$($crate::__expr_subexpr!($builder, $next; $($region)*)),*];
         let __outputs = $crate::__expr_outputs!($builder; [] $($outs)*);
-        $builder.eqn(__outputs, stringify!($dialect), stringify!($op),
-            $crate::__expr_attrs!($($attrs)*), __inputs, __subexprs);
+        $builder.eqn(__outputs, $operation, __inputs, __subexprs);
         $crate::$next!($builder; $($rest)*)
     }};
 }
@@ -549,19 +505,6 @@ macro_rules! __expr_subexpr {
     ($builder:ident, $next:ident; $body:expr => ($($captures:tt)*)) => {{
         let __captures = $crate::__expr_inputs!($builder; [] $($captures)*);
         $builder.subexpr($body, __captures)
-    }};
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __expr_attrs {
-    () => {
-        $crate::AttrMap::default()
-    };
-    ($($key:ident : $value:tt),+ $(,)?) => {{
-        let mut attrs = $crate::AttrMap::default();
-        $(attrs.insert(stringify!($key).to_string(), $crate::attr!($value));)+
-        attrs
     }};
 }
 

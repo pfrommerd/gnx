@@ -166,7 +166,7 @@ impl Expr {
                 }
                 sub.expr.check()?;
             }
-            eqn.op().operation().check_expr(eqn)?;
+            eqn.op().check_expr(eqn)?;
             for &(output, _) in &eqn.outputs {
                 if output.id().is_none() {
                     return Err(LoweringError::InvalidComputation);

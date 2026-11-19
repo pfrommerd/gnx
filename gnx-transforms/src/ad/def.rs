@@ -11,7 +11,7 @@
 //! defbilinear!(MulOperation, |_, ct, [_, y]| Ok(ct * y.val()?), |_, ct, [x, _]| Ok(x.val()? * ct));
 //!
 //! // Linear unary op: the tangent applies the op again; only the transpose is given.
-//! deflinear!(TransposeOperation, |cx, ct, _| ct.transpose(&inverse(&cx.indices("perm")?)));
+//! deflinear!(TransposeOperation, |cx, ct, _| ct.transpose(&inverse(cx.operation::<TransposeOperation>()?.perm())));
 //!
 //! // General form: one tangent contribution per operand, `None` for operands
 //! // that are not differentiable.
@@ -37,8 +37,7 @@ use std::cell::{Cell, RefCell};
 use std::ops;
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Op, ValueInfo, Var};
-use gnx_math::ops::index_list;
+use gnx_expr::{Eqn, Op, Operation, ValueInfo, Var};
 
 use super::jvp::{Dual, Tangent, accumulate, instantiate};
 use super::transpose::Operand;
@@ -78,9 +77,11 @@ impl<'a> Ctx<'a> {
             .ok_or_else(|| TransformError::invalid("the primal result is only available in jvp rules"))
     }
 
-    /// An index-list attribute of the operation, such as `"axes"` or `"perm"`.
-    pub fn indices(&self, key: &str) -> TransformResult<Vec<usize>> {
-        Ok(index_list(self.op(), key)?)
+    /// The typed operation being differentiated.
+    pub fn operation<T: Operation>(&self) -> TransformResult<&'a T> {
+        self.op()
+            .downcast_ref::<T>()
+            .ok_or_else(|| TransformError::invalid("unexpected operation in differentiation rule"))
     }
 
     pub fn zeros(&'a self, info: &ValueInfo) -> Val<'a> {
@@ -262,7 +263,7 @@ where
 }
 
 fn operation(eqn: &Eqn) -> String {
-    format!("{}.{}", eqn.op().operation().dialect().name(), eqn.op().operation().name())
+    format!("{}.{}", eqn.op().dialect().name(), eqn.op().name())
 }
 
 fn single_result(eqn: &Eqn) -> TransformResult<&ValueInfo> {

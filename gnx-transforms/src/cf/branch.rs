@@ -1,30 +1,40 @@
 //! `cf.cond` and `cf.switch`: select one of several captured branches.
 
+use std::fmt;
+
 use gnx_expr::lower::{LoweringContext, RegionArgument};
-use gnx_expr::{Capture, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace, Var};
+use gnx_expr::{
+    Capture, CellAccess, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace, Var,
+};
 use gnx_math::DType;
 
 use super::{
-    BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, check_child, defer_regions,
-    expect_inputs, expr_output_infos, object_kind, parameters, scalar, signature,
-    state_only_attrs, value_infos, value_results, with_state,
+    BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, add_state, check_child, check_state_len,
+    defer_regions, expect_inputs, expr_output_infos, fmt_control_flow, object_kind, parameters,
+    scalar, signature, value_infos, value_results,
 };
 
-pub struct CondOperation;
-pub struct SwitchOperation;
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct CondOperation {
+    state_len: usize,
+}
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct SwitchOperation {
+    state_len: usize,
+}
 
 pub fn cond_op() -> Op {
-    Op::new(&CondOperation)
+    Op::new(CondOperation { state_len: 0 })
 }
 
 pub fn switch_op() -> Op {
-    Op::new(&SwitchOperation)
+    Op::new(SwitchOperation { state_len: 0 })
 }
 
 /// A fresh `cond` or `switch` (without private state) of the same kind as
 /// `eqn`, for transformation rules that emit a new branch operation.
 pub(crate) fn branch_op(eqn: &Eqn) -> Op {
-    if (eqn.op().operation() as &dyn std::any::Any).is::<CondOperation>() {
+    if eqn.op().downcast_ref::<CondOperation>().is_some() {
         cond_op()
     } else {
         switch_op()
@@ -97,7 +107,13 @@ fn record_branch(
     )
 }
 
-fn lower_branch(eqn: &HEqn, ctx: &mut LoweringContext<'_>, dtype: DType) -> RegionResult<()> {
+fn lower_branch(
+    eqn: &HEqn,
+    ctx: &mut LoweringContext<'_>,
+    dtype: DType,
+    state_len: usize,
+    make_op: impl FnOnce(usize) -> Op,
+) -> RegionResult<()> {
     let [selector, operands @ ..] = eqn.inputs() else {
         return Err(signature("missing branch selector"));
     };
@@ -105,7 +121,7 @@ fn lower_branch(eqn: &HEqn, ctx: &mut LoweringContext<'_>, dtype: DType) -> Regi
     if info != scalar(dtype) {
         return Err(signature("branch selector type"));
     }
-    state_only_attrs(eqn.op(), operands.len(), eqn.outputs().len())?;
+    check_state_len(state_len, operands.len(), eqn.outputs().len())?;
     let first = eqn
         .subexprs()
         .first()
@@ -147,11 +163,11 @@ fn lower_branch(eqn: &HEqn, ctx: &mut LoweringContext<'_>, dtype: DType) -> Regi
         })
         .collect::<RegionResult<Vec<_>>>()?;
     let input_len = values.len();
-    let op = with_state(eqn.op(), state.cells.len())?;
+    let op = make_op(add_state(state_len, state.cells.len())?);
     state.emit(ctx, eqn, op, values, (input_len, outputs.len()), &fixed)
 }
 
-fn check_branches(eqn: &Eqn) -> RegionResult<()> {
+fn check_branches(eqn: &Eqn, state_len: usize) -> RegionResult<()> {
     let first = eqn
         .subexprs()
         .first()
@@ -161,7 +177,7 @@ fn check_branches(eqn: &Eqn) -> RegionResult<()> {
     if eqn.inputs().len().checked_sub(1) != Some(first.inputs().len()) {
         return Err(signature("branch operand signature"));
     }
-    state_only_attrs(eqn.op(), first.inputs().len(), outputs.len())?;
+    check_state_len(state_len, first.inputs().len(), outputs.len())?;
     for sub in eqn.subexprs() {
         check_child(sub.expr(), parameters(first).cloned(), &outputs)?;
     }
@@ -169,7 +185,13 @@ fn check_branches(eqn: &Eqn) -> RegionResult<()> {
 }
 
 macro_rules! branch_op {
-    ($ty:ty, $name:literal, $dtype:expr, $arity:expr) => {
+    ($ty:ident, $name:literal, $dtype:expr, $arity:expr) => {
+        impl fmt::Display for $ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt_control_flow(f, $name, self.state_len)
+            }
+        }
+
         impl Operation for $ty {
             fn name(&self) -> &'static str {
                 $name
@@ -177,20 +199,28 @@ macro_rules! branch_op {
             fn dialect(&self) -> &'static dyn Dialect {
                 &CONTROL_FLOW
             }
-            fn region_operand(&self, eqn: &HEqn, _region: usize, param: usize) -> Option<Var> {
-                eqn.inputs().get(1 + param).copied()
+
+            fn cell_access(&self, eqn: &HEqn, cell: Var) -> CellAccess {
+                let operands = eqn.inputs().get(1..).unwrap_or_default();
+                eqn.subexprs()
+                    .iter()
+                    .fold(eqn.captured_cell_access(cell), |access, body| {
+                        access.combine(body.input_cell_access(operands, cell))
+                    })
             }
             fn lower(&self, eqn: &HEqn, ctx: &mut LoweringContext<'_>) -> RegionResult<()> {
                 if !($arity)(eqn.subexprs().len()) {
                     return Err(signature("branch count"));
                 }
-                lower_branch(eqn, ctx, $dtype)
+                lower_branch(eqn, ctx, $dtype, self.state_len, |state_len| {
+                    Op::new($ty { state_len })
+                })
             }
             fn check_expr(&self, eqn: &Eqn) -> RegionResult<()> {
                 if !($arity)(eqn.subexprs().len()) {
                     return Err(signature("branch count"));
                 }
-                check_branches(eqn)
+                check_branches(eqn, self.state_len)
             }
         }
     };

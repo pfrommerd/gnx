@@ -1,7 +1,8 @@
 //! Mutation-aware expressions captured from a trace DAG.
 //!
-//! Cell accesses are structural instructions, never dialect operations. Lowering
-//! requires explicit alias bindings and produces an immutable [`crate::Expr`].
+//! Cell reads and writes are structural instructions. Operations summarize their
+//! effects on those cells, including effects from nested regions. Lowering requires
+//! explicit alias bindings and produces an immutable [`crate::Expr`].
 
 use std::borrow::Cow;
 use std::fmt;
@@ -23,6 +24,30 @@ impl HSubExpr {
     }
     pub fn closure(&self) -> &[Var] {
         &self.captures
+    }
+
+    /// Summarize the region's effects on a parent cell through its captures.
+    pub fn captured_cell_access(&self, cell: Var) -> CellAccess {
+        self.bound_cell_access(self.expr().closure(), self.closure(), cell)
+    }
+
+    /// Summarize the region's effects through explicit inputs in binding order.
+    pub fn input_cell_access(&self, operands: &[Var], cell: Var) -> CellAccess {
+        self.bound_cell_access(self.expr().inputs(), operands, cell)
+    }
+
+    fn bound_cell_access(
+        &self,
+        parameters: &[(Var, Kind)],
+        operands: &[Var],
+        cell: Var,
+    ) -> CellAccess {
+        parameters
+            .iter()
+            .zip(operands)
+            .filter(|(_, operand)| **operand == cell)
+            .filter_map(|((param, _), _)| self.expr().cell_access(param))
+            .fold(CellAccess::Unused, CellAccess::combine)
     }
 }
 
@@ -60,9 +85,17 @@ impl HEqn {
     pub fn outputs(&self) -> &[(Var, Kind)] {
         &self.outputs
     }
+
+    /// Combine effects through captured bindings in every region.
+    pub fn captured_cell_access(&self, cell: Var) -> CellAccess {
+        self.subexprs()
+            .iter()
+            .map(|region| region.captured_cell_access(cell))
+            .fold(CellAccess::Unused, CellAccess::combine)
+    }
 }
 
-/// Derived summary of structural cell accesses. Immutable value parameters
+/// Summary of possible cell accesses. Immutable value parameters
 /// have no cell-access summary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CellAccess {
@@ -220,8 +253,8 @@ impl HExpr {
             })
     }
 
-    /// Derive access to this cell directly from structural instructions. Merely
-    /// returning a handle is not a read of its contents. Values return None.
+    /// Derive access to a cell from structural instructions and operation effects.
+    /// Returning a handle alone has no effect. Values return `None`.
     pub fn cell_access(&self, var: &Var) -> Option<CellAccess> {
         if !matches!(self.kind(var), Some(Kind::Cell(_))) {
             return None;
@@ -233,31 +266,7 @@ impl HExpr {
                     let next = match instr {
                         HInstr::ReadCell { cell, .. } if cell == var => CellAccess::Read,
                         HInstr::WriteCell { cell, .. } if cell == var => CellAccess::Write,
-                        HInstr::Apply(eqn) => eqn.subexprs().iter().enumerate().fold(
-                            CellAccess::Unused,
-                            |access, (region, sub)| {
-                                let body = sub.expr();
-                                body.closure()
-                                    .iter()
-                                    .zip(sub.captures.iter().copied().map(Some))
-                                    .chain(body.inputs().iter().enumerate().map(
-                                        |(param, binding)| {
-                                            (
-                                                binding,
-                                                eqn.op()
-                                                    .operation()
-                                                    .region_operand(eqn, region, param),
-                                            )
-                                        },
-                                    ))
-                                    .filter(|(_, operand)| *operand == Some(*var))
-                                    .fold(access, |access, ((param, _), _)| {
-                                        access.combine(
-                                            body.cell_access(param).unwrap_or(CellAccess::Unused),
-                                        )
-                                    })
-                            },
-                        ),
+                        HInstr::Apply(eqn) => eqn.op().cell_access(eqn, *var),
                         _ => CellAccess::Unused,
                     };
                     access.combine(next)

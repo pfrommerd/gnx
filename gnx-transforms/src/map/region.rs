@@ -50,5 +50,5 @@ pub fn map(
         inputs.len(),
         &outputs,
     )?;
-    Ok(record(parameters.to_op()?, &body, inputs, outputs))
+    Ok(record(parameters.to_op(), &body, inputs, outputs))
 }

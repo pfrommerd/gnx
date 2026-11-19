@@ -5,11 +5,11 @@ use gnx_expr::{Eqn, Expr, ValueInfo, Var};
 use gnx_math::ops::{
     AddOperation, BroadcastInDimOperation, EyeOperation, MulOperation, OnesOperation,
     ReduceSumOperation, ReshapeOperation, RevOperation, SelectOperation, TransposeOperation,
-    ZerosOperation, index_list,
+    ZerosOperation,
 };
 use gnx_math::{ArrayInfo, DType, Dim};
 use gnx_transforms::cf::{
-    CallOperation, CondOperation, ScanOperation, ScanParameters, SwitchOperation, WhileOperation,
+    CallOperation, CondOperation, ScanOperation, SwitchOperation, WhileOperation,
 };
 use xla::{ElementType, Shape, XlaBuilder, XlaComputation, XlaOp};
 
@@ -137,7 +137,7 @@ fn lower_body(
         values.insert(*var, value.clone());
     }
     for (index, eqn) in expr.eqns().iter().enumerate() {
-        let op = eqn.op().operation();
+        let op = eqn.op();
         let results = (|| {
             let rule = op
                 .interface::<dyn XlaLowering>()
@@ -203,10 +203,10 @@ fn result_info(eqn: &Eqn) -> io::Result<&ArrayInfo> {
     }
 }
 
-fn indices(eqn: &Eqn, key: &str) -> io::Result<Vec<i64>> {
-    index_list(eqn.op(), key)
-        .map_err(|error| invalid(format!("{error:?}")))?
-        .into_iter()
+fn indices(values: &[usize]) -> io::Result<Vec<i64>> {
+    values
+        .iter()
+        .copied()
         .map(|index| i64::try_from(index).map_err(|_| invalid("index overflow")))
         .collect()
 }
@@ -338,7 +338,7 @@ impl XlaLowering for BroadcastInDimOperation {
         let input = unary("broadcast_in_dim", inputs)?;
         let shape = dimensions(result_info(eqn)?)?;
         Ok(vec![native(
-            input.broadcast_in_dim(&shape, &indices(eqn, "dims")?),
+            input.broadcast_in_dim(&shape, &indices(self.dims())?),
         )?])
     }
 }
@@ -364,7 +364,7 @@ impl XlaLowering for ReduceSumOperation {
         Ok(vec![native(input.reduce(
             init,
             native(sum.build())?,
-            &indices(eqn, "axes")?,
+            &indices(self.axes())?,
             false,
         ))?])
     }
@@ -374,11 +374,11 @@ impl XlaLowering for TransposeOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        _: &Eqn,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let input = unary("transpose", inputs)?;
-        Ok(vec![native(input.transpose(&indices(eqn, "perm")?))?])
+        Ok(vec![native(input.transpose(&indices(self.perm())?))?])
     }
 }
 
@@ -386,11 +386,11 @@ impl XlaLowering for RevOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        _: &Eqn,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let input = unary("rev", inputs)?;
-        Ok(vec![native(input.rev(&indices(eqn, "axes")?))?])
+        Ok(vec![native(input.rev(&indices(self.axes())?))?])
     }
 }
 
@@ -655,7 +655,7 @@ impl XlaLowering for ScanOperation {
         eqn: &Eqn,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
-        let configuration = ScanParameters::from_op(eqn.op()).map_err(io::Error::other)?;
+        let configuration = self.parameters();
         let carry = configuration
             .physical_carry_len()
             .map_err(io::Error::other)?;

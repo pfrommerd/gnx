@@ -63,7 +63,7 @@ fn nested() -> Expr {
                 vec![input],
                 vec![(sum, ty.clone())],
             ),
-            Eqn::new(Op::new(&DOUBLE), vec![sum], vec![(doubled, ty)]),
+            Eqn::new(Op::new(Double), vec![sum], vec![(doubled, ty)]),
         ],
         vec![doubled],
     )
@@ -71,21 +71,21 @@ fn nested() -> Expr {
 
 struct TestDialect;
 static TEST: TestDialect = TestDialect;
-static DOUBLE: Double = Double;
-static UNSUPPORTED: Unsupported = Unsupported;
-static DUPLICATE: Duplicate = Duplicate;
 
 impl Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "test"
     }
+}
 
-    fn create(&self, _: &'static str) -> Option<&'static dyn Operation> {
-        None
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Double;
+impl std::fmt::Display for Double {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
 
-struct Double;
 impl Operation for Double {
     fn name(&self) -> &'static str {
         "double"
@@ -106,7 +106,14 @@ impl JaxLowering for Double {
 }
 register_jax_lowering!(Double);
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct Unsupported;
+impl std::fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
+    }
+}
+
 impl Operation for Unsupported {
     fn name(&self) -> &'static str {
         "unsupported"
@@ -116,7 +123,14 @@ impl Operation for Unsupported {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct Duplicate;
+impl std::fmt::Display for Duplicate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
+    }
+}
+
 impl Operation for Duplicate {
     fn name(&self) -> &'static str {
         "duplicate"
@@ -172,22 +186,19 @@ fn jax_cpu_traces_executes_and_transfers() {
             ["add", "add"]
         );
         for (operation, message) in [
+            (Op::new(Unsupported), "no JAX lowering for test.unsupported"),
             (
-                &UNSUPPORTED as &dyn Operation,
-                "no JAX lowering for test.unsupported",
-            ),
-            (
-                &DUPLICATE,
+                Op::new(Duplicate),
                 "multiple JAX lowerings registered for test.duplicate",
             ),
         ] {
-            let error = jaxpr::trace_expr(py, &one_rule(Op::new(operation), info())).unwrap_err();
+            let error = jaxpr::trace_expr(py, &one_rule(operation, info())).unwrap_err();
             assert!(matches!(error, JaxLoweringError::Equation { index: 0, .. }));
             assert!(error.to_string().contains(message));
         }
         let dynamic = ArrayInfo::new([gnx_math::Dim::Dynamic].into_iter().collect(), DType::F32);
         assert!(
-            jaxpr::trace_expr(py, &one_rule(Op::new(&DOUBLE), dynamic))
+            jaxpr::trace_expr(py, &one_rule(Op::new(Double), dynamic))
                 .unwrap_err()
                 .to_string()
                 .contains("fixed dimensions")
@@ -203,7 +214,7 @@ fn jax_cpu_traces_executes_and_transfers() {
         {
             let f64 = ArrayInfo::new(Shape::fixed([2]), DType::F64);
             assert!(
-                jaxpr::trace_expr(py, &one_rule(Op::new(&DOUBLE), f64))
+                jaxpr::trace_expr(py, &one_rule(Op::new(Double), f64))
                     .unwrap_err()
                     .to_string()
                     .contains("would change dtype float64")

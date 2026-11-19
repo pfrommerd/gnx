@@ -1,4 +1,4 @@
-use crate::{Eqn, Expr, HExpr, HInstr, Kind, Op, ValueInfo, Var};
+use crate::{Eqn, Expr, HExpr, HInstr, Kind, ValueInfo, Var};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -159,7 +159,7 @@ impl PrettyVarScope {
                         fmt_list(f, eqn.outputs(), |output, f| self.fmt_definition(output, f))?;
                         write!(f, " = ")?;
                     }
-                    fmt_op(eqn.op(), f)?;
+                    fmt::Display::fmt(eqn.op(), f)?;
                     for sub in eqn.subexprs() {
                         write!(f, " [")?;
                         printer.fmt_region(f, self, sub.expr(), sub.closure(), indent, cell_var)?;
@@ -224,7 +224,7 @@ impl PrettyVarScope {
         printer: &PrettyPrinter<'_, Expr>,
         indent_level: usize,
     ) -> fmt::Result {
-        fmt_op(eqn.op(), f)?;
+        fmt::Display::fmt(eqn.op(), f)?;
         for subexpr in eqn.subexprs() {
             write!(f, " [")?;
             printer.fmt_region(
@@ -643,21 +643,6 @@ fn fmt_list<T>(
             write!(f, ", ")?;
         }
         format(item, f)?;
-    }
-    Ok(())
-}
-
-fn fmt_op(op: &Op, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "{}::{}", op.impl_.dialect().name(), op.impl_.name())?;
-    if !op.attrs().is_empty() {
-        write!(f, "<")?;
-        for (index, (key, value)) in op.attrs().iter().enumerate() {
-            if index > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{key}: {value}")?;
-        }
-        write!(f, ">")?;
     }
     Ok(())
 }

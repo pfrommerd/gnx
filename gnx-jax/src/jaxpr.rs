@@ -7,7 +7,7 @@ mod transforms;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use gnx_expr::{Eqn as GnxEqn, Expr, InterfaceError, Op, Operation, ValueInfo, Var};
+use gnx_expr::{Eqn as GnxEqn, Expr, InterfaceError, Op, ValueInfo, Var};
 use gnx_math::{ArrayInfo, DType, Dim, Shape, ops::AddOperation};
 use gnx_transforms::cf::CallOperation;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -188,7 +188,7 @@ macro_rules! register_jax_lowering {
     };
 }
 
-fn rule(op: &'static dyn Operation) -> Result<&'static dyn JaxLowering> {
+fn rule(op: &Op) -> Result<&dyn JaxLowering> {
     op.interface::<dyn JaxLowering>()
         .map_err(|error| match error {
             InterfaceError::Missing { dialect, op, .. } => {
@@ -207,7 +207,7 @@ impl JaxLowering for Op {
         eqn: &GnxEqn,
         operands: &[TraceValue<'py>],
     ) -> Result<Vec<TraceValue<'py>>> {
-        rule(self.operation())?.lower_jax(ctx, eqn, operands)
+        rule(self)?.lower_jax(ctx, eqn, operands)
     }
 }
 
@@ -269,10 +269,8 @@ impl JaxLowering for AddOperation {
         let [lhs, rhs] = operands else {
             return Err(invalid("array.add requires two operands"));
         };
-        if !eqn.subexprs().is_empty() || !eqn.op().attrs().is_empty() {
-            return Err(invalid(
-                "array.add does not take attributes or subexpressions",
-            ));
+        if !eqn.subexprs().is_empty() {
+            return Err(invalid("array.add does not take subexpressions"));
         }
         Ok(vec![ctx.lax()?.add(lhs, rhs)?])
     }
@@ -425,7 +423,7 @@ fn validate(jax: &Bound<'_, PyModule>, expr: &Expr) -> Result<()> {
     }
     for (index, eqn) in expr.eqns().iter().enumerate() {
         (|| {
-            rule(eqn.op().operation())?;
+            rule(eqn.op())?;
             for (_, info) in eqn.outputs() {
                 check(info)?;
             }

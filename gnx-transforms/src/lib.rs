@@ -65,3 +65,48 @@ pub mod rules {
     pub use crate::{TransformError, TransformResult};
     pub use crate::{defbatch, defbilinear, defbroadcasting, defjvp, deflinear, deftranspose};
 }
+
+/// Constructors for the transform and control-flow dialects in expression macros.
+pub mod ops {
+    pub mod ad {
+        use crate::ad::DiffParameters;
+        use gnx_expr::Op;
+
+        pub fn jvp(wrt: &[usize], of: &[usize]) -> Op {
+            DiffParameters {
+                wrt: wrt.to_vec(),
+                of: of.to_vec(),
+            }
+            .jvp_op()
+        }
+
+        pub fn vjp(wrt: &[usize], of: &[usize]) -> Op {
+            DiffParameters {
+                wrt: wrt.to_vec(),
+                of: of.to_vec(),
+            }
+            .vjp_op()
+        }
+    }
+
+    pub mod cf {
+        pub use crate::cf::{
+            call_op as call, cond_op as cond, scan_op as scan, switch_op as switch,
+            while_op as while_loop,
+        };
+    }
+
+    pub mod map {
+        use crate::map::MapParameters;
+        use gnx_expr::Op;
+
+        pub fn map(size: usize, in_axes: &[usize], out_axes: &[usize]) -> Op {
+            MapParameters {
+                size,
+                in_axes: in_axes.to_vec(),
+                out_axes: out_axes.to_vec(),
+            }
+            .to_op()
+        }
+    }
+}

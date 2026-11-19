@@ -198,8 +198,11 @@ pub fn batch_region(
 }
 
 /// Expand `ad.map` by batching its body.
-pub(super) fn expand_map(b: &mut Builder, eqn: &Eqn) -> TransformResult<Vec<Var>> {
-    let parameters = MapParameters::from_op(eqn.op())?;
+pub(super) fn expand_map(
+    b: &mut Builder,
+    eqn: &Eqn,
+    parameters: &MapParameters,
+) -> TransformResult<Vec<Var>> {
     let [sub] = eqn.subexprs() else {
         return Err(TransformError::invalid("map takes one body"));
     };

@@ -4,13 +4,14 @@
 //! registration and the region/state helpers shared between them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::sync::Arc;
 
 use gnx_expr::lower::{FixedRegion, LoweringContext, RegionCell, StructuredRegion};
 use gnx_expr::{
-    Attr, Capture, CellAccess, CellKey, DeferredApplyPlan, DeferredLocal, DeferredProjection,
-    DeferredRegion, Dialect, Eqn, Expr, HEqn, HExpr, Invocation, Kind, LoweringError,
-    ObjectTracer, Op, Operation, Trace, ValueInfo, Var,
+    Capture, CellAccess, CellKey, DeferredApplyPlan, DeferredLocal, DeferredProjection,
+    DeferredRegion, Dialect, Eqn, Expr, HEqn, HExpr, Invocation, Kind, LoweringError, ObjectTracer,
+    Op, Trace, ValueInfo, Var,
 };
 use gnx_math::{ArrayInfo, DType, Shape};
 
@@ -28,22 +29,10 @@ pub use while_loop::{WhileOperation, while_loop, while_op};
 pub struct ControlFlowDialect;
 
 static CONTROL_FLOW: ControlFlowDialect = ControlFlowDialect;
-gnx_expr::register_dialect!(&CONTROL_FLOW);
 
 impl Dialect for ControlFlowDialect {
     fn name(&self) -> &'static str {
         "cf"
-    }
-
-    fn create(&self, name: &'static str) -> Option<&'static dyn Operation> {
-        match name {
-            "call" => Some(&call::CALL),
-            "cond" => Some(&CondOperation),
-            "switch" => Some(&SwitchOperation),
-            "scan" => Some(&ScanOperation),
-            "while_loop" => Some(&WhileOperation),
-            _ => None,
-        }
     }
 }
 
@@ -53,49 +42,26 @@ fn signature(message: &'static str) -> LoweringError {
     LoweringError::RegionSignature(message)
 }
 
-// ---------------------------------------------------------------------------
-// Attributes
-// ---------------------------------------------------------------------------
-
-fn count_attr(value: usize) -> RegionResult<Attr> {
-    i64::try_from(value)
-        .map(Attr::I64)
-        .map_err(|_| signature("control-flow count exceeds i64"))
-}
-
-fn usize_attr(value: &Attr) -> RegionResult<usize> {
-    match value {
-        Attr::I64(value) => usize::try_from(*value)
-            .map_err(|_| signature("control-flow count is negative or exceeds usize")),
-        _ => Err(signature("expected an i64 attribute")),
-    }
-}
-
-fn state_len(op: &Op) -> RegionResult<usize> {
-    op.attrs()
-        .get("state")
-        .map(usize_attr)
-        .transpose()
-        .map(|size| size.unwrap_or(0))
-}
-
-fn with_state(op: &Op, new_slots: usize) -> RegionResult<Op> {
-    if new_slots == 0 {
-        return Ok(op.clone());
-    }
-    let mut attrs = op.attrs().clone();
-    let size = state_len(op)?
+fn add_state(current: usize, new_slots: usize) -> RegionResult<usize> {
+    current
         .checked_add(new_slots)
-        .ok_or_else(|| signature("state count overflow"))?;
-    attrs.insert("state".into(), count_attr(size)?);
-    Ok(Op::new_with_attrs(op.operation(), attrs))
+        .ok_or_else(|| signature("state count overflow"))
 }
 
-fn state_only_attrs(op: &Op, inputs: usize, outputs: usize) -> RegionResult<()> {
-    if op.attrs().keys().any(|key| key != "state") || state_len(op)? > inputs.min(outputs) {
+fn check_state_len(state_len: usize, inputs: usize, outputs: usize) -> RegionResult<()> {
+    if state_len > inputs.min(outputs) {
         return Err(signature("invalid control-flow state layout"));
     }
     Ok(())
+}
+
+fn fmt_control_flow(f: &mut fmt::Formatter<'_>, name: &str, state_len: usize) -> fmt::Result {
+    write!(f, "cf::{name}")?;
+    if state_len == 0 {
+        Ok(())
+    } else {
+        write!(f, "<state: {state_len}>")
+    }
 }
 
 // ---------------------------------------------------------------------------

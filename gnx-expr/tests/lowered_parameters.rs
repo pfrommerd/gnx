@@ -14,15 +14,19 @@ fn same(a: &Trace, b: &Trace) {
     assert_eq!(TracerKey::from(a), TracerKey::from(b));
 }
 struct TestDialect;
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct Compute;
 impl Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "parameters"
     }
-    fn create(&self, _: &'static str) -> Option<&'static dyn Operation> {
-        Some(&Compute)
+}
+impl std::fmt::Display for Compute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
+
 impl Operation for Compute {
     fn name(&self) -> &'static str {
         "compute"
@@ -74,7 +78,7 @@ fn closure_only_values_stay_captured_and_shared_values_are_regular_inputs() {
         let b = value();
         let c = value();
         let result: Tracer<Generic> = Invocation::invoke(
-            Op::new(&Compute),
+            Op::new(Compute),
             vec![],
             vec![
                 captured_only.clone(),

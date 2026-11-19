@@ -184,8 +184,11 @@ pub fn transpose_expr(
 
 /// Expand `ad.vjp`: linearize the body with forward mode, evaluate the primal
 /// part, and transpose the tangent part.
-pub(super) fn expand_vjp(b: &mut Builder, eqn: &Eqn) -> TransformResult<Vec<Var>> {
-    let parameters = DiffParameters::from_op(eqn.op())?;
+pub(super) fn expand_vjp(
+    b: &mut Builder,
+    eqn: &Eqn,
+    parameters: &DiffParameters,
+) -> TransformResult<Vec<Var>> {
     let [sub] = eqn.subexprs() else {
         return Err(TransformError::invalid("vjp takes one body"));
     };

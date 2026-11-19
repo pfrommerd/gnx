@@ -5,6 +5,7 @@ use gnx_expr::{
     Operation, Trace, TraceContext, TracerKey, Value, ValueInfo,
 };
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct TestOp;
 static TEST: TestOp = TestOp;
 
@@ -12,10 +13,13 @@ impl Dialect for TestOp {
     fn name(&self) -> &'static str {
         "test"
     }
-    fn create(&self, _: &'static str) -> Option<&'static dyn Operation> {
-        Some(&TEST)
+}
+impl std::fmt::Display for TestOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
+
 impl Operation for TestOp {
     fn name(&self) -> &'static str {
         "compute"
@@ -70,7 +74,7 @@ fn number(trace: &Trace) -> i64 {
 }
 
 fn op(inputs: Vec<Trace>, outputs: usize) -> Vec<Trace> {
-    Invocation::invoke(Op::new(&TEST), vec![], inputs, vec![info(); outputs])
+    Invocation::invoke(Op::new(TestOp), vec![], inputs, vec![info(); outputs])
         .into_iter()
         .map(|value| value.into_trace_ref())
         .collect()

@@ -1,10 +1,61 @@
-use gnx_expr::{Attr, Dialect, Eqn, Expr, Op, Operation, VarScope, attr, expr, register_dialect};
-use std::fmt::Display;
+use gnx_expr::{Dialect, Eqn, Expr, Op, Operation, VarScope, expr};
 use std::sync::Arc;
 
 struct TestDialect;
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct TestOperation {
     name: &'static str,
+}
+
+mod ops {
+    pub mod test {
+        use super::super::{ADD, CALL, Parameterized, SIN};
+        use gnx_expr::Op;
+
+        pub fn add() -> Op {
+            Op::new(ADD.clone())
+        }
+        pub fn call() -> Op {
+            Op::new(CALL.clone())
+        }
+        pub fn sin() -> Op {
+            Op::new(SIN.clone())
+        }
+        pub fn parameterized(axis: usize, enabled: bool, tags: &[&str]) -> Op {
+            Op::new(Parameterized {
+                axis,
+                enabled,
+                tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+            })
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Parameterized {
+    axis: usize,
+    enabled: bool,
+    tags: Vec<String>,
+}
+
+impl std::fmt::Display for Parameterized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "test::parameterized<axis: {}, enabled: {}, tags: {:?}>",
+            self.axis, self.enabled, self.tags
+        )
+    }
+}
+
+impl Operation for Parameterized {
+    fn name(&self) -> &'static str {
+        "parameterized"
+    }
+    fn dialect(&self) -> &'static dyn Dialect {
+        &TEST_DIALECT
+    }
+
 }
 
 static TEST_DIALECT: TestDialect = TestDialect;
@@ -12,20 +63,15 @@ static SIN: TestOperation = TestOperation { name: "sin" };
 static ADD: TestOperation = TestOperation { name: "add" };
 static CALL: TestOperation = TestOperation { name: "call" };
 
-register_dialect!(&TEST_DIALECT);
-
 impl Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "test"
     }
+}
 
-    fn create(&self, name: &'static str) -> Option<&'static dyn Operation> {
-        match name {
-            "sin" => Some(&SIN),
-            "add" => Some(&ADD),
-            "call" => Some(&CALL),
-            _ => None,
-        }
+impl std::fmt::Display for TestOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
 
@@ -36,15 +82,6 @@ impl Operation for TestOperation {
 
     fn dialect(&self) -> &'static dyn Dialect {
         &TEST_DIALECT
-    }
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-struct InfoType;
-
-impl Display for InfoType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "InfoType")
     }
 }
 
@@ -61,7 +98,7 @@ fn pretty_expr_uses_alphabetic_names() {
             (y, gnx_expr::ValueInfo::new(0usize)),
         ],
         vec![Eqn::new(
-            Op::new(&ADD),
+            Op::new(ADD.clone()),
             vec![x, y],
             vec![(z, gnx_expr::ValueInfo::new(0usize))],
         )],
@@ -169,19 +206,6 @@ fn nested_captures_bind_in_declaration_order() {
 }
 
 #[test]
-fn attr_macro_builds_pretty_attr_shapes() {
-    let attr = attr!({ axis: 2, name: "relu", tags: ["pointwise", "fast"] });
-    assert_eq!(
-        attr.to_string(),
-        r#"{axis: 2, name: "relu", tags: ["pointwise", "fast"]}"#
-    );
-    assert!(matches!(attr, Attr::Map(_)));
-    assert_eq!(attr!(-7), Attr::I64(-7));
-    assert_eq!(Attr::I64(-7).to_string(), "-7");
-    assert_eq!(attr!(info(InfoType)).to_string(), "InfoType");
-}
-
-#[test]
 fn expr_macro_and_printer_preserve_operand_order() {
     let body = expr!(gnx_expr::ValueInfo::new(0usize); {
         lambda x, y:
@@ -198,15 +222,21 @@ fn expr_macro_and_printer_preserve_operand_order() {
 }
 
 #[test]
-fn expr_macro_parses_operation_attributes() {
+fn expr_macro_passes_operation_arguments_as_rust_expressions() {
+    let mut evaluated = Vec::new();
     let body = expr!(gnx_expr::ValueInfo::new(0usize); {
         lambda x:
-        y = test::sin<axis: 2, label: "test", tags: ["one", "two"]> x;
+        y = test::parameterized<{ evaluated.push(1); 2 },
+            { evaluated.push(2); 3 > 2 }, &["one", "two"],> x;
         in (y)
     });
-    assert_eq!(body.eqns()[0].op().attrs()["axis"], Attr::I64(2));
-    assert_eq!(body.eqns()[0].op().attrs()["label"], attr!("test"));
-    assert_eq!(body.eqns()[0].op().attrs()["tags"], attr!(["one", "two"]));
+    assert_eq!(evaluated, [1, 2]);
+    let op = body.eqns()[0].op();
+    assert_eq!(op, &ops::test::parameterized(2, true, &["one", "two"]));
+    assert_eq!(
+        op.to_string(),
+        r#"test::parameterized<axis: 2, enabled: true, tags: ["one", "two"]>"#
+    );
     body.check().unwrap();
 }
 
@@ -273,7 +303,7 @@ fn hinted_var_names_are_disambiguated() {
             (x2, gnx_expr::ValueInfo::new(0usize)),
         ],
         vec![Eqn::new(
-            Op::new(&ADD),
+            Op::new(ADD.clone()),
             vec![(x1), (x2)],
             vec![(x3, gnx_expr::ValueInfo::new(0usize))],
         )],

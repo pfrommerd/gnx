@@ -143,16 +143,20 @@ fn region(infos: &[ValueInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Ca
     .unwrap()
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct LessThan;
 struct TestDialect;
 impl Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "xla_test"
     }
-    fn create(&self, _: &'static str) -> Option<&'static dyn Operation> {
-        None
+}
+impl std::fmt::Display for LessThan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
+
 impl Operation for LessThan {
     fn name(&self) -> &'static str {
         "less_than"
@@ -202,7 +206,7 @@ fn runs_structured_regions() {
         assert_eq!(values(&selected[0]), [expected]);
     }
     let predicate = region(std::slice::from_ref(&f32_scalar), |a| {
-        vec![invoke(Op::new(&LessThan), &a[0], &scalar(5.), bool_scalar)]
+        vec![invoke(Op::new(LessThan), &a[0], &scalar(5.), bool_scalar)]
     });
     let carried = while_loop(&predicate, &double, &[scalar(1.)]).unwrap();
     block_on(device.eval(&carried, COPY)).unwrap();

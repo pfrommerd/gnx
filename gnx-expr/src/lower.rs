@@ -503,7 +503,6 @@ impl Lowerer {
     }
     fn lower_equation(&mut self, eqn: &HEqn) -> Result<(), LoweringError> {
         eqn.op()
-            .operation()
             .lower(eqn, &mut LoweringContext { lowerer: self })
     }
 }

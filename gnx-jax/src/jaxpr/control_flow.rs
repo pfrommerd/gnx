@@ -1,8 +1,6 @@
 use super::*;
 use crate::register_jax_lowering;
-use gnx_transforms::cf::{
-    CondOperation, ScanOperation, ScanParameters, SwitchOperation, WhileOperation,
-};
+use gnx_transforms::cf::{CondOperation, ScanOperation, SwitchOperation, WhileOperation};
 
 #[derive(Clone, Copy)]
 pub(super) enum RegionAbi {
@@ -166,10 +164,10 @@ impl JaxLowering for ScanOperation {
     fn lower_jax<'py>(
         &self,
         ctx: &mut TraceContext<'py>,
-        eqn: &GnxEqn,
+        _: &GnxEqn,
         operands: &[TraceValue<'py>],
     ) -> Result<Vec<TraceValue<'py>>> {
-        let parameters = ScanParameters::from_op(eqn.op())?;
+        let parameters = self.parameters();
         let length = parameters.length;
         let carry_len = parameters.physical_carry_len()?;
         let (carry, xs) = operands.split_at(carry_len);

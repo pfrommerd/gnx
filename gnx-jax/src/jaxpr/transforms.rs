@@ -5,16 +5,16 @@ use super::control_flow::{RegionAbi, tuple, unpack};
 use super::*;
 use crate::register_jax_lowering;
 use gnx_transforms::ad::{DiffParameters, JvpOperation, VjpOperation};
-use gnx_transforms::map::{MapOperation, MapParameters};
+use gnx_transforms::map::MapOperation;
 
 impl JaxLowering for MapOperation {
     fn lower_jax<'py>(
         &self,
         ctx: &mut TraceContext<'py>,
-        eqn: &GnxEqn,
+        _: &GnxEqn,
         operands: &[TraceValue<'py>],
     ) -> Result<Vec<TraceValue<'py>>> {
-        let parameters = MapParameters::from_op(eqn.op())?;
+        let parameters = self.parameters();
         let py = ctx.py;
         let body = ctx.region_callable(0, RegionAbi::Branch)?;
         let options = PyDict::new(py);
@@ -72,13 +72,13 @@ fn split_body<'a, 'py>(
     ctx: &TraceContext<'py>,
     eqn: &GnxEqn,
     operands: &'a [TraceValue<'py>],
+    parameters: &DiffParameters,
 ) -> Result<(
     Vec<TraceValue<'py>>,
     Bound<'py, PyCFunction>,
     Bound<'py, PyTuple>,
     &'a [TraceValue<'py>],
 )> {
-    let parameters = DiffParameters::from_op(eqn.op())?;
     let inputs = eqn
         .subexprs()
         .first()
@@ -90,7 +90,13 @@ fn split_body<'a, 'py>(
     let body = ctx.region_callable(0, RegionAbi::Branch)?;
     let results = unpack(body.call1(tuple(ctx.py, primals)?)?)?;
     let wrt_primals: Vec<_> = parameters.wrt.iter().map(|&i| primals[i].clone()).collect();
-    let restricted = restrict(ctx.py, body, primals, parameters.wrt, parameters.of)?;
+    let restricted = restrict(
+        ctx.py,
+        body,
+        primals,
+        parameters.wrt.clone(),
+        parameters.of.clone(),
+    )?;
     Ok((results, restricted, tuple(ctx.py, &wrt_primals)?, extra))
 }
 
@@ -101,7 +107,8 @@ impl JaxLowering for JvpOperation {
         eqn: &GnxEqn,
         operands: &[TraceValue<'py>],
     ) -> Result<Vec<TraceValue<'py>>> {
-        let (mut results, restricted, primals, tangents) = split_body(ctx, eqn, operands)?;
+        let (mut results, restricted, primals, tangents) =
+            split_body(ctx, eqn, operands, self.parameters())?;
         let output = ctx
             .py
             .import("jax")?
@@ -118,7 +125,8 @@ impl JaxLowering for VjpOperation {
         eqn: &GnxEqn,
         operands: &[TraceValue<'py>],
     ) -> Result<Vec<TraceValue<'py>>> {
-        let (mut results, restricted, primals, cotangents) = split_body(ctx, eqn, operands)?;
+        let (mut results, restricted, primals, cotangents) =
+            split_body(ctx, eqn, operands, self.parameters())?;
         let mut args = vec![restricted.into_any()];
         args.extend(primals.iter());
         let output = ctx

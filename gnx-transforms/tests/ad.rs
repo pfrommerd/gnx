@@ -1,8 +1,6 @@
-use std::any::Any;
-
 use gnx_expr::pass::{Dce, Pipeline};
 use gnx_expr::{
-    Capture, CellTrace, Expr, InputSpec, Invocation, LoweringError, ObjectTracer, Op, Trace,
+    Capture, CellTrace, Expr, InputSpec, Invocation, LoweringError, ObjectTracer, Op, Operation, Trace,
     TraceContext, ValueInfo,
 };
 use gnx_math::ops::{add_op, mul_op};
@@ -73,8 +71,8 @@ fn lowered(inputs: &[ValueInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> 
     program.expr.as_ref().clone()
 }
 
-fn is<T: 'static>(op: &Op) -> bool {
-    (op.operation() as &dyn Any).is::<T>()
+fn is<T: Operation>(op: &Op) -> bool {
+    op.downcast_ref::<T>().is_some()
 }
 
 fn contains_ad(expr: &Expr) -> bool {

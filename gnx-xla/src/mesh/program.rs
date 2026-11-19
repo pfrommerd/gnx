@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void};
 use std::fmt::Write;
@@ -249,9 +248,9 @@ impl Program {
         }
         let mut values: HashMap<Var, usize> = vars.into_iter().zip(args.iter().copied()).collect();
         for eqn in expr.eqns() {
-            let op = eqn.op().operation() as &dyn Any;
+            let op = eqn.op();
             let ids: Vec<_> = eqn.inputs().iter().map(|var| values[var]).collect();
-            let out = if op.is::<CallOperation>() {
+            let out = if op.downcast_ref::<CallOperation>().is_some() {
                 let [child] = eqn.subexprs() else {
                     return Err(invalid("mesh call needs one region"));
                 };
@@ -273,15 +272,14 @@ impl Program {
                     .downcast::<ArrayInfo>()
                     .map_err(|_| unsupported("mesh only executes arrays"))?;
                 let tensor = Tensor::of(info)?;
-                let operation = if op.is::<AddOperation>() {
+                let operation = if op.downcast_ref::<AddOperation>().is_some() {
                     let [a, b] = ids.as_slice() else {
                         return Err(invalid("mesh add arity"));
                     };
-                    if !eqn.op().attrs().is_empty() {
-                        return Err(invalid("mesh add does not take attributes"));
-                    }
                     Op::Add(*a, *b)
-                } else if op.is::<shard::Constraint>() || op.is::<shard::Replicate>() {
+                } else if op.downcast_ref::<shard::Constraint>().is_some()
+                    || op.downcast_ref::<shard::Replicate>().is_some()
+                {
                     let [input] = ids.as_slice() else {
                         return Err(invalid("mesh annotation arity"));
                     };
@@ -304,8 +302,8 @@ impl Program {
                 } else {
                     return Err(unsupported(format!(
                         "mesh does not lower {}.{}",
-                        eqn.op().operation().dialect().name(),
-                        eqn.op().operation().name()
+                        op.dialect().name(),
+                        op.name()
                     )));
                 };
                 let idx = self.inputs.len() + self.ops.len();

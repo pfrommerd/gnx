@@ -34,11 +34,11 @@ deftranspose!(
 );
 
 deflinear!(BroadcastInDimOperation, |cx, ct, [x]| {
-    let mapping = cx.indices("dims")?;
+    let mapping = cx.operation::<BroadcastInDimOperation>()?.dims();
     let (input, output) = (x.dims()?, ct.dims()?);
     if input
         .iter()
-        .zip(&mapping)
+        .zip(mapping)
         .any(|(&size, &axis)| output[axis] != size)
     {
         return Err(TransformError::invalid(
@@ -52,7 +52,7 @@ deflinear!(BroadcastInDimOperation, |cx, ct, [x]| {
 });
 
 deflinear!(ReduceSumOperation, |cx, ct, [x]| {
-    let axes = cx.indices("axes")?;
+    let axes = cx.operation::<ReduceSumOperation>()?.axes();
     let input = x.dims()?;
     let mapping: Vec<_> = (0..input.len())
         .filter(|axis| !axes.contains(axis))
@@ -61,8 +61,9 @@ deflinear!(ReduceSumOperation, |cx, ct, [x]| {
 });
 
 deflinear!(TransposeOperation, |cx, ct, _| ct
-    .transpose(&inverse(&cx.indices("perm")?)));
+    .transpose(&inverse(cx.operation::<TransposeOperation>()?.perm())));
 
-deflinear!(RevOperation, |cx, ct, _| ct.rev(&cx.indices("axes")?));
+deflinear!(RevOperation, |cx, ct, _| ct
+    .rev(cx.operation::<RevOperation>()?.axes()));
 
 deflinear!(ReshapeOperation, |_, ct, [x]| Ok(ct.reshape(x.info())));

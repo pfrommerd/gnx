@@ -117,16 +117,20 @@ fn close(actual: &[f32], expected: &[f32]) {
 }
 
 // A user-defined comparison with its own XLA lowering and batching rule.
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct LessThan;
 struct TestDialect;
 impl Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "transform_test"
     }
-    fn create(&self, _: &'static str) -> Option<&'static dyn Operation> {
-        None
+}
+impl std::fmt::Display for LessThan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
+
 impl Operation for LessThan {
     fn name(&self) -> &'static str {
         "less_than"
@@ -172,7 +176,7 @@ impl BatchRule for LessThan {
 register_xla_lowering!(LessThan);
 register_op_interface!(dyn BatchRule: LessThan);
 fn less(a: &Trace, b: &Trace) -> Trace {
-    apply(Op::new(&LessThan), &[a, b], info(&[], DType::Bool))
+    apply(Op::new(LessThan), &[a, b], info(&[], DType::Bool))
 }
 
 #[test]

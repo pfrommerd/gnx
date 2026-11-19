@@ -6,6 +6,7 @@ use gnx_expr::trace::{
 use gnx_expr::{Dialect, Operation};
 use gnx_expr::{HInstr, Op, Capture};
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct SampleOperation {
     name: &'static str,
 }
@@ -15,15 +16,11 @@ impl Dialect for SampleDialect {
     fn name(&self) -> &'static str {
         "sample"
     }
-    fn create(&self, name: &'static str) -> Option<&'static dyn Operation> {
-        Some(match name {
-            "sin" => &SampleOperation { name: "sin" },
-            "mul" => &SampleOperation { name: "mul" },
-            "add" => &SampleOperation { name: "add" },
-            "abs" => &SampleOperation { name: "abs" },
-            "neg" => &SampleOperation { name: "neg" },
-            _ => return None,
-        })
+}
+
+impl std::fmt::Display for SampleOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
 
@@ -50,20 +47,7 @@ fn sample_info() -> ValueInfo {
 }
 
 fn op(name: &'static str) -> Op {
-    static SIN: SampleOperation = SampleOperation { name: "sin" };
-    static MUL: SampleOperation = SampleOperation { name: "mul" };
-    static ADD: SampleOperation = SampleOperation { name: "add" };
-    static ABS: SampleOperation = SampleOperation { name: "abs" };
-    static NEG: SampleOperation = SampleOperation { name: "neg" };
-    let impl_ = match name {
-        "sin" => &SIN as &dyn Operation,
-        "mul" => &MUL,
-        "add" => &ADD,
-        "abs" => &ABS,
-        "neg" => &NEG,
-        _ => panic!("unknown op"),
-    };
-    Op::new(impl_)
+    Op::new(SampleOperation { name })
 }
 
 #[test]
@@ -286,7 +270,7 @@ fn capture_aliased_update_preserves_value_and_producer() {
     let HInstr::WriteCell { cell, value } = &expr.instructions()[1] else {
         panic!("expected structural write");
     };
-    assert_eq!(producer.op().to_string(), "sample.neg");
+    assert_eq!(producer.op().to_string(), "sample::neg");
     assert_eq!(cell, &expr.inputs()[0].0);
     assert_eq!(expr.cell_access(cell), Some(gnx_expr::CellAccess::Write));
     assert_eq!(expr.cell_access(&expr.inputs()[1].0), None);
@@ -361,7 +345,7 @@ fn capture_nonaliased_dead_store_eliminated() {
         .iter()
         .map(|e| e.as_apply().unwrap().op().to_string())
         .collect();
-    assert_eq!(ops, vec!["sample.neg"], "dead store should be eliminated");
+    assert_eq!(ops, vec!["sample::neg"], "dead store should be eliminated");
 }
 
 #[test]

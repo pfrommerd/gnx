@@ -1,6 +1,7 @@
 //! `cf.call`: invoke a captured function body.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 
 use gnx_expr::lower::LoweringContext;
@@ -12,9 +13,14 @@ use gnx_expr::{
 
 use super::CONTROL_FLOW;
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct CallOperation;
 
-pub(super) static CALL: CallOperation = CallOperation;
+impl fmt::Display for CallOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("cf::call")
+    }
+}
 
 impl Operation for CallOperation {
     fn name(&self) -> &'static str {
@@ -25,10 +31,11 @@ impl Operation for CallOperation {
         &CONTROL_FLOW
     }
 
-    fn region_operand(&self, eqn: &HEqn, region: usize, param: usize) -> Option<Var> {
-        (region == 0)
-            .then(|| eqn.inputs().get(param).copied())
-            .flatten()
+    fn cell_access(&self, eqn: &HEqn, cell: Var) -> CellAccess {
+        let explicit = eqn.subexprs().first().map_or(CellAccess::Unused, |body| {
+            body.input_cell_access(eqn.inputs(), cell)
+        });
+        eqn.captured_cell_access(cell).combine(explicit)
     }
 
     fn lower(&self, eqn: &HEqn, ctx: &mut LoweringContext<'_>) -> Result<(), LoweringError> {
@@ -71,7 +78,7 @@ impl Operation for CallOperation {
 }
 
 pub fn call_op() -> Op {
-    Op::new(&CALL)
+    Op::new(CallOperation)
 }
 
 /// Bind a captured function without specializing potentially aliased cells.

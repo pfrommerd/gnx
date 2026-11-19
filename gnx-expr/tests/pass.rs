@@ -9,12 +9,17 @@ impl Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "pass_test"
     }
-    fn create(&self, _: &'static str) -> Option<&'static dyn Operation> {
-        None
+}
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Neg;
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Call;
+impl std::fmt::Display for Neg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
-struct Neg;
-struct Call;
+
 impl Operation for Neg {
     fn name(&self) -> &'static str {
         "neg"
@@ -23,6 +28,12 @@ impl Operation for Neg {
         &DIALECT
     }
 }
+impl std::fmt::Display for Call {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
+    }
+}
+
 impl Operation for Call {
     fn name(&self) -> &'static str {
         "call"
@@ -40,7 +51,7 @@ fn info() -> ValueInfo {
     ValueInfo::new(0usize)
 }
 fn neg() -> Op {
-    Op::new(&Neg)
+    Op::new(Neg)
 }
 
 /// call[|c| { d = neg c; e = neg d (dead) } -> d] captures (a, b); b is unused.
@@ -57,7 +68,7 @@ fn program() -> Expr {
     let unused_capture = b.emit1(neg(), &[x], info());
     b.emit1(neg(), &[a], info()); // dead
     let called = b.emit(
-        Op::new(&Call),
+        Op::new(Call),
         &[],
         [info()],
         vec![SubExpr::new(body.into(), vec![a, unused_capture])],
@@ -90,8 +101,8 @@ fn rewrite_replaces_equations_bottom_up() {
     let expr = program();
     let mut visited = Vec::new();
     let doubled = rewrite::<(), _>(&expr, &mut |b, eqn| {
-        visited.push(eqn.op().operation().name());
-        if eqn.op().operation().name() != "neg" {
+        visited.push(eqn.op().name());
+        if eqn.op().name() != "neg" {
             return Ok(None);
         }
         let once = b.emit1(neg(), eqn.inputs(), b.info(eqn.inputs()[0]).clone());

@@ -7,7 +7,7 @@
 //!
 //! // Batch along a new leading axis: every operand is moved (or broadcast) to
 //! // axis 0, and the closure returns the operation to apply to them.
-//! defbatch!(ReduceSumOperation, |op| Ok(reduce_sum_op(&shifted(&index_list(op, "axes")?))));
+//! defbatch!(ReduceSumOperation, |op| Ok(reduce_sum_op(&shifted(op.axes()))));
 //! ```
 //!
 //! Operations without operands (`zeros`, `ones`, `eye`, ...) need no rule: an
@@ -25,7 +25,7 @@ use crate::{TransformError, TransformResult};
 #[doc(inline)]
 pub use crate::{defbatch, defbroadcasting};
 
-/// Index attributes shifted past a new leading axis: `[0, 2] -> [1, 3]`.
+/// Shift indices past a new leading axis. For example, `[0, 2] -> [1, 3]`.
 pub fn shifted(indices: &[usize]) -> Vec<usize> {
     indices.iter().map(|&i| i + 1).collect()
 }
@@ -89,7 +89,7 @@ pub fn at_leading_axis(
 
 /// Fix a `defbatch!` closure's signature (for type inference).
 #[doc(hidden)]
-pub fn batch_op_rule<F: Fn(&Op) -> TransformResult<Op>>(f: F) -> F {
+pub fn batch_op_rule<O, F: Fn(&O) -> TransformResult<Op>>(f: F) -> F {
     f
 }
 
@@ -122,10 +122,10 @@ macro_rules! defbroadcasting {
 /// Batch an operation along a new leading axis: every operand is moved (or
 /// broadcast) to axis 0, and the closure maps the original operation to the
 /// one applied to the batched operands, typically by shifting its index
-/// attributes with [`shifted`] or [`leading`].
+/// parameters with [`shifted`] or [`leading`].
 ///
 /// ```ignore
-/// defbatch!(TransposeOperation, |op| Ok(transpose_op(&leading(&index_list(op, "perm")?))));
+/// defbatch!(TransposeOperation, |op| Ok(transpose_op(&leading(op.perm()))));
 /// ```
 #[macro_export]
 macro_rules! defbatch {
@@ -139,7 +139,7 @@ macro_rules! defbatch {
                 inputs: &[$crate::map::Batched],
                 _captures: &[::std::vec::Vec<$crate::map::Batched>],
             ) -> $crate::TransformResult<::std::vec::Vec<$crate::map::Batched>> {
-                let op = $crate::map::def::batch_op_rule($rule)(eqn.op())?;
+                let op = $crate::map::def::batch_op_rule::<$op, _>($rule)(self)?;
                 $crate::map::def::at_leading_axis(b, size, eqn, inputs, op)
             }
         }

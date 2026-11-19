@@ -5,8 +5,8 @@
 
 use gnx_math::ops::{
     AddOperation, BroadcastInDimOperation, MulOperation, ReduceSumOperation, ReshapeOperation,
-    RevOperation, SelectOperation, TransposeOperation, broadcast_in_dim_op, index_list,
-    reduce_sum_op, reshape_op, rev_op, transpose_op,
+    RevOperation, SelectOperation, TransposeOperation, broadcast_in_dim_op, reduce_sum_op,
+    reshape_op, rev_op, transpose_op,
 };
 
 use crate::map::def::{defbatch, defbroadcasting, leading, shifted};
@@ -14,13 +14,13 @@ use crate::map::def::{defbatch, defbroadcasting, leading, shifted};
 defbroadcasting!(AddOperation, MulOperation, SelectOperation);
 
 defbatch!(BroadcastInDimOperation, |op| Ok(broadcast_in_dim_op(
-    &leading(&index_list(op, "dims")?)
+    &leading(op.dims())
 )));
 defbatch!(ReduceSumOperation, |op| Ok(reduce_sum_op(&shifted(
-    &index_list(op, "axes")?
+    op.axes()
 ))));
 defbatch!(TransposeOperation, |op| Ok(transpose_op(&leading(
-    &index_list(op, "perm")?
+    op.perm()
 ))));
-defbatch!(RevOperation, |op| Ok(rev_op(&shifted(&index_list(op, "axes")?))));
+defbatch!(RevOperation, |op| Ok(rev_op(&shifted(op.axes()))));
 defbatch!(ReshapeOperation, |_| Ok(reshape_op()));

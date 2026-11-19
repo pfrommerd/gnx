@@ -21,7 +21,7 @@ use std::sync::LazyLock;
 use crate::{Op, Operation};
 
 /// Typed cast for one `(interface, operation)` pair.
-pub struct Caster<I: ?Sized + 'static>(pub fn(&'static dyn Operation) -> Option<&'static I>);
+pub struct Caster<I: ?Sized + 'static>(pub for<'a> fn(&'a dyn Operation) -> Option<&'a I>);
 
 /// A registered implementation. Construct with
 /// [`register_op_interface!`](crate::register_op_interface).
@@ -61,9 +61,9 @@ macro_rules! register_op_interface {
         $crate::__private::inventory::submit! {
             $crate::InterfaceImpl::new::<$iface, $op>(|| {
                 static CASTER: $crate::Caster<$iface> = $crate::Caster(|op| {
-                    (op as &'static dyn ::core::any::Any)
+                    (op as &dyn ::core::any::Any)
                         .downcast_ref::<$op>()
-                        .map(|op| op as &'static $iface)
+                        .map(|op| op as &$iface)
                 });
                 &CASTER
             })
@@ -104,13 +104,13 @@ pub enum InterfaceError {
     },
 }
 
-fn lookup(op: &'static dyn Operation, interface: TypeId) -> Option<Entry> {
+fn lookup(op: &dyn Operation, interface: TypeId) -> Option<Entry> {
     TABLE.get(&(interface, (op as &dyn Any).type_id())).copied()
 }
 
 impl dyn Operation {
     /// The registered implementation of interface `I` (a `dyn Trait`) for this operation.
-    pub fn interface<I: ?Sized + 'static>(&'static self) -> Result<&'static I, InterfaceError> {
+    pub fn interface<I: ?Sized + 'static>(&self) -> Result<&I, InterfaceError> {
         let error = |duplicate| {
             let (dialect, op, interface) = (self.dialect().name(), self.name(), type_name::<I>());
             if duplicate {
@@ -140,18 +140,18 @@ impl dyn Operation {
     }
 
     /// Whether exactly one implementation of `I` is registered for this operation.
-    pub fn implements<I: ?Sized + 'static>(&'static self) -> bool {
+    pub fn implements<I: ?Sized + 'static>(&self) -> bool {
         matches!(lookup(self, TypeId::of::<I>()), Some(Entry::Unique(_)))
     }
 }
 
 impl Op {
-    /// See [`Operation::interface`](trait.Operation.html#method.interface).
-    pub fn interface<I: ?Sized + 'static>(&self) -> Result<&'static I, InterfaceError> {
-        self.operation().interface::<I>()
+    /// Get the registered interface for the owned operation.
+    pub fn interface<I: ?Sized + 'static>(&self) -> Result<&I, InterfaceError> {
+        (**self).interface::<I>()
     }
 
     pub fn implements<I: ?Sized + 'static>(&self) -> bool {
-        self.operation().implements::<I>()
+        (**self).implements::<I>()
     }
 }

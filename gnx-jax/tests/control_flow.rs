@@ -89,15 +89,19 @@ fn evaluate(device: &JaxDevice, outputs: Vec<Trace>) {
 }
 
 struct TestDialect;
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct LessThan;
 impl Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "control_flow_test"
     }
-    fn create(&self, _: &'static str) -> Option<&'static dyn Operation> {
-        None
+}
+impl std::fmt::Display for LessThan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
+
 impl Operation for LessThan {
     fn name(&self) -> &'static str {
         "lt"
@@ -123,7 +127,7 @@ impl JaxLowering for LessThan {
 register_jax_lowering!(LessThan);
 fn less_than(lhs: Trace, rhs: Trace) -> Trace {
     Invocation::invoke(
-        Op::new(&LessThan),
+        Op::new(LessThan),
         vec![],
         vec![lhs, rhs],
         vec![info(&[], DType::Bool)],

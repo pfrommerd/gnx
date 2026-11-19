@@ -1,5 +1,3 @@
-mod attr;
-mod dialects;
 pub mod eval;
 mod expr;
 pub mod hexpr;
@@ -14,21 +12,21 @@ pub mod trace;
 pub mod util;
 pub mod value;
 
-pub use attr::*;
-pub use dialects::*;
 pub use eval::{EvalCommit, EvalPlanError, PreparedEval};
 pub use hexpr::*;
 pub use lower::{CallError, InputId, InputSpec, LoweredExpr, LoweringError};
 pub use trace::*;
 pub use util::expr_macro;
 
+use std::any::Any;
 use std::cmp::{Eq, PartialEq};
 use std::cmp::{Ord, PartialOrd};
 use std::fmt;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
+use std::ops::Deref;
 
-// The inventory crate is used to statically register all dialects.
+// Re-exported for link-time registration of operation interfaces.
 #[doc(hidden)]
 pub mod __private {
     pub use inventory;
@@ -43,10 +41,48 @@ pub enum Kind {
 
 pub trait Dialect: Sync {
     fn name(&self) -> &'static str;
-    fn create(&self, name: &'static str) -> Option<&'static dyn Operation>;
 }
 
-pub trait Operation: std::any::Any + Sync {
+/// Object-safe access to a concrete value's hash implementation.
+pub trait DynHash {
+    fn dyn_hash(&self, state: &mut dyn Hasher);
+}
+
+impl<T: Hash> DynHash for T {
+    fn dyn_hash(&self, mut state: &mut dyn Hasher) {
+        self.hash(&mut state);
+    }
+}
+
+/// Object-safe equality with a value of the same concrete type.
+pub trait DynEq {
+    fn dyn_eq(&self, other: &dyn Any) -> bool;
+}
+
+impl<T: Any + Eq> DynEq for T {
+    fn dyn_eq(&self, other: &dyn Any) -> bool {
+        other.downcast_ref::<T>() == Some(self)
+    }
+}
+
+/// Object-safe cloning of an operation.
+pub trait DynClone {
+    /// Return an owned clone with the same concrete type and parameters.
+    fn dyn_clone(&self) -> Box<dyn Operation>;
+}
+
+impl<T: Operation + Clone> DynClone for T {
+    fn dyn_clone(&self) -> Box<dyn Operation> {
+        Box::new(self.clone())
+    }
+}
+
+/// An operation and its immutable, operation-specific parameters.
+///
+/// Concrete operations implement `Clone`, `Eq`, and `Hash` so expressions
+/// can copy and compare them through the trait object. `Display` writes the
+/// qualified operation name and any parameters, such as `cf::call`.
+pub trait Operation: Any + Send + Sync + fmt::Display + DynHash + DynEq + DynClone {
     fn name(&self) -> &'static str;
     fn dialect(&self) -> &'static dyn Dialect;
 
@@ -61,42 +97,65 @@ pub trait Operation: std::any::Any + Sync {
         Ok(())
     }
 
-    /// Parent binding of a region's explicit parameter, when it corresponds
-    /// to a parent variable. Used to trace structural cell accesses.
-    fn region_operand(&self, _eqn: &HEqn, _region: usize, _param: usize) -> Option<Var> {
-        None
+    /// Summarize every possible effect of this application on a parent cell.
+    /// The default follows captured bindings in every region. Overrides can
+    /// reuse that traversal and must include all effects the operation can have.
+    fn cell_access(&self, eqn: &HEqn, cell: Var) -> CellAccess {
+        eqn.captured_cell_access(cell)
     }
 }
 
-// An Op is an Operation combined with an attribute set.
-#[derive(Clone)]
-pub struct Op {
-    impl_: &'static dyn Operation,
-    attrs: AttrMap,
+impl dyn Operation {
+    pub fn downcast_ref<T: Operation>(&self) -> Option<&T> {
+        (self as &dyn Any).downcast_ref()
+    }
+}
+
+/// An owned operation in the expression IR.
+pub struct Op(Box<dyn Operation>);
+
+impl Deref for Op {
+    type Target = dyn Operation;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl From<Op> for Box<dyn Operation> {
+    fn from(op: Op) -> Self {
+        op.0
+    }
+}
+
+impl Clone for Op {
+    fn clone(&self) -> Self {
+        Self(self.0.dyn_clone())
+    }
 }
 
 impl Debug for Op {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self)
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
 impl Hash for Op {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.impl_.dialect().name().hash(state);
-        self.impl_.name().hash(state);
-        self.attrs.hash(state);
+        self.dialect().name().hash(state);
+        self.name().hash(state);
+        self.deref().dyn_hash(state);
     }
 }
 
 impl PartialEq for Op {
     fn eq(&self, other: &Self) -> bool {
-        (self.impl_.dialect().name(), self.impl_.name(), &self.attrs)
-            == (
-                other.impl_.dialect().name(),
-                other.impl_.name(),
-                &other.attrs,
-            )
+        let op = self.deref();
+        let other = other.deref();
+        op.type_id() == other.type_id()
+            && op.dialect().name() == other.dialect().name()
+            && op.name() == other.name()
+            && op.dyn_eq(other)
     }
 }
 
@@ -104,37 +163,13 @@ impl Eq for Op {}
 
 impl fmt::Display for Op {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}", self.impl_.dialect().name(), self.impl_.name())?;
-        if !self.attrs.is_empty() {
-            write!(f, "<")?;
-            for (i, (k, v)) in self.attrs.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{k}: {v}")?;
-            }
-            write!(f, ">")?;
-        }
-        Ok(())
+        fmt::Display::fmt(self.deref(), f)
     }
 }
 
 impl Op {
-    pub fn operation(&self) -> &'static dyn Operation {
-        self.impl_
-    }
-
-    pub fn new(impl_: &'static dyn Operation) -> Self {
-        Op {
-            impl_,
-            attrs: AttrMap::default(),
-        }
-    }
-    pub fn new_with_attrs(impl_: &'static dyn Operation, attrs: AttrMap) -> Self {
-        Op { impl_, attrs }
-    }
-    pub fn attrs(&self) -> &AttrMap {
-        &self.attrs
+    pub fn new(operation: impl Operation) -> Self {
+        Self(Box::new(operation))
     }
 }
 

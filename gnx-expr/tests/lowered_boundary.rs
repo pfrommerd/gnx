@@ -17,17 +17,20 @@ fn distinct_parameters(expr: &HExpr) -> InputSpec {
     }
 }
 struct TestDialect;
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct Compute;
 static DIALECT: TestDialect = TestDialect;
-static COMPUTE: Compute = Compute;
 impl Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "boundary_test"
     }
-    fn create(&self, _: &'static str) -> Option<&'static dyn Operation> {
-        Some(&COMPUTE)
+}
+impl std::fmt::Display for Compute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
+
 impl Operation for Compute {
     fn name(&self) -> &'static str {
         "compute"
@@ -43,7 +46,7 @@ fn value() -> Tracer<Generic> {
     Tracer::placeholder(info())
 }
 fn compute(inputs: Vec<Tracer<Generic>>) -> Tracer<Generic> {
-    Invocation::invoke(Op::new(&COMPUTE), vec![], inputs, vec![info()])
+    Invocation::invoke(Op::new(Compute), vec![], inputs, vec![info()])
         .pop()
         .unwrap()
 }

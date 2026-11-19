@@ -1,30 +1,39 @@
 //! `cf.scan`: fold a captured body over axis zero of its inputs.
 
+use std::fmt;
+
 use gnx_expr::lower::{LoweringContext, RegionArgument};
 use gnx_expr::{Capture, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace, ValueInfo};
 use gnx_math::{ArrayInfo, Dim};
 
 use super::{
-    BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, check_child, count_attr, defer_regions,
-    expect_inputs, expr_output_infos, parameters, signature, state_len, usize_attr, value_infos,
-    value_results, with_state,
+    BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, add_state, check_child, defer_regions,
+    expect_inputs, expr_output_infos, parameters, signature, value_infos, value_results,
 };
 
-pub struct ScanOperation;
-
-/// Construct a scan operation. The counts must fit in signed 64-bit attributes.
-pub fn scan_op(carry_len: usize, length: usize) -> RegionResult<Op> {
-    Ok(Op::new_with_attrs(
-        &ScanOperation,
-        [
-            ("carry".into(), count_attr(carry_len)?),
-            ("length".into(), count_attr(length)?),
-        ]
-        .into(),
-    ))
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ScanOperation {
+    parameters: ScanParameters,
 }
 
-#[derive(Clone, Copy)]
+impl ScanOperation {
+    pub fn parameters(&self) -> ScanParameters {
+        self.parameters
+    }
+}
+
+/// Construct a scan over `length` elements with `carry_len` carry values.
+pub fn scan_op(carry_len: usize, length: usize) -> Op {
+    Op::new(ScanOperation {
+        parameters: ScanParameters {
+            carry_len,
+            state_len: 0,
+            length,
+        },
+    })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScanParameters {
     /// Number of public carry values; private cell state follows these slots.
     pub carry_len: usize,
@@ -34,25 +43,10 @@ pub struct ScanParameters {
 
 impl ScanParameters {
     pub fn from_op(op: &Op) -> RegionResult<Self> {
-        fn get(op: &Op, field: &str) -> RegionResult<usize> {
-            usize_attr(
-                op.attrs()
-                    .get(field)
-                    .ok_or_else(|| signature("missing scan attribute"))?,
-            )
-        }
-        if op
-            .attrs()
-            .keys()
-            .any(|key| !matches!(key.as_str(), "carry" | "length" | "state"))
-        {
-            return Err(signature("unexpected scan attribute"));
-        }
-        let parameters = Self {
-            carry_len: get(op, "carry")?,
-            state_len: state_len(op)?,
-            length: get(op, "length")?,
-        };
+        let parameters = op
+            .downcast_ref::<ScanOperation>()
+            .ok_or_else(|| signature("expected a scan operation"))?
+            .parameters();
         parameters.physical_carry_len()?;
         Ok(parameters)
     }
@@ -132,7 +126,7 @@ pub fn scan(
             .collect::<RegionResult<Vec<_>>>()?,
     );
     let mut result = defer_regions(
-        scan_op(carry.len(), length)?,
+        scan_op(carry.len(), length),
         vec![BoundRegion {
             capture: body,
             inputs: &[],
@@ -150,6 +144,21 @@ pub fn scan(
     Ok((result, ys))
 }
 
+impl fmt::Display for ScanOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ScanParameters {
+            carry_len,
+            length,
+            state_len,
+        } = self.parameters;
+        write!(f, "cf::scan<carry: {carry_len}, length: {length}")?;
+        if state_len != 0 {
+            write!(f, ", state: {state_len}")?;
+        }
+        write!(f, ">")
+    }
+}
+
 impl Operation for ScanOperation {
     fn name(&self) -> &'static str {
         "scan"
@@ -162,7 +171,7 @@ impl Operation for ScanOperation {
         let [body] = eqn.subexprs() else {
             return Err(signature("scan needs one body"));
         };
-        let configuration = ScanParameters::from_op(eqn.op())?;
+        let configuration = self.parameters();
         let length = configuration.length;
         let carry_len = configuration.physical_carry_len()?;
         let (values, mut infos): (Vec<_>, Vec<_>) = eqn
@@ -189,7 +198,12 @@ impl Operation for ScanOperation {
         let state = StateLayout::new(ctx, &regions)?;
         let fixed =
             [regions[0].fix(ctx, &state.slots, carry_len, Some(carry_len), &step_outputs)?];
-        let op = with_state(eqn.op(), state.cells.len())?;
+        let parameters = ScanParameters {
+            state_len: add_state(configuration.state_len, state.cells.len())?,
+            ..configuration
+        };
+        parameters.physical_carry_len()?;
+        let op = Op::new(Self { parameters });
         state.emit(ctx, eqn, op, values, (carry_len, carry_len), &fixed)
     }
 
@@ -197,7 +211,7 @@ impl Operation for ScanOperation {
         let [body] = eqn.subexprs() else {
             return Err(signature("scan needs one body"));
         };
-        let configuration = ScanParameters::from_op(eqn.op())?;
+        let configuration = self.parameters();
         let length = configuration.length;
         let carry_len = configuration.physical_carry_len()?;
         let step_outputs = scan_step_infos(carry_len, length, expr_output_infos(eqn))?;

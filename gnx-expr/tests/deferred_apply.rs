@@ -6,15 +6,18 @@ use gnx_expr::{
 };
 
 struct TestDialect;
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct TestOperation;
 
 impl Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "test"
     }
+}
 
-    fn create(&self, name: &'static str) -> Option<&'static dyn Operation> {
-        (name == "regions").then_some(&TestOperation)
+impl std::fmt::Display for TestOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
     }
 }
 
@@ -27,11 +30,10 @@ impl Operation for TestOperation {
         &TestDialect
     }
 
-    fn region_operand(&self, eqn: &HEqn, region: usize, param: usize) -> Option<Var> {
-        // Only region zero has explicit parameters. Skip the selector.
-        (region == 0)
-            .then(|| eqn.inputs().get(param + 1).copied())
-            .flatten()
+    fn cell_access(&self, eqn: &HEqn, cell: Var) -> CellAccess {
+        let operands = eqn.inputs().get(1..).unwrap_or_default();
+        let explicit = eqn.subexprs()[0].input_cell_access(operands, cell);
+        eqn.captured_cell_access(cell).combine(explicit)
     }
 }
 
@@ -53,7 +55,7 @@ fn write_only_deferred_apply_preserves_the_operation_and_all_regions() {
     let cell = CellTrace::placeholder(info.clone());
     let value = Trace::placeholder(info);
     let inputs = vec![selector.into(), cell.clone().into(), value.into()];
-    let op = Op::new(&TestOperation);
+    let op = Op::new(TestOperation);
     let results = Invocation::defer_apply(
         op.clone(),
         DeferredApplyPlan {

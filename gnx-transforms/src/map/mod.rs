@@ -10,7 +10,7 @@
 //! Calls trace the function once per input signature (through `jit`) and
 //! record a `map.map` region operation:
 //!
-//! | op | operands | results | attributes |
+//! | op | operands | results | parameters |
 //! |---|---|---|---|
 //! | `map.map` | mapped inputs | mapped results | `size`, `in_axes`, `out_axes` |
 //!
@@ -30,39 +30,41 @@ mod rules;
 pub use api::{Map, map};
 pub use batch::{BatchRule, Batched};
 
+use std::fmt;
+
 use gnx_expr::lower::LoweringContext;
 use gnx_expr::pass::Builder;
 use gnx_expr::{
-    Attr, Dialect, Eqn, HEqn, LoweringError, Op, Operation, ValueInfo, Var, register_op_interface,
+    Dialect, Eqn, HEqn, LoweringError, Op, Operation, ValueInfo, Var, register_op_interface,
 };
-use gnx_math::ops::{index_attr, index_list};
 
-use crate::body::{BodySignature, check_expr_with, exact_attrs, lower_transform, signature};
+use crate::body::{BodySignature, check_expr_with, lower_transform, signature};
 use crate::expand::Transform;
 use crate::{TransformResult, util};
 
 pub struct MapDialect;
-pub struct MapOperation;
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct MapOperation {
+    parameters: MapParameters,
+}
+
+impl MapOperation {
+    pub fn parameters(&self) -> &MapParameters {
+        &self.parameters
+    }
+}
 
 static MAP: MapDialect = MapDialect;
-gnx_expr::register_dialect!(&MAP);
 
 impl Dialect for MapDialect {
     fn name(&self) -> &'static str {
         "map"
     }
-
-    fn create(&self, name: &'static str) -> Option<&'static dyn Operation> {
-        match name {
-            "map" => Some(&MapOperation),
-            _ => None,
-        }
-    }
 }
 
 /// Parameters of `map.map`: every operand is mapped over axis `in_axes[i]`
 /// and every result is stacked along `out_axes[i]`, with `size` instances.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MapParameters {
     pub size: usize,
     pub in_axes: Vec<usize>,
@@ -71,28 +73,15 @@ pub struct MapParameters {
 
 impl MapParameters {
     pub fn from_op(op: &Op) -> Result<Self, LoweringError> {
-        exact_attrs(op, &["size", "in_axes", "out_axes"])?;
-        let Some(&Attr::I64(size)) = op.attrs().get("size") else {
-            return Err(signature("map size must be an i64"));
-        };
-        Ok(Self {
-            size: usize::try_from(size).map_err(|_| signature("negative map size"))?,
-            in_axes: index_list(op, "in_axes")?,
-            out_axes: index_list(op, "out_axes")?,
-        })
+        op.downcast_ref::<MapOperation>()
+            .map(|op| op.parameters().clone())
+            .ok_or_else(|| signature("expected a map operation"))
     }
 
-    pub fn to_op(&self) -> Result<Op, LoweringError> {
-        let size = i64::try_from(self.size).map_err(|_| signature("map size exceeds i64"))?;
-        Ok(Op::new_with_attrs(
-            &MapOperation,
-            [
-                ("size".into(), Attr::I64(size)),
-                ("in_axes".into(), index_attr(&self.in_axes)),
-                ("out_axes".into(), index_attr(&self.out_axes)),
-            ]
-            .into(),
-        ))
+    pub fn to_op(&self) -> Op {
+        Op::new(MapOperation {
+            parameters: self.clone(),
+        })
     }
 
     /// Metadata with `size` inserted at each axis.
@@ -136,6 +125,17 @@ impl MapParameters {
     }
 }
 
+impl fmt::Display for MapOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let parameters = self.parameters();
+        write!(
+            f,
+            "map::map<in_axes: {:?}, out_axes: {:?}, size: {}>",
+            parameters.in_axes, parameters.out_axes, parameters.size
+        )
+    }
+}
+
 impl Operation for MapOperation {
     fn name(&self) -> &'static str {
         "map"
@@ -143,23 +143,23 @@ impl Operation for MapOperation {
     fn dialect(&self) -> &'static dyn Dialect {
         &MAP
     }
+
     fn lower(&self, eqn: &HEqn, ctx: &mut LoweringContext<'_>) -> Result<(), LoweringError> {
-        let parameters = MapParameters::from_op(eqn.op())?;
         lower_transform(eqn, ctx, |body, operands, outputs| {
-            parameters.check(body, Some(operands), operands.len(), outputs)
+            self.parameters
+                .check(body, Some(operands), operands.len(), outputs)
         })
     }
     fn check_expr(&self, eqn: &Eqn) -> Result<(), LoweringError> {
-        let parameters = MapParameters::from_op(eqn.op())?;
         check_expr_with(eqn, |body, count, outputs| {
-            parameters.check(body, None, count, outputs)
+            self.parameters.check(body, None, count, outputs)
         })
     }
 }
 
 impl Transform for MapOperation {
     fn expand(&self, b: &mut Builder, eqn: &Eqn) -> TransformResult<Vec<Var>> {
-        batch::expand_map(b, eqn)
+        batch::expand_map(b, eqn, self.parameters())
     }
 }
 register_op_interface!(dyn Transform: MapOperation);

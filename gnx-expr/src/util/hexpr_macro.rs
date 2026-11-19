@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::{AttrMap, HEqn, HExpr, HInstr, HSubExpr, Kind, ValueInfo, Var, VarScope};
+use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, Op, ValueInfo, Var, VarScope};
 
 #[doc(hidden)]
 pub struct HExprBuilder<'a> {
@@ -155,13 +155,10 @@ impl HExprBuilder<'_> {
     pub fn eqn(
         &mut self,
         outputs: Vec<(Var, Kind)>,
-        dialect: &'static str,
-        op: &'static str,
-        attrs: AttrMap,
+        op: Op,
         inputs: Vec<Var>,
         subexprs: Vec<HSubExpr>,
     ) {
-        let op = super::expr_macro::op_by_name(dialect, op, attrs);
         self.expr
             .instructions
             .push(HInstr::Apply(HEqn::new(op, subexprs, inputs, outputs)));
@@ -183,6 +180,9 @@ impl HExprBuilder<'_> {
 /// `ValueInfo`: a value moves in, and `&info` clones it. The older
 /// `hexpr!(info; { ... })` form supplies default metadata. Cell reads and
 /// creation inherit metadata.
+/// Operations resolve through the caller's `ops` module, just as in
+/// [`expr!`](crate::expr). Write constructor arguments in angle brackets and
+/// equation operands without parentheses.
 /// Inline a region with `dialect::op [|| => (outer[:])]` to refer to
 /// an enclosing cell directly. Shared definitions go before `in |...| => { ... }`
 /// and are referenced with `dialect::op [@name{outer[:]}]`. To attach a prebuilt
@@ -217,9 +217,23 @@ impl HExprBuilder<'_> {
 /// ```
 /// ```compile_fail
 /// use gnx_expr::{ValueInfo, expr, hexpr};
+/// mod ops {
+///     pub mod test {
+///         pub fn region() -> gnx_expr::Op { unreachable!() }
+///     }
+/// }
 /// let info = ValueInfo::new(0usize);
 /// let low = expr!({ lambda x: &info => in (x) });
 /// let _ = hexpr!({ lambda x: &info => y: &info = test::region[low => ()] x; in (y) });
+/// ```
+/// ```compile_fail
+/// mod ops {
+///     pub mod test {
+///         pub fn op() -> gnx_expr::Op { unreachable!() }
+///     }
+/// }
+/// let info = gnx_expr::ValueInfo::new(0usize);
+/// let _ = gnx_expr::hexpr!(&info; |x| => { y = test::op (x); in (y) });
 /// ```
 #[macro_export]
 macro_rules! hexpr {

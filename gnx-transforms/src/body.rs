@@ -48,13 +48,6 @@ pub(crate) fn strictly_increasing(indices: &[usize], bound: usize) -> Result<(),
     Ok(())
 }
 
-pub(crate) fn exact_attrs(op: &Op, keys: &[&str]) -> Result<(), LoweringError> {
-    if op.attrs().len() != keys.len() || keys.iter().any(|key| !op.attrs().contains_key(*key)) {
-        return Err(signature("unexpected transformation attributes"));
-    }
-    Ok(())
-}
-
 /// Value metadata of a body's inputs and results.
 pub struct BodySignature {
     pub inputs: Vec<ValueInfo>,

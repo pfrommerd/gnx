@@ -1,9 +1,10 @@
 use gnx_expr::{
-    Attr, Capture, CellTrace, HExpr, InputSpec, Kind, LoweringError, ObjectTracer, Op, Trace,
-    TraceContext, ValueInfo, hexpr,
+    Capture, CellTrace, HExpr, InputSpec, Kind, LoweringError, ObjectTracer, Trace, TraceContext,
+    ValueInfo, hexpr,
 };
 use gnx_math::{ArrayInfo, DType, Shape};
 use gnx_transforms::cf::{ScanParameters, cond, scan, scan_op, switch, while_loop};
+use gnx_transforms::ops;
 
 fn info(shape: &[usize], dtype: DType) -> ValueInfo {
     ValueInfo::new(ArrayInfo::new(Shape::fixed(shape.iter().copied()), dtype))
@@ -190,9 +191,6 @@ fn scan_tracks_hidden_state_separately_and_can_be_lowered_again() {
         .unwrap();
     for program in [&lowered, &replay] {
         let eqn = &program.expr.eqns()[0];
-        assert_eq!(eqn.op().attrs()["carry"], Attr::I64(1));
-        assert_eq!(eqn.op().attrs()["length"], Attr::I64(0));
-        assert_eq!(eqn.op().attrs()["state"], Attr::I64(1));
         let config = ScanParameters::from_op(eqn.op()).unwrap();
         assert_eq!(
             (config.carry_len, config.state_len, config.length),
@@ -206,17 +204,19 @@ fn scan_tracks_hidden_state_separately_and_can_be_lowered_again() {
 }
 
 #[test]
-fn scan_requires_nonnegative_i64_parameters() {
-    let op = scan_op(1, 3).unwrap();
-    for length in [Attr::I64(-1), Attr::Info(ValueInfo::new(3usize))] {
-        let mut attrs = op.attrs().clone();
-        attrs.insert("length".into(), length);
-        let invalid = Op::new_with_attrs(op.operation(), attrs);
-        assert!(ScanParameters::from_op(&invalid).is_err());
-    }
-    if let Ok(too_large) = usize::try_from(i64::MAX as u64 + 1) {
-        assert!(scan_op(1, too_large).is_err());
-    }
+fn scan_counts_use_usize_and_check_carry_overflow() {
+    let op = scan_op(usize::MAX, usize::MAX);
+    let parameters = ScanParameters::from_op(&op).unwrap();
+    assert_eq!(parameters.physical_carry_len().unwrap(), usize::MAX);
+    assert_eq!(parameters.length, usize::MAX);
+    assert!(
+        ScanParameters {
+            state_len: 1,
+            ..parameters
+        }
+        .physical_carry_len()
+        .is_err()
+    );
 }
 
 #[test]

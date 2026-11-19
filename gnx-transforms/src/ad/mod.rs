@@ -13,7 +13,7 @@
 //! Calls trace the function once per input signature (through `jit`) and
 //! record region operations:
 //!
-//! | op | operands | results | attributes |
+//! | op | operands | results | parameters |
 //! |---|---|---|---|
 //! | `ad.jvp` | primals ++ tangents of `wrt` | results ++ tangents of `of` | `wrt`, `of` |
 //! | `ad.vjp` | primals ++ cotangents of `of` | results ++ cotangents of `wrt` | `wrt`, `of` |
@@ -37,43 +37,51 @@ pub use api::{Grad, Hessian, Jvp, ValueAndGrad, Vjp, grad, hessian, jvp, value_a
 pub use jvp::{Dual, JvpRule, Tangent};
 pub use transpose::{Operand, TransposeRule};
 
+use std::fmt;
+
 use gnx_expr::lower::LoweringContext;
 use gnx_expr::pass::Builder;
-use gnx_expr::{
-    AttrMap, Dialect, Eqn, HEqn, LoweringError, Op, Operation, Var, register_op_interface,
-};
-use gnx_math::ops::{index_attr, index_list};
+use gnx_expr::{Dialect, Eqn, HEqn, LoweringError, Op, Operation, Var, register_op_interface};
 
 use crate::body::{
-    BodySignature, check_expr_with, exact_attrs, lower_transform, signature, strictly_increasing,
+    BodySignature, check_expr_with, lower_transform, signature, strictly_increasing,
 };
 use crate::expand::Transform;
 use crate::{TransformResult, util};
 
 pub struct AdDialect;
-pub struct JvpOperation;
-pub struct VjpOperation;
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct JvpOperation {
+    parameters: DiffParameters,
+}
+
+impl JvpOperation {
+    pub fn parameters(&self) -> &DiffParameters {
+        &self.parameters
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct VjpOperation {
+    parameters: DiffParameters,
+}
+
+impl VjpOperation {
+    pub fn parameters(&self) -> &DiffParameters {
+        &self.parameters
+    }
+}
 
 static AD: AdDialect = AdDialect;
-gnx_expr::register_dialect!(&AD);
 
 impl Dialect for AdDialect {
     fn name(&self) -> &'static str {
         "ad"
     }
-
-    fn create(&self, name: &'static str) -> Option<&'static dyn Operation> {
-        Some(match name {
-            "jvp" => &JvpOperation,
-            "vjp" => &VjpOperation,
-            _ => return None,
-        })
-    }
 }
 
 /// Parameters of `ad.jvp` and `ad.vjp`: differentiate the body's results
 /// `of` with respect to its inputs `wrt` (both strictly increasing).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DiffParameters {
     pub wrt: Vec<usize>,
     pub of: Vec<usize>,
@@ -81,27 +89,25 @@ pub struct DiffParameters {
 
 impl DiffParameters {
     pub fn from_op(op: &Op) -> Result<Self, LoweringError> {
-        exact_attrs(op, &["wrt", "of"])?;
-        Ok(Self {
-            wrt: index_list(op, "wrt")?,
-            of: index_list(op, "of")?,
-        })
-    }
-
-    fn attrs(&self) -> AttrMap {
-        [
-            ("wrt".into(), index_attr(&self.wrt)),
-            ("of".into(), index_attr(&self.of)),
-        ]
-        .into()
+        if let Some(op) = op.downcast_ref::<JvpOperation>() {
+            Ok(op.parameters().clone())
+        } else if let Some(op) = op.downcast_ref::<VjpOperation>() {
+            Ok(op.parameters().clone())
+        } else {
+            Err(signature("expected a differentiation operation"))
+        }
     }
 
     pub fn jvp_op(&self) -> Op {
-        Op::new_with_attrs(&JvpOperation, self.attrs())
+        Op::new(JvpOperation {
+            parameters: self.clone(),
+        })
     }
 
     pub fn vjp_op(&self) -> Op {
-        Op::new_with_attrs(&VjpOperation, self.attrs())
+        Op::new(VjpOperation {
+            parameters: self.clone(),
+        })
     }
 
     /// Check the operand (if known) and result metadata against the body.
@@ -138,6 +144,16 @@ impl DiffParameters {
 
 macro_rules! diff_operation {
     ($ty:ty, $name:literal, $forward:expr, $expand:path) => {
+        impl fmt::Display for $ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(
+                    f,
+                    concat!("ad::", $name, "<of: {:?}, wrt: {:?}>"),
+                    self.parameters.of, self.parameters.wrt
+                )
+            }
+        }
+
         impl Operation for $ty {
             fn name(&self) -> &'static str {
                 $name
@@ -150,22 +166,21 @@ macro_rules! diff_operation {
                 eqn: &HEqn,
                 ctx: &mut LoweringContext<'_>,
             ) -> Result<(), LoweringError> {
-                let parameters = DiffParameters::from_op(eqn.op())?;
                 lower_transform(eqn, ctx, |body, operands, outputs| {
-                    parameters.check(body, Some(operands), operands.len(), outputs, $forward)
+                    self.parameters
+                        .check(body, Some(operands), operands.len(), outputs, $forward)
                 })
             }
             fn check_expr(&self, eqn: &Eqn) -> Result<(), LoweringError> {
-                let parameters = DiffParameters::from_op(eqn.op())?;
                 check_expr_with(eqn, |body, count, outputs| {
-                    parameters.check(body, None, count, outputs, $forward)
+                    self.parameters.check(body, None, count, outputs, $forward)
                 })
             }
         }
 
         impl Transform for $ty {
             fn expand(&self, b: &mut Builder, eqn: &Eqn) -> TransformResult<Vec<Var>> {
-                $expand(b, eqn)
+                $expand(b, eqn, self.parameters())
             }
         }
     };

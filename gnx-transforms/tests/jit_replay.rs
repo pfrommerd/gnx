@@ -277,15 +277,24 @@ fn nested_call_resolves_capture_and_input_aliases_when_the_caller_lowers() {
 }
 
 struct TestDialect;
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct TestOperation;
 impl gnx_expr::Dialect for TestDialect {
     fn name(&self) -> &'static str {
         "jit_test"
     }
-    fn create(&self, name: &'static str) -> Option<&'static dyn gnx_expr::Operation> {
-        (name == "identity").then_some(&TestOperation as &dyn gnx_expr::Operation)
+}
+impl std::fmt::Display for TestOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}::{}",
+            gnx_expr::Operation::dialect(self).name(),
+            gnx_expr::Operation::name(self)
+        )
     }
 }
+
 impl gnx_expr::Operation for TestOperation {
     fn name(&self) -> &'static str {
         "identity"
@@ -298,7 +307,7 @@ impl gnx_expr::Operation for TestOperation {
 fn compute(value: Array) -> Array {
     let info = value.tracer().trace_ref().info().clone();
     let result = Invocation::invoke(
-        gnx_expr::Op::new(&TestOperation),
+        gnx_expr::Op::new(TestOperation),
         vec![],
         vec![value.into_tracer()],
         vec![info],
@@ -522,7 +531,7 @@ fn operation_results_are_replayed_with_actual_inputs_not_placeholders() {
     let function = jit(|input: Array| {
         calls.set(calls.get() + 1);
         let result = Invocation::invoke(
-            gnx_expr::Op::new(&TestOperation),
+            gnx_expr::Op::new(TestOperation),
             vec![],
             vec![
                 input.into_tracer().into_trace_ref(),
@@ -543,7 +552,7 @@ fn operation_results_are_replayed_with_actual_inputs_not_placeholders() {
         let body = &invocation.regions()[0].body;
         assert_eq!(
             body.instructions()[0].as_apply().unwrap().op().to_string(),
-            "jit_test.identity"
+            "jit_test::identity"
         );
         let [ObjectTracer::Ref(captured)] = invocation.regions()[0].captures.as_slice() else {
             panic!("expected captured value")
@@ -563,7 +572,7 @@ fn nested_computation_calls_keep_both_function_boundaries() {
     let inner = jit(|value: Array| {
         let info = value.tracer().trace_ref().info().clone();
         let result = Invocation::invoke(
-            gnx_expr::Op::new(&TestOperation),
+            gnx_expr::Op::new(TestOperation),
             vec![],
             vec![value.into_tracer()],
             vec![info],
@@ -584,7 +593,7 @@ fn nested_computation_calls_keep_both_function_boundaries() {
             .unwrap()
             .op()
             .to_string(),
-        "cf.call"
+        "cf::call"
     );
     let inner_body = outer_body.instructions()[0].as_apply().unwrap().subexprs()[0].expr();
     assert_eq!(inner_body.instructions().len(), 1);
@@ -594,7 +603,7 @@ fn nested_computation_calls_keep_both_function_boundaries() {
             .unwrap()
             .op()
             .to_string(),
-        "jit_test.identity"
+        "jit_test::identity"
     );
     same(&argument(&outer_call, 0), &input);
 }
@@ -606,7 +615,7 @@ fn update_only_computations_retain_the_call_and_update_the_original_cell() {
     let function = jit(|cell: ArrayRef, value: Array| {
         let info = value.tracer().trace_ref().info().clone();
         let result = Invocation::invoke(
-            gnx_expr::Op::new(&TestOperation),
+            gnx_expr::Op::new(TestOperation),
             vec![],
             vec![value.into_tracer()],
             vec![info],

@@ -6,7 +6,27 @@ pub use gnx_transforms::callable;
 pub use gnx_expr as expr;
 pub use gnx_graph as graph;
 
-pub use gnx_math::{array, buffer, device, ops, shard};
+pub use gnx_math::{array, buffer, device, shard};
+/// Constructors for operations in expression macros.
+///
+/// ```
+/// use gnx::array::{ArrayInfo, DType, Shape};
+/// use gnx::expr::{ValueInfo, expr};
+/// use gnx::ops;
+///
+/// let input = ValueInfo::new(ArrayInfo::new(Shape::fixed([2, 3]), DType::F32));
+/// let output = ValueInfo::new(ArrayInfo::new(Shape::fixed([3, 2]), DType::F32));
+/// let body = expr!(|x: input| => {
+///     y: output = array::transpose<&[1, 0]> x;
+///     in (y)
+/// });
+/// body.check().unwrap();
+/// ```
+pub mod ops {
+    pub use gnx_math::ops::*;
+    pub use gnx_transforms::ops::{ad, cf, map};
+}
+
 pub mod eval;
 pub use eval::{CaptureError, Eval, EvalError, EvalPlanError, expr};
 

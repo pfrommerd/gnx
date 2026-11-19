@@ -623,7 +623,7 @@ impl JvpRule for ScanOperation {
             .map(|info| with_axis(info, 0, length))
             .collect::<TransformResult<Vec<_>>>()?;
         let mut primal_results = b.emit(
-            scan_op(carry_len, length)?,
+            scan_op(carry_len, length),
             &primals(inputs),
             output_infos(eqn).into_iter().chain(stacked),
             vec![primal_region],
@@ -679,7 +679,7 @@ impl JvpRule for ScanOperation {
             .collect();
         let tangent_carry_len = capture_tangents.len() + carry_tangents.len();
         let tangents = b.emit(
-            scan_op(tangent_carry_len, length)?,
+            scan_op(tangent_carry_len, length),
             &args,
             infos_out,
             vec![region],
@@ -788,7 +788,7 @@ impl TransposeRule for ScanOperation {
             })
             .collect();
         let results = b.emit(
-            scan_op(carry_len, length)?,
+            scan_op(carry_len, length),
             &args,
             carry_infos.into_iter().chain(stacked_infos),
             vec![region],
