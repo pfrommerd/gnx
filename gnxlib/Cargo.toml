@@ -9,7 +9,11 @@ name = "gnxlib"
 crate-type = ["cdylib"]
 test = false # The extension is tested from Python.
 
+[features]
+xla = ["dep:gnx-xla", "gnx-xla/native"]
+
 [dependencies]
+gnx-xla = { version = "0.1.0", path = "../gnx-xla", optional = true }
 gnx = { version = "0.1.0", path = "../gnx" }
 pyo3 = { version = "0.28.3", features = ["abi3-py310", "experimental-async", "num-bigint", "uuid"] }
 num-bigint = "0.4.6"

@@ -1,6 +1,7 @@
 //! Bridge a portable GNX DLPack lease to Python's single-use capsule protocol.
 
 use std::ffi::{CStr, c_void};
+use std::io;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
@@ -57,22 +58,22 @@ struct VersionOne {
 
 unsafe fn release_legacy(ptr: NonNull<c_void>) {
     let ptr = ptr.cast::<Legacy>().as_ptr();
-    // SAFETY: callers own a live legacy tensor lease.
-    unsafe {
+    // Python producers may require an attached thread for their deleter.
+    // If Python has finalized, releasing through it is not safe.
+    let _ = Python::try_attach(|_| unsafe {
         if let Some(release) = (*ptr).deleter {
             release(ptr)
         }
-    }
+    });
 }
 
 unsafe fn release_versioned(ptr: NonNull<c_void>) {
     let ptr = ptr.cast::<Versioned>().as_ptr();
-    // SAFETY: callers own a live versioned tensor lease.
-    unsafe {
+    let _ = Python::try_attach(|_| unsafe {
         if let Some(release) = (*ptr).deleter {
             release(ptr)
         }
-    }
+    });
 }
 
 unsafe extern "C" fn capsule_destructor(capsule: *mut ffi::PyObject) {
@@ -175,6 +176,7 @@ pub unsafe fn export(array: &Bound<'_, PyAny>, request: DlpackRequest) -> PyResu
 struct Producer {
     device: DlpackDevice,
     source: Mutex<Option<DlpackSource>>,
+    allow_legacy: bool,
 }
 
 #[pymethods]
@@ -204,10 +206,15 @@ impl Producer {
             .map_err(|_| PyRuntimeError::new_err("DLPack source lock poisoned"))?
             .take()
             .ok_or_else(|| PyValueError::new_err("this DLPack source was already consumed"))?;
-        let tensor = source.export(DlpackRequest {
-            stream,
-            max_version,
-        })?;
+        let tensor = if self.allow_legacy && max_version.is_none_or(|(major, _)| major < 1) {
+            // SAFETY: only an immutable consumer was given this producer.
+            unsafe { source.export_legacy() }?
+        } else {
+            source.export(DlpackRequest {
+                stream,
+                max_version,
+            })?
+        };
         if tensor.abi() == DlpackAbi::Versioned && max_version.is_none_or(|(major, _)| major < 1) {
             return Err(PyValueError::new_err(
                 "consumer did not negotiate versioned DLPack",
@@ -218,10 +225,62 @@ impl Producer {
 }
 
 /// Adapt a consuming Rust transfer to a Python array-protocol producer.
-pub fn producer(py: Python<'_>, source: DlpackSource) -> PyResult<Bound<'_, PyAny>> {
+///
+/// # Safety
+/// Only give the producer to consumers that honor the DLPack read-only flag.
+pub unsafe fn producer(py: Python<'_>, source: DlpackSource) -> PyResult<Bound<'_, PyAny>> {
+    make_producer(py, source, false)
+}
+
+/// # Safety
+/// This Python object must only be given to an immutable DLPack consumer.
+pub(crate) unsafe fn producer_with_legacy(
+    py: Python<'_>,
+    source: DlpackSource,
+) -> PyResult<Bound<'_, PyAny>> {
+    make_producer(py, source, true)
+}
+
+fn make_producer(
+    py: Python<'_>,
+    source: DlpackSource,
+    allow_legacy: bool,
+) -> PyResult<Bound<'_, PyAny>> {
     Producer {
         device: source.device(),
         source: Mutex::new(Some(source)),
+        allow_legacy,
     }
     .into_bound_py_any(py)
+}
+
+/// Import a NumPy or Torch CPU producer into the same tensor descriptor as JAX.
+///
+/// # Safety
+/// The producer must implement DLPack and there must be no writes, resize, or
+/// other invalidation through any alias until the lease is dropped.
+pub unsafe fn import_cpu(array: &Bound<'_, PyAny>) -> io::Result<gnx_math::DataHandle> {
+    let device: (i32, i32) = array.call_method0("__dlpack_device__")?.extract()?;
+    if device != (1, 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "expected a CPU DLPack producer",
+        ));
+    }
+    // SAFETY: caller attests the protocol and absence of writers. This is CPU storage.
+    let tensor = unsafe {
+        export(
+            array,
+            DlpackRequest {
+                stream: None,
+                max_version: Some((1, 0)),
+            },
+        )
+    }?;
+    unsafe {
+        tensor.into_data(
+            gnx_math::MemoryLocation::host(gnx_math::HostId::local()),
+            None,
+        )
+    }
 }

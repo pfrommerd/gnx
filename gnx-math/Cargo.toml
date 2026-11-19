@@ -7,3 +7,4 @@ edition = "2024"
 gnx-expr = { path = "../gnx-expr" }
 smallvec = "1.15.1"
 ordered-float = "5.3.0"
+uuid = { version = "1.19.0", features = ["v4"] }

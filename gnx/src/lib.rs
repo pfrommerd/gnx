@@ -6,7 +6,7 @@ pub use gnx_transforms::callable;
 pub use gnx_expr as expr;
 pub use gnx_graph as graph;
 
-pub use gnx_math::{array, buffer, device, ops};
+pub use gnx_math::{array, buffer, device, ops, shard};
 pub mod eval;
 pub use eval::{CaptureError, Eval, EvalError, EvalPlanError, expr};
 

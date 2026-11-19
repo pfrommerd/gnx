@@ -1,0 +1,23 @@
+name: Native XLA CPU
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang and libclang
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
+      - name: Install matching XLA runtime
+        run: |
+          archive="$RUNNER_TEMP/xla-cpu.tar.gz"
+          curl --fail --location --output "$archive" https://github.com/elixir-nx/xla/releases/download/v0.11.0/xla_extension-0.11.0-x86_64-linux-gnu-cpu.tar.gz
+          printf '%s  %s\n' f58a65af94e7058a82af7783b657dd4c0b29dc710cb5b8e8e6a0c1dc8f5d3f39 "$archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          export XLA_EXTENSION_DIR="$RUNNER_TEMP/xla_extension"
+          export LD_LIBRARY_PATH="$XLA_EXTENSION_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          CXX=clang++ cargo test --locked -p gnx-xla --features mesh

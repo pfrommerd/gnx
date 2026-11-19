@@ -1,4 +1,3 @@
-use std::fmt;
 use std::io;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -9,9 +8,8 @@ use gnx_expr::{Dialect, Eqn, Expr, Op, Operation, SubExpr, Value, ValueInfo, Var
 use gnx_jax::jaxpr::{self, JaxLowering, JaxLoweringError, TraceContext, TraceValue};
 use gnx_jax::{JaxBuffer, dlpack, register_jax_lowering};
 use gnx_math::{
-    ArrayInfo, BufferInfo, BufferLayout, DType, DataHandle, DataImpl, Device, DlpackDevice,
-    DlpackRequest, DlpackTensor, ExecOpts, HostBuffer, MemoryLocation, Shape, TransferPolicy,
-    ops::add_op,
+    ArrayInfo, DType, DataHandle, Device, ExecOpts, HostBuffer, HostId, LocalAllocations,
+    MemoryLocation, Shape, ShardStorage, TransferPolicy, ops::add_op,
 };
 use gnx_transforms::control_flow::{call, call_op};
 use pyo3::prelude::*;
@@ -241,18 +239,23 @@ fn jax_cpu_traces_executes_and_transfers() {
         let result = block_on(device.execute(expr.clone(), args, opts)).unwrap();
         let buffer = result[0].downcast::<DataHandle>().unwrap();
         assert_eq!(unpack(buffer), expected);
-        let storage = buffer.downcast_ref::<JaxBuffer>().unwrap();
-        assert_eq!(storage.device(), &device);
         assert_eq!(
-            buffer.buffer_info().location,
-            MemoryLocation::Device {
-                runtime: "jax",
-                device_id: device.uuid().to_string()
-            }
+            buffer.single_shard().unwrap().location,
+            MemoryLocation::host(HostId::local())
         );
+        assert!(buffer.single_allocation().is_some());
     }
+    let external = LocalAllocations::new();
+    let remote = Value::new(
+        DataHandle::single(
+            info(),
+            MemoryLocation::host(HostId::fresh()),
+            ShardStorage::Reference(external.insert(())),
+        )
+        .unwrap(),
+    );
     assert_eq!(
-        block_on(device.execute(expr, [host([1., 2.]), host([3., 4.])], ExecOpts::default()))
+        block_on(device.execute(expr, [remote, host([3., 4.])], ExecOpts::default()))
             .unwrap_err()
             .kind(),
         io::ErrorKind::Unsupported
@@ -333,36 +336,6 @@ fn test_eval(device: &gnx_jax::JaxDevice) {
     );
 }
 
-#[derive(Debug)]
-struct NumpyBuffer(Py<PyAny>);
-impl fmt::Display for NumpyBuffer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("NumPy CPU allocation")
-    }
-}
-impl DataImpl for NumpyBuffer {
-    fn info(&self) -> ArrayInfo {
-        info()
-    }
-    fn buffer_info(&self) -> BufferInfo {
-        BufferInfo {
-            location: MemoryLocation::Host,
-            memory_kind: None,
-            layout: BufferLayout::Packed,
-        }
-    }
-    fn dlpack_device(&self) -> Option<DlpackDevice> {
-        Some(DlpackDevice(1, 0))
-    }
-    fn export_dlpack(&self, request: DlpackRequest) -> io::Result<DlpackTensor> {
-        Python::attach(|py| {
-            // SAFETY: owned native NumPy allocation with no writer after export.
-            unsafe { dlpack::export(self.0.bind(py), request) }
-        })
-        .map_err(io::Error::other)
-    }
-}
-
 fn test_dlpack(py: Python<'_>, device: &gnx_jax::JaxDevice) {
     let numpy = py.import("numpy").unwrap();
     let owner = numpy.call_method1("zeros", (256, "uint8")).unwrap();
@@ -381,12 +354,11 @@ fn test_dlpack(py: Python<'_>, device: &gnx_jax::JaxDevice) {
     array.set_item(1, 6.0).unwrap();
     let addr = addr + offset;
     drop(owner);
+    // SAFETY: no writer is used after leasing the NumPy array.
+    let shared = unsafe { dlpack::import_cpu(&array) }.unwrap();
+    drop(array);
     let native = device
-        .import_buffer(
-            py,
-            DataHandle::new(NumpyBuffer(array.unbind())),
-            TransferPolicy::RequireZeroCopy,
-        )
+        .import_buffer(py, shared, TransferPolicy::RequireZeroCopy)
         .unwrap();
     let actual_addr = native
         .native(py)
@@ -395,14 +367,16 @@ fn test_dlpack(py: Python<'_>, device: &gnx_jax::JaxDevice) {
         .extract::<usize>()
         .unwrap();
     assert_eq!(actual_addr, addr);
-    assert_eq!(
-        unpack(&DataHandle::new(
-            JaxBuffer::from_native(native.native(py).clone()).unwrap()
-        )),
-        [4., 6.]
-    );
-    let producer =
-        dlpack::producer(py, DataHandle::new(native).into_dlpack().ok().unwrap()).unwrap();
+    // SAFETY: this is JAX's immutable view of the leased allocation.
+    let data = unsafe {
+        JaxBuffer::from_native(native.native(py).clone())
+            .unwrap()
+            .into_data(py)
+    }
+    .unwrap();
+    assert_eq!(unpack(&data), [4., 6.]);
+    // SAFETY: NumPy honors the versioned DLPack read-only flag.
+    let producer = unsafe { dlpack::producer(py, data.into_dlpack().ok().unwrap()) }.unwrap();
     let restored = numpy.call_method1("from_dlpack", (&producer,)).unwrap();
     let restored_addr = restored
         .getattr("ctypes")
@@ -421,4 +395,35 @@ fn test_dlpack(py: Python<'_>, device: &gnx_jax::JaxDevice) {
         [4., 6.]
     );
     assert!(numpy.call_method1("from_dlpack", (producer,)).is_err());
+}
+
+#[test]
+fn torch_cpu_strided_lease() {
+    if std::env::var_os("GNX_TEST_TORCH").is_none() {
+        return;
+    }
+    Python::initialize();
+    let data = Python::attach(|py| {
+        let torch = py.import("torch").unwrap();
+        let tensor = torch
+            .call_method1("tensor", (vec![1.0_f32, 2.0, 3.0, 4.0, 5.0],))
+            .unwrap();
+        let view = tensor.call_method1("as_strided", ((3,), (2,))).unwrap();
+        let address: usize = view.call_method0("data_ptr").unwrap().extract().unwrap();
+        // SAFETY: these test tensors have no writer and are released after creating the lease.
+        let data = unsafe { dlpack::import_cpu(&view) }.unwrap();
+        assert_eq!(
+            data.clone().into_dlpack().ok().unwrap().address(),
+            Some(address)
+        );
+        data
+    });
+    assert_eq!(
+        data.clone()
+            .into_host(TransferPolicy::RequireZeroCopy)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Unsupported
+    );
+    assert_eq!(unpack(&data), [1., 3., 5.]);
 }

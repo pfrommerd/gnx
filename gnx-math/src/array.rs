@@ -3,7 +3,7 @@ use std::fmt::{Debug, Display};
 
 use gnx_expr::{CellTracer, ConcreteValue, Trace, Traceable, Tracer, Value};
 
-pub use crate::buffer::{DataHandle, DataImpl};
+pub use crate::buffer::DataHandle;
 
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Dim {
@@ -311,7 +311,7 @@ impl Traceable for Array {
 }
 
 impl Array {
-    /// Wrap an owned concrete buffer without copying its storage.
+    /// Wrap a concrete storage reference without transferring its data.
     pub fn from_data(data: DataHandle) -> Self {
         let info = data.to_info();
         let trace = Trace::concrete(Value::new(data), info);

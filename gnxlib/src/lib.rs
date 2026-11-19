@@ -3,6 +3,8 @@ pub mod graph;
 pub mod leaf;
 pub mod string;
 mod tracer;
+#[cfg(feature = "xla")]
+mod xla;
 
 use std::sync::Arc;
 
@@ -20,9 +22,8 @@ use crate::graph::{parse_roots, GraphParser, PyGraph};
 #[pymodule]
 pub mod _native {
     use gnx::buffer::TransferPolicy;
-    use gnx::{Eval, EvalError, EvalPlanError, ExecOpts};
+    use gnx::{Eval, ExecOpts};
     use gnx_jax::JaxDevice;
-    use pyo3::exceptions::{PyRuntimeError, PyValueError};
     use pyo3::prelude::*;
     use uuid::Uuid;
 
@@ -31,7 +32,10 @@ pub mod _native {
     #[pymodule_export]
     use crate::graph::GraphContainer;
     #[pymodule_export]
-    use crate::tracer::{new_ref, placeholder, PyArray, PyArrayRef};
+    use crate::tracer::{from_host_bytes, new_ref, placeholder, PyArray, PyArrayRef};
+    #[cfg(feature = "xla")]
+    #[pymodule_export]
+    use crate::xla::{xla_devices, PyXlaDevice};
 
     #[pyclass(name = "JaxDevice", module = "gnxlib.jax", eq, frozen, hash)]
     #[derive(PartialEq, Eq, Hash)]
@@ -81,14 +85,7 @@ pub mod _native {
             self.0
                 .eval(roots.as_ref(), ExecOpts { transfers })
                 .await
-                .map_err(|error| match error {
-                    EvalError::Backend(error) => error.into(),
-                    EvalError::Capture(_)
-                    | EvalError::Plan(
-                        EvalPlanError::UnboundPlaceholder | EvalPlanError::CellEffect,
-                    ) => PyValueError::new_err(error.to_string()),
-                    _ => PyRuntimeError::new_err(error.to_string()),
-                })
+                .map_err(super::eval_error)
         }
 
         fn __repr__(&self) -> String {
@@ -103,6 +100,18 @@ pub mod _native {
             .into_iter()
             .map(PyJaxDevice)
             .collect())
+    }
+}
+
+fn eval_error(error: gnx::EvalError) -> PyErr {
+    use gnx::{EvalError, EvalPlanError};
+    match error {
+        EvalError::Backend(error) => error.into(),
+        EvalError::Capture(_)
+        | EvalError::Plan(EvalPlanError::UnboundPlaceholder | EvalPlanError::CellEffect) => {
+            PyValueError::new_err(error.to_string())
+        }
+        _ => PyRuntimeError::new_err(error.to_string()),
     }
 }
 

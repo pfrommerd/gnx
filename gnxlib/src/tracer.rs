@@ -1,10 +1,11 @@
 use gnx::array::{Array, ArrayInfo, ArrayRef, DType, Dim, Shape};
-use gnx::expr::{CellTracer, ObjectTracer, TraceContext, Tracer, ValueInfo};
+use gnx::buffer::{DataHandle, HostBuffer};
+use gnx::expr::{CellTracer, Invocation, ObjectTracer, TraceContext, Tracer, ValueInfo};
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PySlice, PyTuple};
+use pyo3::types::{PyBytes, PySlice, PyTuple};
 
-/// A symbolic array. It describes a traced value, not a materialized array.
+/// An array that can be symbolic or backed by concrete storage.
 #[pyclass(name = "Array", module = "gnxlib.array", frozen)]
 pub struct PyArray(pub(crate) Array);
 
@@ -22,10 +23,40 @@ impl PyArray {
 
     fn __repr__(&self) -> String {
         format!(
-            "Array(shape={}, dtype='{}', symbolic=True)",
+            "Array(shape={}, dtype='{}', symbolic={})",
             self.0.shape(),
-            self.0.dtype()
+            self.0.dtype(),
+            if self.0.data().is_some() {
+                "False"
+            } else {
+                "True"
+            },
         )
+    }
+
+    fn __add__(&self, rhs: &PyArray) -> PyResult<Self> {
+        let lhs = self.0.tracer();
+        let rhs = rhs.0.tracer();
+        if lhs.trace_ref().info() != rhs.trace_ref().info() {
+            return Err(PyValueError::new_err(
+                "array addition requires the same shape and dtype",
+            ));
+        }
+        let output = Invocation::invoke(
+            gnx::ops::add_op(),
+            vec![],
+            vec![lhs.clone(), rhs.clone()],
+            vec![lhs.trace_ref().info().clone()],
+        )
+        .pop()
+        .expect("one array output");
+        Ok(Self(
+            output
+                .try_cast::<Array>()
+                .ok()
+                .expect("typed array output")
+                .into(),
+        ))
     }
 
     fn __bool__(&self) -> PyResult<bool> {
@@ -82,7 +113,19 @@ pub fn placeholder(shape: Vec<usize>, dtype: &str) -> PyResult<PyArray> {
     Ok(PyArray(Tracer::<Array>::placeholder(info).into()))
 }
 
-/// Create a mutable cell initialized with the symbolic array x.
+/// Copy packed little-endian C-order bytes into a concrete host array.
+#[pyfunction]
+pub fn from_host_bytes(
+    shape: Vec<usize>,
+    dtype: &str,
+    bytes: &Bound<'_, PyBytes>,
+) -> PyResult<PyArray> {
+    let info = ArrayInfo::new(Shape::fixed(shape), parse_dtype(dtype)?);
+    let host = HostBuffer::new(info, bytes.as_bytes().to_vec())?;
+    Ok(PyArray(Array::from_data(DataHandle::new(host))))
+}
+
+/// Create a mutable cell initialized with the array x.
 #[pyfunction]
 pub fn new_ref(x: &PyArray) -> PyArrayRef {
     PyArrayRef(ArrayRef::new(x.0.tracer().clone()))

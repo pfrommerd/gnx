@@ -32,6 +32,7 @@ pub struct JaxDevice {
     platform: String,
     hardware_id: String,
     hardware_kind: String,
+    ordinal: u64,
     native: Arc<Py<PyAny>>,
 }
 
@@ -53,6 +54,7 @@ impl JaxDevice {
             platform,
             hardware_id: local_id.unwrap_or(id).to_string(),
             hardware_kind,
+            ordinal: id as u64,
             native: Arc::new(device.unbind()),
         })
     }
@@ -73,6 +75,10 @@ impl JaxDevice {
 
     pub fn hardware_kind(&self) -> &str {
         &self.hardware_kind
+    }
+
+    pub(crate) fn ordinal(&self) -> u64 {
+        self.ordinal
     }
 
     pub fn native<'a, 'py>(&'a self, py: Python<'py>) -> &'a Bound<'py, PyAny> {

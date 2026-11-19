@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures_channel::oneshot;
 use gnx_expr::{Expr, Value};
-use gnx_math::{DataHandle, DataImpl, Device, ExecOpts};
+use gnx_math::{DataHandle, Device, ExecOpts, ExecutionBoundary};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
@@ -44,47 +44,30 @@ impl JaxDevice {
         args: Vec<Value>,
         opts: ExecOpts,
     ) -> io::Result<Vec<Value>> {
+        ExecutionBoundary::validate_arguments(&expr, &args)?;
+        let (projected, boundary) = ExecutionBoundary::project(&expr)?;
+        let Some(expr) = projected else {
+            return boundary.finish(&args, &[]);
+        };
         let jax = py.import("jax")?;
         let expr = Arc::new(expr);
         let callable = jaxpr::callable(&jax, expr.clone()).map_err(io::Error::other)?;
-        let expected = expr.closure().iter().chain(expr.inputs());
-        let count = expr.closure().len() + expr.inputs().len();
-        if count != args.len() {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                format!("expression expects {count} arguments, got {}", args.len()),
-            ));
-        }
-        let mut inputs = Vec::with_capacity(count);
-        for (index, ((_, expected), value)) in expected.zip(args).enumerate() {
-            let expected = jaxpr::expected(expected).map_err(io::Error::other)?;
-            let data = value.downcast::<DataHandle>().cloned().map_err(|_| {
-                io::Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("argument {index} is not a concrete array"),
-                )
-            })?;
-            let actual = data.info();
-            if actual != *expected {
-                return Err(io::Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("argument {index}: expected {expected}, got {actual}"),
-                ));
-            }
-            inputs.push(data);
-        }
-        let inputs = inputs
-            .into_iter()
-            .map(|data| self.import_buffer(py, data, opts.transfers))
+        let inputs = boundary
+            .arguments(&args)
+            .map(|value| {
+                let data = value?.downcast::<DataHandle>().map_err(|_| {
+                    io::Error::new(ErrorKind::InvalidInput, "argument is not a concrete array")
+                })?;
+                self.import_buffer(py, data.clone(), opts.transfers)
+            })
             .collect::<io::Result<Vec<_>>>()?;
         let sharding = self.single_device_sharding(py)?;
         let options = PyDict::new(py);
         options.set_item("in_shardings", &sharding)?;
         options.set_item("out_shardings", &sharding)?;
         let compiled = jax.call_method("jit", (callable,), Some(&options))?;
-        let args = PyTuple::new(py, inputs.iter().map(|data| data.native(py)))?;
-        let outputs = compiled.call1(args)?;
-        jax.call_method1("block_until_ready", (&outputs,))?;
+        let native_args = PyTuple::new(py, inputs.iter().map(|data| data.native(py)))?;
+        let outputs = compiled.call1(native_args)?;
         let outputs = outputs.cast_into::<PyTuple>().map_err(PyErr::from)?;
         if outputs.len() != expr.outputs().len() {
             return Err(io::Error::new(
@@ -92,7 +75,7 @@ impl JaxDevice {
                 "JAX returned an unexpected number of arrays",
             ));
         }
-        outputs
+        let computed = outputs
             .iter()
             .zip(expr.outputs())
             .map(|(array, var)| {
@@ -100,14 +83,16 @@ impl JaxDevice {
                 let expected =
                     jaxpr::expected(expr.value_info(var).expect("validated output metadata"))
                         .map_err(io::Error::other)?;
-                if result.info() != *expected || !self.native(py).eq(result.device().native(py))? {
+                if result.info() != expected || !self.native(py).eq(result.device().native(py))? {
                     return Err(io::Error::new(
                         ErrorKind::InvalidData,
                         "JAX returned an array with unexpected metadata or placement",
                     ));
                 }
-                Ok(Value::new(DataHandle::new(result)))
+                // SAFETY: these are ready results of JAX execution on immutable inputs.
+                Ok(Value::new(unsafe { result.into_data(py) }?))
             })
-            .collect()
+            .collect::<io::Result<Vec<_>>>()?;
+        boundary.finish(&args, &computed)
     }
 }
