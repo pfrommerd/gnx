@@ -7,6 +7,7 @@ mod graph_traits;
 mod leaf;
 mod lifetime_free;
 mod paths;
+mod transform_fn;
 mod transforms;
 
 #[proc_macro]
@@ -85,4 +86,44 @@ pub fn derive_graph_partial_eq(input: ProcTokenStream) -> ProcTokenStream {
 #[proc_macro_derive(GraphEq)]
 pub fn derive_graph_eq(input: ProcTokenStream) -> ProcTokenStream {
     graph_traits::derive_graph_eq(input)
+}
+
+/// Vectorize a closure like `jit_fn!`: `map!(|x: Array, w: Array| .., in_axes = (0, *))`.
+/// Options (all optional, `dag!` syntax): `in_axes`, `out_axes`; and `axis_size = <expr>`.
+#[proc_macro]
+pub fn map(input: ProcTokenStream) -> ProcTokenStream {
+    transform_fn::transform_fn(input, &transform_fn::MAP)
+}
+
+/// Forward-mode derivative of a closure, called with `(primals, tangents)`.
+/// Option: `wrt = <dag>`.
+#[proc_macro]
+pub fn jvp(input: ProcTokenStream) -> ProcTokenStream {
+    transform_fn::transform_fn(input, &transform_fn::JVP)
+}
+
+/// Reverse-mode derivative of a closure, called with `(primals, cotangents)`.
+/// Option: `wrt = <dag>`.
+#[proc_macro]
+pub fn vjp(input: ProcTokenStream) -> ProcTokenStream {
+    transform_fn::transform_fn(input, &transform_fn::VJP)
+}
+
+/// Gradient of a scalar closure. Option: `wrt = <dag>`.
+#[proc_macro]
+pub fn grad(input: ProcTokenStream) -> ProcTokenStream {
+    transform_fn::transform_fn(input, &transform_fn::GRAD)
+}
+
+/// Value and gradient of a scalar closure. Option: `wrt = <dag>`.
+#[proc_macro]
+pub fn value_and_grad(input: ProcTokenStream) -> ProcTokenStream {
+    transform_fn::transform_fn(input, &transform_fn::VALUE_AND_GRAD)
+}
+
+/// Hessian of a scalar closure with respect to one array argument.
+/// Option: `wrt = <dag>`.
+#[proc_macro]
+pub fn hessian(input: ProcTokenStream) -> ProcTokenStream {
+    transform_fn::transform_fn(input, &transform_fn::HESSIAN)
 }

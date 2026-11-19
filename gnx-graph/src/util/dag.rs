@@ -25,6 +25,13 @@ pub enum DagChild<I> {
     Shared(Arc<Dag<I>>),
 }
 
+/// A single leaf: `Dag::from(0)` is `dag!(0)`.
+impl<I> From<I> for Dag<I> {
+    fn from(value: I) -> Self {
+        Dag::Leaf(Some(value))
+    }
+}
+
 impl<I> Dag<I> {
     /// Map selected leaves, visiting each shared node once. Map children are
     /// visited in insertion order.

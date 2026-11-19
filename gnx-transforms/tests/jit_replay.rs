@@ -231,7 +231,7 @@ fn nested_jit_records_a_high_level_call_in_the_enclosing_capture() {
     .unwrap();
     assert_eq!(capture.expr().instructions().len(), 1);
     let eqn = capture.expr().instructions()[0].as_apply().unwrap();
-    assert_eq!(eqn.op(), &gnx_transforms::control_flow::call_op());
+    assert_eq!(eqn.op(), &gnx_transforms::cf::call_op());
     let nested = eqn.subexprs()[0].expr().instructions()[0]
         .as_apply()
         .unwrap();
@@ -317,7 +317,7 @@ impl std::ops::Deref for Call {
         let Invocation::DeferredApply(call) = self.0.as_ref() else {
             panic!("expected a high-level call")
         };
-        assert_eq!(call.op(), &gnx_transforms::control_flow::call_op());
+        assert_eq!(call.op(), &gnx_transforms::cf::call_op());
         call
     }
 }

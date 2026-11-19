@@ -7,19 +7,19 @@ use gnx_expr::{Capture, CellTrace, ContextID, HExpr, Kind, ObjectTracer, Trace, 
 use gnx_graph::anyhash::HasherWrite;
 use gnx_graph::util::{GraphExt, IterSource};
 use gnx_graph::{
-    Builder, Graph, GraphContext, GraphEq, GraphEqContext, GraphHash, GraphHashContext, Of,
+    Builder, Graph, GraphContext, GraphEq, GraphEqContext, GraphHash, GraphHashContext, Key, Of,
     SourceError,
 };
 
-pub(super) type TracerBuilder<I> = <I as Graph>::Builder<ObjectTracer>;
+pub(crate) type TracerBuilder<I> = <I as Graph>::Builder<ObjectTracer>;
 type Slots<I, O> = DashMap<Arc<TraceKey<<I as Graph>::Owned>>, Arc<TraceSlot<O>>>;
 
-pub(super) struct TraceCache<I: Graph, O: Graph> {
+pub(crate) struct TraceCache<I: Graph, O: Graph> {
     slots: OnceLock<Slots<I, O>>,
 }
 
 impl<I: Graph, O: Graph> TraceCache<I, O> {
-    pub(super) const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             slots: OnceLock::new(),
         }
@@ -32,7 +32,7 @@ where
     I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
     O: Graph<Owned = O>,
 {
-    pub(super) fn invoke<A, E>(
+    pub(crate) fn invoke<A, E>(
         &self,
         input: A,
         name_hint: Option<&Cow<'static, str>>,
@@ -45,7 +45,7 @@ where
         Ok(entry.call(&arguments))
     }
 
-    pub(super) fn trace<E>(
+    pub(crate) fn trace<E>(
         &self,
         input: I,
         name_hint: Option<&Cow<'static, str>>,
@@ -66,11 +66,23 @@ where
     {
         let (builder, arguments) = split_graph(&input);
         let kinds = arguments.iter().map(kind).collect();
+        let entry = self.entry(builder, kinds, name_hint, body)?;
+        Ok((entry, arguments))
+    }
+
+    /// The trace for an explicit signature: the input structure and one kind
+    /// per tracer leaf, in leaf order. Transformations trace at signatures
+    /// that differ from their arguments (e.g. `map` removes mapped axes).
+    pub(crate) fn entry<E>(
+        &self,
+        builder: TracerBuilder<I>,
+        kinds: Vec<Kind>,
+        name_hint: Option<&Cow<'static, str>>,
+        body: impl FnOnce(I::Owned) -> Result<O, E>,
+    ) -> Result<Arc<TraceEntry<O>>, E> {
         let key: Arc<TraceKey<I::Owned>> = Arc::new(TraceKey { builder, kinds });
         let slot = self.slot(&key);
-        let entry =
-            slot.get_or_trace(|| TraceEntry::trace(&key.builder, &key.kinds, name_hint, body))?;
-        Ok((entry, arguments))
+        slot.get_or_trace(|| TraceEntry::trace(&key.builder, &key.kinds, name_hint, body))
     }
 
     fn slot(&self, key: &Arc<TraceKey<I::Owned>>) -> Arc<TraceSlot<O>> {
@@ -118,10 +130,12 @@ impl<O: Graph<Owned = O>> TraceSlot<O> {
     }
 }
 
-struct TraceEntry<O: Graph> {
-    expr: Arc<HExpr>,
-    closure: Vec<ObjectTracer>,
-    output_builder: TracerBuilder<O>,
+pub(crate) struct TraceEntry<O: Graph> {
+    pub(crate) expr: Arc<HExpr>,
+    pub(crate) closure: Vec<ObjectTracer>,
+    pub(crate) output_builder: TracerBuilder<O>,
+    /// Key path of each output tracer leaf, in leaf order.
+    pub(crate) output_paths: Vec<Vec<Key>>,
 }
 
 impl<O: Graph<Owned = O>> TraceEntry<O> {
@@ -146,6 +160,11 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
         let input = rebuild_graph(input_builder, placeholders.iter().cloned());
         let output = body(input)?;
         let (output_builder, outputs) = split_graph(&output);
+        let output_paths = output
+            .collect_leaves_with_paths(&Of::<ObjectTracer>::filter())
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
         let capture = Capture::from_context(guard.context(), &placeholders, &outputs)
             .expect("JIT could not capture traced function");
         let (expr, closure, ..) = capture.into_parts();
@@ -157,13 +176,14 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
             expr: Arc::new(expr),
             closure,
             output_builder,
+            output_paths,
         })
     }
 
     fn call(&self, arguments: &[ObjectTracer]) -> O {
         rebuild_graph(
             &self.output_builder,
-            crate::control_flow::defer_call(self.expr.clone(), &self.closure, arguments),
+            crate::cf::defer_call(self.expr.clone(), &self.closure, arguments),
         )
     }
 }
@@ -205,7 +225,7 @@ impl<H: Hasher> HasherWrite for GraphHashWriter<'_, H> {
     }
 }
 
-fn kind(object: &ObjectTracer) -> Kind {
+pub(crate) fn kind(object: &ObjectTracer) -> Kind {
     match object {
         ObjectTracer::Ref(value) => Kind::Value(value.info().clone()),
         ObjectTracer::Cell(cell) => Kind::Cell(cell.type_info().clone()),
@@ -219,7 +239,7 @@ fn placeholder(kind: &Kind) -> ObjectTracer {
     }
 }
 
-fn split_graph<G: Graph>(graph: &G) -> (TracerBuilder<G>, Vec<ObjectTracer>) {
+pub(crate) fn split_graph<G: Graph>(graph: &G) -> (TracerBuilder<G>, Vec<ObjectTracer>) {
     let filter = &Of::<ObjectTracer>::filter();
     let builder = graph
         .builder::<ObjectTracer, _, SourceError>(filter, &mut GraphContext::new())
@@ -227,7 +247,7 @@ fn split_graph<G: Graph>(graph: &G) -> (TracerBuilder<G>, Vec<ObjectTracer>) {
     (builder, graph.collect_leaves(filter))
 }
 
-fn rebuild_graph<B: Builder<ObjectTracer>>(
+pub(crate) fn rebuild_graph<B: Builder<ObjectTracer>>(
     builder: &B,
     leaves: impl IntoIterator<Item = ObjectTracer>,
 ) -> B::Graph {

@@ -3,7 +3,7 @@ use gnx_expr::{
     TraceContext, ValueInfo, hexpr,
 };
 use gnx_math::{ArrayInfo, DType, Shape};
-use gnx_transforms::control_flow::{ScanParameters, cond, scan, scan_op, switch, while_loop};
+use gnx_transforms::cf::{ScanParameters, cond, scan, scan_op, switch, while_loop};
 
 fn info(shape: &[usize], dtype: DType) -> ValueInfo {
     ValueInfo::new(ArrayInfo::new(Shape::fixed(shape.iter().copied()), dtype))

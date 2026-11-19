@@ -5,15 +5,14 @@ edition = "2024"
 
 [features]
 default = []
-native = ["dep:xla", "dep:futures-channel", "dep:gnx-transforms", "dep:inventory"]
-mesh = ["native", "dep:cc", "dep:futures", "dep:serde", "dep:tarpc", "dep:tokio", "dep:uuid"]
+native = ["dep:cc", "dep:xla", "dep:futures-channel", "dep:gnx-transforms"]
+mesh = ["native", "dep:futures", "dep:serde", "dep:tarpc", "dep:tokio", "dep:uuid"]
 
 [dependencies]
 futures-channel = { version = "0.3", optional = true }
 gnx-expr = { path = "../gnx-expr" }
 gnx-math = { path = "../gnx-math" }
 gnx-transforms = { path = "../gnx-transforms", optional = true }
-inventory = { version = "0.3", optional = true }
 xla = { version = "=0.5.5", optional = true }
 futures = { version = "0.3", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }

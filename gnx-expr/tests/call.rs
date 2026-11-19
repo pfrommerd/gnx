@@ -2,7 +2,7 @@ use gnx_expr::{
     CallError, Capture, CellKey, CellTrace, Generic, HExpr, InputSpec, ObjectTracer, TraceContext,
     Tracer, TracerKey, ValueInfo, hexpr,
 };
-use gnx_transforms::control_flow::call_lowered;
+use gnx_transforms::cf::call_lowered;
 fn info() -> ValueInfo {
     ValueInfo::new(0usize)
 }

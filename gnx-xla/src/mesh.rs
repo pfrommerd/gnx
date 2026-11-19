@@ -14,11 +14,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use futures::future::join_all;
+use gnx_expr::pass::{Dce, FnPass, Pipeline};
 use gnx_expr::{Expr, Value};
 use gnx_math::{
     AllocationId, AllocationRef, DataHandle, Device, ExecOpts, ExecutionBoundary, HostBuffer,
     HostId, Lease, MemoryLocation, OwnerId, Shard, ShardStorage, TransferPolicy,
 };
+use gnx_transforms::ExpandTransforms;
 use tokio::runtime::Handle;
 use uuid::Uuid;
 
@@ -104,7 +106,16 @@ impl Mesh {
     pub async fn compile(&self, expr: &Expr) -> io::Result<MeshExecutable> {
         let (projected, boundary) = ExecutionBoundary::project(expr)?;
         let compiled = if let Some(projected) = projected {
-            let program = Program::lower(&projected, self.axis(), self.0.workers.len())?;
+            let (axis, workers) = (self.axis().to_owned(), self.0.workers.len());
+            // Workers accept only the closed wire program, so the final stage
+            // produces a `Program` rather than HLO.
+            let pipeline = Pipeline::new()
+                .with(ExpandTransforms)
+                .with(Dce)
+                .finalize(FnPass::new("mesh.lower", move |expr: Expr| {
+                    Program::lower(&expr, &axis, workers)
+                }));
+            let program = pipeline.run(projected).map_err(crate::native::pass_error)?;
             let placement = program.placement()?;
             let kernels = join_all(self.0.workers.iter().map(|worker| async {
                 let id = response(

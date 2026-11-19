@@ -1,5 +1,6 @@
 //! Backend-independent references to immutable array storage.
 
+use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt::{self, Display};
@@ -585,9 +586,57 @@ impl ConcreteValue for DataHandle {
     }
 }
 
+/// Alignment for owned host snapshots that can be shared with CPU runtimes.
+pub const HOST_BUFFER_ALIGNMENT: usize = 64;
+
+#[derive(Debug)]
+struct AlignedBytes {
+    address: NonNull<u8>,
+    layout: Layout,
+    len: usize,
+}
+
+// SAFETY: the allocation is owned, and mutable access requires exclusive access.
+unsafe impl Send for AlignedBytes {}
+unsafe impl Sync for AlignedBytes {}
+
+impl AlignedBytes {
+    fn new(len: usize) -> io::Result<Self> {
+        let layout = Layout::from_size_align(len.max(1), HOST_BUFFER_ALIGNMENT)
+            .map_err(|_| invalid("host allocation size overflow"))?;
+        // SAFETY: layout is nonzero and valid. The initialized allocation is owned here.
+        let address = NonNull::new(unsafe { alloc_zeroed(layout) }).ok_or_else(|| {
+            io::Error::new(ErrorKind::OutOfMemory, "aligned host allocation failed")
+        })?;
+        Ok(Self {
+            address,
+            layout,
+            len,
+        })
+    }
+
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: the allocation is initialized and stays live for this borrow.
+        unsafe { std::slice::from_raw_parts(self.address.as_ptr(), self.len) }
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: storage is initialized and this is the only mutable access, before sharing.
+        unsafe { std::slice::from_raw_parts_mut(self.address.as_ptr(), self.len) }
+    }
+}
+
+impl Drop for AlignedBytes {
+    fn drop(&mut self) {
+        // SAFETY: unique allocation, freed with its original layout.
+        unsafe { dealloc(self.address.as_ptr(), self.layout) }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum HostBytes {
     Owned(Arc<Vec<u8>>),
+    Aligned(Arc<AlignedBytes>),
     Leased {
         address: NonNull<u8>,
         len: usize,
@@ -623,6 +672,42 @@ impl HostBuffer {
         })
     }
 
+    /// Make one snapshot in storage aligned for CPU runtime imports.
+    pub fn copy_from_slice(info: ArrayInfo, source: &[u8]) -> io::Result<Self> {
+        if source.len() != Self::packed_len(&info)? {
+            return Err(invalid(
+                "packed byte count does not match fixed array metadata",
+            ));
+        }
+        Self::try_fill(info, |destination| {
+            destination.copy_from_slice(source);
+            Ok(())
+        })
+    }
+
+    fn packed_len(info: &ArrayInfo) -> io::Result<usize> {
+        volume(&dimensions(info)?)?
+            .checked_mul(scalar_width(info.dtype()))
+            .ok_or_else(|| invalid("packed byte count overflow"))
+    }
+
+    /// Fill aligned storage before publishing it as immutable. The destination
+    /// is initialized to zero and may only be written during `fill`.
+    pub fn try_fill<E: From<io::Error>>(
+        info: ArrayInfo,
+        fill: impl FnOnce(&mut [u8]) -> Result<(), E>,
+    ) -> Result<Self, E> {
+        let mut bytes = AlignedBytes::new(Self::packed_len(&info)?)?;
+        fill(bytes.bytes_mut())?;
+        if info.dtype() == DType::Bool && bytes.bytes().iter().any(|byte| *byte > 1) {
+            return Err(invalid("packed booleans must be 0 or 1").into());
+        }
+        Ok(Self {
+            info,
+            bytes: HostBytes::Aligned(Arc::new(bytes)),
+        })
+    }
+
     pub fn info(&self) -> &ArrayInfo {
         &self.info
     }
@@ -630,6 +715,7 @@ impl HostBuffer {
     pub fn bytes(&self) -> &[u8] {
         match &self.bytes {
             HostBytes::Owned(bytes) => bytes,
+            HostBytes::Aligned(bytes) => bytes.bytes(),
             HostBytes::Leased { address, len, .. } => unsafe {
                 std::slice::from_raw_parts(address.as_ptr(), *len)
             },
@@ -649,7 +735,7 @@ impl HostBuffer {
         }
     }
 
-    /// Extract bytes, copying only if the allocation is shared or leased.
+    /// Extract a Vec, copying unless the storage is a uniquely owned Vec.
     pub fn into_bytes(self) -> Vec<u8> {
         self.try_into_bytes()
             .unwrap_or_else(|host| host.bytes().to_vec())

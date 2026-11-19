@@ -2,7 +2,7 @@ use gnx_expr::{
     Capture, CellTrace, Dialect, Generic, InputId, InputSpec, Invocation, ObjectTracer, Op,
     Operation, Trace, TraceContext, Tracer, TracerKey, ValueInfo,
 };
-use gnx_transforms::control_flow::call_lowered;
+use gnx_transforms::cf::call_lowered;
 
 fn info() -> ValueInfo {
     ValueInfo::new(0usize)

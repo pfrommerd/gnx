@@ -1,8 +1,12 @@
 pub mod bytes;
+mod cf;
 pub mod graph;
 pub mod leaf;
+#[cfg(feature = "xla-mesh")]
+mod mesh;
 pub mod string;
 mod tracer;
+mod transforms;
 #[cfg(feature = "xla")]
 mod xla;
 
@@ -30,9 +34,20 @@ pub mod _native {
     #[pymodule_export]
     use super::{expr, jit, PyCapture, PyJit, PyTrace};
     #[pymodule_export]
+    use crate::cf::{cond, scan, switch, while_loop};
+    #[pymodule_export]
     use crate::graph::GraphContainer;
     #[pymodule_export]
-    use crate::tracer::{from_host_bytes, new_ref, placeholder, PyArray, PyArrayRef};
+    use crate::transforms::{
+        grad, hessian, jvp, map, value_and_grad, vjp, PyTransformed, PyVjpFunction,
+    };
+    #[cfg(feature = "xla-mesh")]
+    #[pymodule_export]
+    use crate::mesh::{constrain, replicate, PyMesh, PyMeshWorker};
+    #[pymodule_export]
+    use crate::tracer::{
+        from_host_bytes, from_numpy_array, new_ref, placeholder, PyArray, PyArrayRef,
+    };
     #[cfg(feature = "xla")]
     #[pymodule_export]
     use crate::xla::{xla_devices, PyXlaDevice};
@@ -166,7 +181,7 @@ fn binding_tuple<'py>(py: Python<'py>, bindings: &[ObjectTracer]) -> PyResult<Bo
     PyTuple::new(py, values)
 }
 
-struct PythonFunction(Arc<Py<PyAny>>);
+pub(crate) struct PythonFunction(pub(crate) Arc<Py<PyAny>>);
 
 impl Function<PyGraph> for PythonFunction {
     type Output = PyGraph;
@@ -197,7 +212,7 @@ impl TryJitable<PyGraph> for PythonFunction {
 
 /// A read-only high-level trace, without live argument or capture bindings.
 #[pyclass(name = "Trace", module = "gnxlib", frozen)]
-pub struct PyTrace(Arc<HExpr>);
+pub struct PyTrace(pub(crate) Arc<HExpr>);
 
 #[pymethods]
 impl PyTrace {

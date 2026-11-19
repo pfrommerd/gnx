@@ -362,7 +362,7 @@ fn a_call_that_only_forwards_an_input_needs_no_equation() {
     let body = gnx_expr::hexpr!(gnx_expr::ValueInfo::new(0usize); { lambda formal: in (formal) });
     let guard = TraceContext::enter();
     let x = value();
-    let result = gnx_transforms::control_flow::call_immutable(
+    let result = gnx_transforms::cf::call_immutable(
         std::sync::Arc::new(body),
         Vec::<Tracer<Generic>>::new(),
         [x.clone()],

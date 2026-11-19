@@ -3,8 +3,11 @@ mod dialects;
 pub mod eval;
 mod expr;
 pub mod hexpr;
+mod interface;
 pub use expr::{Eqn, Expr, SubExpr};
+pub use interface::{Caster, InterfaceError, InterfaceImpl};
 pub mod lower;
+pub mod pass;
 // pub mod expr_macro;
 // pub mod pretty;
 pub mod trace;
@@ -135,7 +138,7 @@ impl Op {
     }
 }
 
-#[derive(Clone, Hash, PartialEq, Eq, Debug)]
+#[derive(Clone, Default, Hash, PartialEq, Eq, Debug)]
 pub struct VarScope {
     next_id: usize,
 }

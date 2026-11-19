@@ -1,4 +1,3 @@
-use gnx::buffer::TransferPolicy;
 use gnx::{Eval, ExecOpts};
 use gnx_xla::XlaDevice;
 use pyo3::exceptions::PyValueError;
@@ -33,16 +32,11 @@ impl PyXlaDevice {
         self.0.ordinal()
     }
 
-    #[pyo3(signature = (roots, *, allow_copy = false))]
-    async fn eval(&self, roots: Py<PyAny>, allow_copy: bool) -> PyResult<()> {
+    /// Evaluate with no implicit input copies.
+    async fn eval(&self, roots: Py<PyAny>) -> PyResult<()> {
         let roots = Python::attach(|py| crate::parse_roots(roots.bind(py)))?;
-        let transfers = if allow_copy {
-            TransferPolicy::AllowCopy
-        } else {
-            TransferPolicy::RequireZeroCopy
-        };
         self.0
-            .eval(roots.as_ref(), ExecOpts { transfers })
+            .eval(roots.as_ref(), ExecOpts::default())
             .await
             .map_err(crate::eval_error)
     }

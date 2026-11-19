@@ -78,7 +78,7 @@ fn hexpr_prints_nested_bodies_inline() {
             "  in (result)\n}",
         ),
     );
-    assert_eq!(eqn.op(), &gnx_transforms::control_flow::call_op());
+    assert_eq!(eqn.op(), &gnx_transforms::cf::call_op());
     assert!(Arc::ptr_eq(eqn.subexprs()[0].expr(), &inner));
     assert_eq!(
         body.kind(&eqn.outputs()[0].0),
@@ -97,7 +97,7 @@ fn hexpr_prints_nested_bodies_inline() {
 #[test]
 fn inline_hexpr_captures_cells_and_values_across_regions() {
     let info = ValueInfo::new(0usize);
-    let _ = gnx_transforms::control_flow::call_op();
+    let _ = gnx_transforms::cf::call_op();
     let body = hexpr!(&info; |state[:], replacement| => {
         result = cf::call [|| => {
             old = cf::call [|| => {

@@ -10,7 +10,7 @@ use gnx_math::{
     ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, HostId, LocalAllocations, MemoryLocation,
     Shape, ShardStorage, TransferPolicy, ops::add_op,
 };
-use gnx_transforms::{cond, control_flow::call_op, scan, switch, while_loop};
+use gnx_transforms::{cond, cf::call_op, scan, switch, while_loop};
 use gnx_xla::{LoweringContext, XlaDevice, XlaLowering, XlaOp, register_xla_lowering};
 
 const COPY: ExecOpts = ExecOpts {
@@ -21,7 +21,7 @@ fn array_info(dims: &[usize], dtype: DType) -> ArrayInfo {
     ArrayInfo::new(Shape::fixed(dims.iter().copied()), dtype)
 }
 fn host(dims: &[usize], dtype: DType, bytes: Vec<u8>) -> DataHandle {
-    DataHandle::new(HostBuffer::new(array_info(dims, dtype), bytes).unwrap())
+    DataHandle::new(HostBuffer::copy_from_slice(array_info(dims, dtype), &bytes).unwrap())
 }
 fn floats(dims: &[usize], data: &[f32]) -> DataHandle {
     host(
@@ -82,17 +82,9 @@ fn compile_nested_call_reuse_outputs_and_forward_remote_refs() {
     );
     let left = Value::new(floats(&[2], &[1., 2.]));
     let right = Value::new(floats(&[2], &[3., 4.]));
-    assert_eq!(
-        compiled
-            .run(
-                &[left.clone(), right.clone(), remote.clone()],
-                ExecOpts::default()
-            )
-            .unwrap_err()
-            .kind(),
-        std::io::ErrorKind::Unsupported
-    );
-    let outputs = compiled.run(&[left, right, remote.clone()], COPY).unwrap();
+    let outputs = compiled
+        .run(&[left, right, remote.clone()], ExecOpts::default())
+        .unwrap();
     assert_eq!(unpack(&device, &outputs[0]), [4., 6.]);
     assert_eq!(unpack(&device, &outputs[2]), [4., 6.]);
     let allocation = |value: &Value| {

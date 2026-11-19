@@ -1,6 +1,8 @@
 use gnx::array::{Array, ArrayInfo, ArrayRef, DType, Dim, Shape};
 use gnx::buffer::{DataHandle, HostBuffer};
 use gnx::expr::{CellTracer, Invocation, ObjectTracer, TraceContext, Tracer, ValueInfo};
+use numpy::npyffi::{NpyTypes, NPY_ARRAY_CARRAY, NPY_TYPES, PY_ARRAY_API};
+use numpy::{PyArrayDescr, PyArrayDescrMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PySlice, PyTuple};
@@ -121,7 +123,66 @@ pub fn from_host_bytes(
     bytes: &Bound<'_, PyBytes>,
 ) -> PyResult<PyArray> {
     let info = ArrayInfo::new(Shape::fixed(shape), parse_dtype(dtype)?);
-    let host = HostBuffer::new(info, bytes.as_bytes().to_vec())?;
+    let host = HostBuffer::copy_from_slice(info, bytes.as_bytes())?;
+    Ok(PyArray(Array::from_data(DataHandle::new(host))))
+}
+
+/// Snapshot a NumPy ndarray directly into aligned GNX storage, including
+/// strided views and arrays with non-native byte order.
+#[pyfunction]
+pub fn from_numpy_array(source: &Bound<'_, PyUntypedArray>) -> PyResult<PyArray> {
+    let py = source.py();
+    let source_dtype = source.dtype();
+    let number = source_dtype.num();
+    // The temporary destination must not be passed to a custom dtype's cast
+    // implementation. Accept only built-in numeric descriptors.
+    if !(0..NPY_TYPES::NPY_OBJECT as i32).contains(&number) && number != NPY_TYPES::NPY_HALF as i32
+    {
+        return Err(PyTypeError::new_err(
+            "expected a built-in NumPy numeric or boolean dtype",
+        ));
+    }
+    let dtype = parse_dtype(&source_dtype.getattr("name")?.extract::<String>()?)?;
+    let shape = source.shape();
+    let info = ArrayInfo::new(Shape::fixed(shape.iter().copied()), dtype);
+    let mut dims = shape
+        .iter()
+        .map(|&n| isize::try_from(n).map_err(|_| PyValueError::new_err("NumPy dimension overflow")))
+        .collect::<PyResult<Vec<_>>>()?;
+    let rank =
+        i32::try_from(dims.len()).map_err(|_| PyValueError::new_err("NumPy rank overflow"))?;
+    let dtype_name: &'static str = dtype.into();
+    let descriptor = PyArrayDescr::new(py, dtype_name)?;
+    // Select an exact built-in little-endian dtype, of the size used by GNX.
+    let descriptor = unsafe {
+        let ptr = PY_ARRAY_API.PyArray_DescrNewByteorder(py, descriptor.as_dtype_ptr(), b'<' as _);
+        Bound::from_owned_ptr_or_err(py, ptr.cast())?.cast_into_unchecked::<PyArrayDescr>()
+    };
+    let host = HostBuffer::try_fill(info, |bytes| -> PyResult<()> {
+        // SAFETY: a temporary base ndarray views the entire aligned buffer.
+        // It doesn't own the bytes or escape. Only NumPy's C copy routine
+        // receives it, and the view is dropped before storage is published.
+        unsafe {
+            let ptr = PY_ARRAY_API.PyArray_NewFromDescr(
+                py,
+                PY_ARRAY_API.get_type_object(py, NpyTypes::PyArray_Type),
+                descriptor.into_dtype_ptr(),
+                rank,
+                dims.as_mut_ptr(),
+                std::ptr::null_mut(),
+                bytes.as_mut_ptr().cast(),
+                NPY_ARRAY_CARRAY,
+                std::ptr::null_mut(),
+            );
+            let destination = Bound::from_owned_ptr_or_err(py, ptr)?;
+            if PY_ARRAY_API.PyArray_CopyInto(py, destination.as_ptr().cast(), source.as_array_ptr())
+                < 0
+            {
+                return Err(PyErr::fetch(py));
+            }
+        }
+        Ok(())
+    })?;
     Ok(PyArray(Array::from_data(DataHandle::new(host))))
 }
 

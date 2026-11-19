@@ -1,22 +1,25 @@
 use super::*;
 use crate::register_jax_lowering;
-use gnx_transforms::control_flow::{
+use gnx_transforms::cf::{
     CondOperation, ScanOperation, ScanParameters, SwitchOperation, WhileOperation,
 };
 
 #[derive(Clone, Copy)]
-enum RegionAbi {
+pub(super) enum RegionAbi {
     Branch,
     Predicate,
     Carry,
     Scan(usize),
 }
 
-fn tuple<'py>(py: Python<'py>, values: &[TraceValue<'py>]) -> PyResult<Bound<'py, PyTuple>> {
+pub(super) fn tuple<'py>(
+    py: Python<'py>,
+    values: &[TraceValue<'py>],
+) -> PyResult<Bound<'py, PyTuple>> {
     PyTuple::new(py, values.iter().map(TraceValue::as_native))
 }
 
-fn unpack(value: Bound<'_, PyAny>) -> Result<Vec<TraceValue<'_>>> {
+pub(super) fn unpack(value: Bound<'_, PyAny>) -> Result<Vec<TraceValue<'_>>> {
     Ok(value
         .cast_into::<PyTuple>()
         .map_err(PyErr::from)?
@@ -26,7 +29,11 @@ fn unpack(value: Bound<'_, PyAny>) -> Result<Vec<TraceValue<'_>>> {
 }
 
 impl<'py> TraceContext<'py> {
-    fn region_callable(&self, index: usize, abi: RegionAbi) -> Result<Bound<'py, PyCFunction>> {
+    pub(super) fn region_callable(
+        &self,
+        index: usize,
+        abi: RegionAbi,
+    ) -> Result<Bound<'py, PyCFunction>> {
         let child = self
             .children
             .get(index)

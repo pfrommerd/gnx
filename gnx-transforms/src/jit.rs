@@ -2,10 +2,10 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use gnx_expr::{HExpr, ObjectTracer};
+use gnx_expr::{HExpr, Kind, ObjectTracer};
 use gnx_graph::{Graph, GraphEq, GraphHash};
 
-use crate::cache::{TraceCache, TracerBuilder};
+use crate::cache::{TraceCache, TraceEntry, TracerBuilder};
 use crate::{Callable, Function, Jitable, TryCallable, TryJitable};
 
 pub use gnx_derive::{jit, jit_fn, jittable, try_jit_fn};
@@ -64,6 +64,10 @@ impl<I: Graph, F: Function<I>> Jit<I, F> {
     /// Wrap a function and label its traces for display.
     pub const fn new_with_hint(func: F, name_hint: Cow<'static, str>) -> Self {
         Self::new(func, Some(name_hint))
+    }
+
+    pub(crate) fn set_name_hint(&mut self, name_hint: Cow<'static, str>) {
+        self.name_hint = Some(name_hint);
     }
 
     pub fn name_hint(&self) -> Option<&str> {
@@ -143,4 +147,44 @@ where
 /// implement each interface differently. Body errors aren't cached.
 pub const fn jit<I: Graph, F: Function<I>>(func: F) -> Jit<I, F> {
     Jit::new(func, None)
+}
+
+impl<I, F> Jit<I, F>
+where
+    I: Graph,
+    I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
+    F: Function<I>,
+    F::Output: Graph<Owned = F::Output>,
+{
+    /// Trace (or reuse) the body at an explicit signature: the input
+    /// structure and one kind per tracer leaf. Shares `Callable::invoke`'s cache.
+    pub(crate) fn traced(
+        &self,
+        builder: TracerBuilder<I>,
+        kinds: Vec<Kind>,
+    ) -> Arc<TraceEntry<F::Output>>
+    where
+        F: Jitable<I>,
+    {
+        self.traces
+            .entry(builder, kinds, self.name_hint.as_ref(), |input| {
+                Ok::<_, Infallible>(self.func.invoke_owned(input))
+            })
+            .unwrap_or_else(|never| match never {})
+    }
+
+    /// Like [`Jit::traced`] for a fallible body. Shares `try_invoke`'s cache.
+    pub(crate) fn try_traced(
+        &self,
+        builder: TracerBuilder<I>,
+        kinds: Vec<Kind>,
+    ) -> Result<Arc<TraceEntry<F::Output>>, F::Error>
+    where
+        F: TryJitable<I>,
+    {
+        self.try_traces
+            .entry(builder, kinds, self.name_hint.as_ref(), |input| {
+                self.func.try_invoke_owned(input)
+            })
+    }
 }

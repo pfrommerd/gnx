@@ -195,7 +195,7 @@ fn concrete_cell_bindings_detect_cloned_handles_across_captures_and_inputs() {
 
 #[test]
 fn cell_actions_are_not_dialect_operations() {
-    let cf = gnx_transforms::control_flow::ControlFlowDialect;
+    let cf = gnx_transforms::cf::ControlFlowDialect;
     for name in ["read", "update", "create_cell"] {
         assert!(cf.create(name).is_none());
     }
@@ -481,7 +481,7 @@ fn immutable_calls_preserve_the_boundary_without_duplicating_captures_as_argumen
     let guard = TraceContext::enter();
     let x = value();
     let y = value();
-    let result = gnx_transforms::control_flow::call_immutable(
+    let result = gnx_transforms::cf::call_immutable(
         std::sync::Arc::new(body),
         [x.clone()],
         [y.clone()],
@@ -699,6 +699,6 @@ impl CallLowered for gnx_expr::HExpr {
         inputs: &[gnx_expr::ObjectTracer],
     ) -> Result<Vec<gnx_expr::ObjectTracer>, gnx_expr::lower::CallError> {
         let spec = InputSpec::from_args(closure, inputs);
-        gnx_transforms::control_flow::call_lowered(&self.lower(&spec).unwrap(), closure, inputs)
+        gnx_transforms::cf::call_lowered(&self.lower(&spec).unwrap(), closure, inputs)
     }
 }

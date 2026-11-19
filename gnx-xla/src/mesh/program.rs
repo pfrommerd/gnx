@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use gnx_expr::{Expr, Var};
 use gnx_math::{ArrayInfo, DType, Dim, Shape, ops::AddOperation, shard};
-use gnx_transforms::control_flow::CallOperation;
+use gnx_transforms::cf::CallOperation;
 use serde::{Deserialize, Serialize};
 
 use super::{invalid, unsupported};

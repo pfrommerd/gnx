@@ -11,7 +11,7 @@ use gnx_math::{
     ArrayInfo, DType, DataHandle, Device, ExecOpts, HostBuffer, HostId, LocalAllocations,
     MemoryLocation, Shape, ShardStorage, TransferPolicy, ops::add_op,
 };
-use gnx_transforms::control_flow::{call, call_op};
+use gnx_transforms::cf::{call, call_op};
 use pyo3::prelude::*;
 
 fn info() -> ArrayInfo {

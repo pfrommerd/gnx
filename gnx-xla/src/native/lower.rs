@@ -1,17 +1,22 @@
-use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::io;
-use std::sync::LazyLock;
 
-use gnx_expr::{Eqn, Expr, Operation, ValueInfo, Var};
-use gnx_math::{ArrayInfo, DType, Dim, ops::AddOperation};
-use gnx_transforms::control_flow::{
+use gnx_expr::{Eqn, Expr, ValueInfo, Var};
+use gnx_math::ops::{
+    AddOperation, BroadcastInDimOperation, EyeOperation, MulOperation, OnesOperation,
+    ReduceSumOperation, ReshapeOperation, RevOperation, SelectOperation, TransposeOperation,
+    ZerosOperation, index_list,
+};
+use gnx_math::{ArrayInfo, DType, Dim};
+use gnx_transforms::cf::{
     CallOperation, CondOperation, ScanOperation, ScanParameters, SwitchOperation, WhileOperation,
 };
 use xla::{ElementType, Shape, XlaBuilder, XlaComputation, XlaOp};
 
 use super::{invalid, native, unsupported};
 
+/// XLA lowering for an operation: an op interface, registered with
+/// [`register_xla_lowering!`](crate::register_xla_lowering).
 pub trait XlaLowering {
     fn lower_xla(
         &self,
@@ -21,47 +26,13 @@ pub trait XlaLowering {
     ) -> io::Result<Vec<XlaOp>>;
 }
 
-type Rule = fn(&dyn Operation, &LoweringContext<'_>, &Eqn, &[XlaOp]) -> io::Result<Vec<XlaOp>>;
-
-#[doc(hidden)]
-pub struct Registration {
-    type_id: fn() -> TypeId,
-    rule: Rule,
-}
-
-impl Registration {
-    pub const fn of<T: Operation + XlaLowering>() -> Self {
-        Self {
-            type_id: TypeId::of::<T>,
-            rule: |op, ctx, eqn, inputs| {
-                (op as &dyn Any)
-                    .downcast_ref::<T>()
-                    .expect("registered operation type")
-                    .lower_xla(ctx, eqn, inputs)
-            },
-        }
-    }
-}
-
-inventory::collect!(Registration);
-
+/// Register `XlaLowering` implementations for operation types.
 #[macro_export]
 macro_rules! register_xla_lowering {
-    ($op:ty) => {
-        $crate::__inventory::submit! { $crate::Registration::of::<$op>() }
+    ($($op:ty),+ $(,)?) => {
+        $crate::__gnx_expr::register_op_interface!(dyn $crate::XlaLowering: $($op),+);
     };
 }
-
-static RULES: LazyLock<HashMap<TypeId, Option<Rule>>> = LazyLock::new(|| {
-    let mut rules = HashMap::new();
-    for registration in inventory::iter::<Registration> {
-        rules
-            .entry((registration.type_id)())
-            .and_modify(|rule| *rule = None)
-            .or_insert(Some(registration.rule));
-    }
-    rules
-});
 
 struct Child<'a> {
     expr: &'a Expr,
@@ -168,11 +139,9 @@ fn lower_body(
     for (index, eqn) in expr.eqns().iter().enumerate() {
         let op = eqn.op().operation();
         let results = (|| {
-            let rule = match RULES.get(&(op as &dyn Any).type_id()) {
-                Some(Some(rule)) => rule,
-                Some(None) => return Err(invalid("multiple registered XLA lowerings")),
-                None => return Err(unsupported("no registered XLA lowering")),
-            };
+            let rule = op
+                .interface::<dyn XlaLowering>()
+                .map_err(|error| unsupported(error.to_string()))?;
             let operands = eqn
                 .inputs()
                 .iter()
@@ -186,7 +155,7 @@ fn lower_body(
                     captures: sub.closure().iter().map(|v| values[v].clone()).collect(),
                 })
                 .collect();
-            let results = rule(op, &LoweringContext { builder, children }, eqn, &operands)?;
+            let results = rule.lower_xla(&LoweringContext { builder, children }, eqn, &operands)?;
             if results.len() != eqn.outputs().len() {
                 return Err(invalid("XLA lowering result arity mismatch"));
             }
@@ -223,30 +192,221 @@ fn check_shape(value: &XlaOp, info: &ArrayInfo) -> io::Result<()> {
     Ok(())
 }
 
+fn is_pred(op: &XlaOp) -> io::Result<bool> {
+    Ok(native(op.ty())? == xla::PrimitiveType::Pred)
+}
+
+fn result_info(eqn: &Eqn) -> io::Result<&ArrayInfo> {
+    match eqn.outputs() {
+        [(_, info)] => metadata(info),
+        _ => Err(invalid("array operations have one result")),
+    }
+}
+
+fn indices(eqn: &Eqn, key: &str) -> io::Result<Vec<i64>> {
+    index_list(eqn.op(), key)
+        .map_err(|error| invalid(format!("{error:?}")))?
+        .into_iter()
+        .map(|index| i64::try_from(index).map_err(|_| invalid("index overflow")))
+        .collect()
+}
+
+fn unary<'a>(name: &str, inputs: &'a [XlaOp]) -> io::Result<&'a XlaOp> {
+    match inputs {
+        [input] => Ok(input),
+        _ => Err(invalid(format!("array.{name} takes one operand"))),
+    }
+}
+
 impl XlaLowering for AddOperation {
     fn lower_xla(
         &self,
-        _ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        _: &LoweringContext<'_>,
+        _: &Eqn,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [a, b] = inputs else {
             return Err(invalid("array.add requires two inputs"));
         };
-        if !eqn.op().attrs().is_empty() || !eqn.subexprs().is_empty() {
-            return Err(invalid(
-                "array.add does not take attributes or subexpressions",
-            ));
-        }
-        let result = if native(a.ty())? == xla::PrimitiveType::Pred {
+        Ok(vec![if is_pred(a)? {
             native(a.or(b))?
         } else {
-            native(a + b)?
-        };
-        Ok(vec![result])
+            native(a.add_(b))?
+        }])
     }
 }
-crate::register_xla_lowering!(AddOperation);
+
+impl XlaLowering for MulOperation {
+    fn lower_xla(
+        &self,
+        _: &LoweringContext<'_>,
+        _: &Eqn,
+        inputs: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        let [a, b] = inputs else {
+            return Err(invalid("array.mul requires two inputs"));
+        };
+        Ok(vec![if is_pred(a)? {
+            native(a.and(b))?
+        } else {
+            native(a.mul_(b))?
+        }])
+    }
+}
+
+impl XlaLowering for SelectOperation {
+    fn lower_xla(
+        &self,
+        _: &LoweringContext<'_>,
+        _: &Eqn,
+        inputs: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        let [predicate, on_true, on_false] = inputs else {
+            return Err(invalid("array.select requires three inputs"));
+        };
+        Ok(vec![native(predicate.select(on_true, on_false))?])
+    }
+}
+
+impl XlaLowering for ZerosOperation {
+    fn lower_xla(
+        &self,
+        ctx: &LoweringContext<'_>,
+        eqn: &Eqn,
+        _: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        let info = result_info(eqn)?;
+        let zero = native(ctx.builder.zero(element(info.dtype())))?;
+        Ok(vec![native(zero.broadcast(&dimensions(info)?))?])
+    }
+}
+
+impl XlaLowering for OnesOperation {
+    fn lower_xla(
+        &self,
+        ctx: &LoweringContext<'_>,
+        eqn: &Eqn,
+        _: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        let info = result_info(eqn)?;
+        let one = native(ctx.builder.one(element(info.dtype())))?;
+        Ok(vec![native(one.broadcast(&dimensions(info)?))?])
+    }
+}
+
+impl XlaLowering for EyeOperation {
+    fn lower_xla(
+        &self,
+        ctx: &LoweringContext<'_>,
+        eqn: &Eqn,
+        _: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        let info = result_info(eqn)?;
+        let dims = dimensions(info)?;
+        let ty = element(info.dtype());
+        let rows = native(ctx.builder.iota(ElementType::S64, &dims, 0))?;
+        let columns = native(ctx.builder.iota(ElementType::S64, &dims, 1))?;
+        let one = native(native(ctx.builder.one(ty))?.broadcast(&dims))?;
+        let zero = native(native(ctx.builder.zero(ty))?.broadcast(&dims))?;
+        Ok(vec![native(
+            native(rows.eq(&columns))?.select(&one, &zero),
+        )?])
+    }
+}
+
+impl XlaLowering for ReshapeOperation {
+    fn lower_xla(
+        &self,
+        _: &LoweringContext<'_>,
+        eqn: &Eqn,
+        inputs: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        let input = unary("reshape", inputs)?;
+        Ok(vec![native(
+            input.reshape(&dimensions(result_info(eqn)?)?),
+        )?])
+    }
+}
+
+impl XlaLowering for BroadcastInDimOperation {
+    fn lower_xla(
+        &self,
+        _: &LoweringContext<'_>,
+        eqn: &Eqn,
+        inputs: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        let input = unary("broadcast_in_dim", inputs)?;
+        let shape = dimensions(result_info(eqn)?)?;
+        Ok(vec![native(
+            input.broadcast_in_dim(&shape, &indices(eqn, "dims")?),
+        )?])
+    }
+}
+
+impl XlaLowering for ReduceSumOperation {
+    fn lower_xla(
+        &self,
+        ctx: &LoweringContext<'_>,
+        eqn: &Eqn,
+        inputs: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        let input = unary("reduce_sum", inputs)?;
+        let ty = element(result_info(eqn)?.dtype());
+        let combine = XlaBuilder::new("sum");
+        let x = native(combine.parameter(0, ty, &[], "x"))?;
+        let y = native(combine.parameter(1, ty, &[], "y"))?;
+        let sum = if ty == ElementType::Pred {
+            native(x.or(&y))?
+        } else {
+            native(x.add_(&y))?
+        };
+        let init = native(ctx.builder.zero(ty))?;
+        Ok(vec![native(input.reduce(
+            init,
+            native(sum.build())?,
+            &indices(eqn, "axes")?,
+            false,
+        ))?])
+    }
+}
+
+impl XlaLowering for TransposeOperation {
+    fn lower_xla(
+        &self,
+        _: &LoweringContext<'_>,
+        eqn: &Eqn,
+        inputs: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        let input = unary("transpose", inputs)?;
+        Ok(vec![native(input.transpose(&indices(eqn, "perm")?))?])
+    }
+}
+
+impl XlaLowering for RevOperation {
+    fn lower_xla(
+        &self,
+        _: &LoweringContext<'_>,
+        eqn: &Eqn,
+        inputs: &[XlaOp],
+    ) -> io::Result<Vec<XlaOp>> {
+        let input = unary("rev", inputs)?;
+        Ok(vec![native(input.rev(&indices(eqn, "axes")?))?])
+    }
+}
+
+crate::register_xla_lowering!(
+    AddOperation,
+    MulOperation,
+    SelectOperation,
+    ZerosOperation,
+    OnesOperation,
+    EyeOperation,
+    ReshapeOperation,
+    BroadcastInDimOperation,
+    ReduceSumOperation,
+    TransposeOperation,
+    RevOperation,
+);
 
 fn local_sharding(eqn: &Eqn, inputs: &[XlaOp]) -> io::Result<Vec<XlaOp>> {
     let [(_, info)] = eqn.outputs() else {

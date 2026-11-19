@@ -86,7 +86,7 @@ struct State {
 }
 
 struct Kernel {
-    executable: xla::PjRtLoadedExecutable,
+    executable: crate::native::cpu::Executable,
     inputs: Vec<ArrayInfo>,
     outputs: Vec<ArrayInfo>,
 }

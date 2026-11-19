@@ -1,20 +1,21 @@
 //! Trace lowered GNX expressions with JAX and inspect the resulting JAXPR.
 
+mod array;
 mod control_flow;
+mod transforms;
 
-use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
-use gnx_expr::{Eqn as GnxEqn, Expr, Op, Operation, ValueInfo, Var};
+use gnx_expr::{Eqn as GnxEqn, Expr, InterfaceError, Op, Operation, ValueInfo, Var};
 use gnx_math::{ArrayInfo, DType, Dim, Shape, ops::AddOperation};
-use gnx_transforms::control_flow::CallOperation;
+use gnx_transforms::cf::CallOperation;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyCFunction, PyDict, PyModule, PyTuple};
 
 #[doc(hidden)]
-pub use inventory as __inventory;
+pub use gnx_expr as __gnx_expr;
 
 #[derive(Debug, thiserror::Error)]
 pub enum JaxLoweringError {
@@ -179,81 +180,24 @@ pub trait JaxLowering {
     ) -> Result<Vec<TraceValue<'py>>>;
 }
 
-type Dispatch = for<'py> fn(
-    &dyn Operation,
-    &mut TraceContext<'py>,
-    &GnxEqn,
-    &[TraceValue<'py>],
-) -> Result<Vec<TraceValue<'py>>>;
-
-pub struct JaxLoweringRegistration {
-    type_id: fn() -> TypeId,
-    dispatch: Dispatch,
-}
-
-impl JaxLoweringRegistration {
-    pub const fn of<O: Operation + JaxLowering>() -> Self {
-        Self {
-            type_id: TypeId::of::<O>,
-            dispatch: dispatch::<O>,
-        }
-    }
-}
-
-fn dispatch<'py, O: Operation + JaxLowering>(
-    op: &dyn Operation,
-    ctx: &mut TraceContext<'py>,
-    eqn: &GnxEqn,
-    operands: &[TraceValue<'py>],
-) -> Result<Vec<TraceValue<'py>>> {
-    let typed = (op as &dyn Any)
-        .downcast_ref::<O>()
-        .expect("JAX rule indexed by operation type");
-    typed.lower_jax(ctx, eqn, operands)
-}
-
-inventory::collect!(JaxLoweringRegistration);
-
-/// Link a typed JAX lowering for an operation into inventory.
+/// Register `JaxLowering` implementations (an op interface) for operation types.
 #[macro_export]
 macro_rules! register_jax_lowering {
-    ($op:ty) => {
-        $crate::jaxpr::__inventory::submit! {
-            $crate::jaxpr::JaxLoweringRegistration::of::<$op>()
-        }
+    ($($op:ty),+ $(,)?) => {
+        $crate::jaxpr::__gnx_expr::register_op_interface!(dyn $crate::jaxpr::JaxLowering: $($op),+);
     };
 }
 
-static RULES: LazyLock<HashMap<TypeId, Option<Dispatch>>> = LazyLock::new(|| {
-    let mut rules = HashMap::new();
-    for entry in inventory::iter::<JaxLoweringRegistration> {
-        rules
-            .entry((entry.type_id)())
-            .and_modify(|rule| *rule = None)
-            .or_insert(Some(entry.dispatch));
-    }
-    rules
-});
-
-fn rule(op: &dyn Operation) -> Result<Dispatch> {
-    let dialect = op.dialect().name();
-    let name = op.name();
-    match RULES.get(&(op as &dyn Any).type_id()) {
-        Some(Some(dispatch)) => Ok(*dispatch),
-        Some(None) => Err(JaxLoweringError::DuplicateRegistration { dialect, name }),
-        None => Err(JaxLoweringError::UnsupportedOperation { dialect, name }),
-    }
-}
-
-impl JaxLowering for dyn Operation {
-    fn lower_jax<'py>(
-        &self,
-        ctx: &mut TraceContext<'py>,
-        eqn: &GnxEqn,
-        operands: &[TraceValue<'py>],
-    ) -> Result<Vec<TraceValue<'py>>> {
-        rule(self)?(self, ctx, eqn, operands)
-    }
+fn rule(op: &'static dyn Operation) -> Result<&'static dyn JaxLowering> {
+    op.interface::<dyn JaxLowering>()
+        .map_err(|error| match error {
+            InterfaceError::Missing { dialect, op, .. } => {
+                JaxLoweringError::UnsupportedOperation { dialect, name: op }
+            }
+            InterfaceError::Duplicate { dialect, op, .. } => {
+                JaxLoweringError::DuplicateRegistration { dialect, name: op }
+            }
+        })
 }
 
 impl JaxLowering for Op {
@@ -263,7 +207,7 @@ impl JaxLowering for Op {
         eqn: &GnxEqn,
         operands: &[TraceValue<'py>],
     ) -> Result<Vec<TraceValue<'py>>> {
-        self.operation().lower_jax(ctx, eqn, operands)
+        rule(self.operation())?.lower_jax(ctx, eqn, operands)
     }
 }
 

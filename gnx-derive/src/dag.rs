@@ -15,19 +15,20 @@ pub fn dag(input: ProcTokenStream) -> ProcTokenStream {
     ProcTokenStream::from(input.expand())
 }
 
-enum DagValue {
+pub(crate) enum DagValue {
     Leaf(Expr),
-    Unit,
+    /// `*`: an empty leaf.
+    Empty,
     List(DagContainer),
     Map(DagMap),
 }
 
-struct DagContainer {
+pub(crate) struct DagContainer {
     bindings: Vec<DagBinding>,
     values: Vec<DagValue>,
 }
 
-struct DagMap {
+pub(crate) struct DagMap {
     bindings: Vec<DagBinding>,
     entries: Vec<DagMapEntry>,
 }
@@ -60,16 +61,15 @@ impl DagInput {
 }
 
 impl DagValue {
-    fn expand_dag(
+    pub(crate) fn expand_dag(
         &self,
         g: &syn::Path,
         util: &syn::Path,
         scope: &mut HashSet<String>,
     ) -> TokenStream2 {
         match self {
-            DagValue::Leaf(expr) if is_unit(expr) => quote!(#util::Dag::Leaf(None)),
             DagValue::Leaf(expr) => quote!(#util::Dag::Leaf(Some(#expr))),
-            DagValue::Unit => quote!(#util::Dag::Leaf(None)),
+            DagValue::Empty => quote!(#util::Dag::Leaf(None)),
             DagValue::List(list) => list.expand_dag(g, util, scope),
             DagValue::Map(map) => map.expand_dag(g, util, scope),
         }
@@ -93,7 +93,7 @@ impl DagValue {
 }
 
 impl DagContainer {
-    fn expand_dag(
+    pub(crate) fn expand_dag(
         &self,
         g: &syn::Path,
         util: &syn::Path,
@@ -114,7 +114,7 @@ impl DagContainer {
 }
 
 impl DagMap {
-    fn expand_dag(
+    pub(crate) fn expand_dag(
         &self,
         g: &syn::Path,
         util: &syn::Path,
@@ -204,7 +204,20 @@ fn parse_container(input: ParseStream<'_>) -> Result<DagValue> {
     }
 }
 
-fn parse_value(input: ParseStream<'_>) -> Result<DagValue> {
+/// A lone `*` (followed by `,`, `;`, or the end) is an empty leaf. Anything
+/// else starting with `*`, such as `*x`, is an expression leaf.
+fn peek_empty(input: ParseStream<'_>) -> bool {
+    let fork = input.fork();
+    fork.parse::<Token![*]>().is_ok()
+        && (fork.is_empty() || fork.peek(Token![,]) || fork.peek(Token![;]))
+}
+
+pub(crate) fn parse_value(input: ParseStream<'_>) -> Result<DagValue> {
+    if peek_empty(input) {
+        input.parse::<Token![*]>()?;
+        return Ok(DagValue::Empty);
+    }
+
     if input.peek(syn::token::Bracket) {
         let content;
         bracketed!(content in input);
@@ -215,7 +228,8 @@ fn parse_value(input: ParseStream<'_>) -> Result<DagValue> {
         let content;
         parenthesized!(content in input);
         if content.is_empty() {
-            return Ok(DagValue::Unit);
+            // `()` is the unit value; `*` is the empty leaf.
+            return Ok(DagValue::Leaf(syn::parse_quote!(())));
         }
         return parse_container(&content);
     }
@@ -284,13 +298,12 @@ fn parse_map_entry(input: ParseStream<'_>) -> Result<DagMapEntry> {
 }
 
 fn starts_map_entry(input: ParseStream<'_>) -> Result<bool> {
+    if peek_empty(input) {
+        return Ok(false);
+    }
+    // A value that isn't an expression (e.g. `[*, 1]`) can't be a map key.
     let fork = input.fork();
-    let _ = fork.parse::<Expr>()?;
-    Ok(fork.peek(Token![:]))
-}
-
-fn is_unit(expr: &Expr) -> bool {
-    matches!(expr, Expr::Tuple(tuple) if tuple.elems.is_empty())
+    Ok(fork.parse::<Expr>().is_ok() && fork.peek(Token![:]))
 }
 
 fn bound_ident<'a>(expr: &'a Expr, scope: &HashSet<String>) -> Option<&'a Ident> {

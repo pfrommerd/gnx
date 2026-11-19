@@ -9,13 +9,14 @@ link Python or require JAX. The `native` Cargo feature enables single-device CPU
 execution, including `add`, `call`, `cond`, `switch`, `while_loop`, and `scan`.
 `XlaDevice::compile` returns a reusable executable.
 
-Use a C++ toolchain with libclang and the matching
+Use clang, libclang, and the matching
 [`xla_extension` v0.11.0](https://github.com/elixir-nx/xla/releases/tag/v0.11.0)
 build for `xla-rs` 0.5.5. On Linux, point Cargo and the loader at the unpacked
 runtime:
 
 ```sh
 export XLA_EXTENSION_DIR=/path/to/xla_extension
+export CXX=clang++
 export LD_LIBRARY_PATH="$XLA_EXTENSION_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 cargo test --locked -p gnx-xla --features native
 ```
@@ -24,9 +25,12 @@ If libclang is not on the search path, set `LIBCLANG_PATH` to its directory.
 To build the Python frontend with the optional backend, run `maturin develop
 --features xla` from `gnxlib/`, then `from gnxlib import xla`. `gnxlib.jax`
 remains available separately. `array.from_host_bytes`, `array.from_numpy`, and
-`array.from_torch` create immutable host arrays; evaluating them with XLA needs
-`allow_copy=True` for the initial upload. Results already owned by the same XLA
-client can feed another execution with no copy.
+`array.from_torch` copy into immutable, aligned host storage. NumPy arrays are
+copied directly into that storage, including strided or byte-swapped inputs. CPU
+PJRT borrows the resulting allocation, so `await device.eval(roots)` needs no
+extra input copy and takes no `allow_copy` flag. In Rust, use
+`HostBuffer::copy_from_slice` to create an aligned snapshot. Results already
+owned by the same XLA client can also be reused without copying.
 
 ## Distributed CPU mesh
 
@@ -53,11 +57,34 @@ splits the leading dimension of a rank-two array along the `data` axis.
 
 This first mesh supports one CPU device per worker, one mesh axis, replication
 or even leading-axis partitioning, and `add` with nested `call`. It rejects
-programs whose compiled partitions require cross-worker collectives. A different
-placement between separate calls requires `AllowCopy`. The tarpc TCP transport
+programs whose compiled partitions require cross-worker collectives. In Rust,
+set `ExecOpts::transfers` to `AllowCopy` to permit uploads or resharding during
+`eval` or `execute`. The tarpc TCP transport
 is intended for trusted peers (no built-in authentication or TLS); use it on
 loopback or a protected network. No coordinator process beyond the controller
 is required.
+
+### Mesh from Python
+
+Build `gnxlib` with `maturin develop --features xla-mesh`. With two workers
+already listening, run the following from an async function:
+
+```python
+import struct
+from gnxlib import array, xla
+
+mesh = await xla.Mesh.connect("data", ["127.0.0.1:7440", "127.0.0.1:7441"])
+a = array.from_host_bytes([4], "float32", struct.pack("<4f", 1, 2, 3, 4))
+result = xla.constrain(a + a, [["data"]])
+await mesh.eval(result)
+print(struct.unpack("<4f", await mesh.to_host_bytes(result)))
+```
+
+`mesh.eval` uploads host inputs or reshards inputs it can already read when the
+compiled layout requires it. It reuses worker allocations that are already in the
+right place. `mesh.upload` is optional: use it to place an array ahead of time
+for reuse across runs; omit `axes` to replicate it. `mesh.to_host_bytes` explicitly
+gathers a result.
 
 ## Concrete array storage
 
@@ -78,7 +105,7 @@ and must not be treated as hardware identities.
 DLPack adapts individual addressable shards. Local borrowing requires a valid
 lifetime lease, ready immutable bytes, and a compatible importer. In particular,
 borrowing NumPy or Torch storage from Rust requires the caller to guarantee no
-writable aliases; the Python constructors instead copy. The pinned `xla-rs`
-bindings do not expose a cross-runtime zero-copy import/export path. XLA currently
-retains its buffers as same-client references and provides explicit host readback
-via `XlaDevice::download`. `RequireZeroCopy` never silently falls back to a transfer.
+writable aliases; the Python constructors instead copy. CPU XLA can import a
+compatible local host view without copying; its own outputs remain same-client
+references. XLA does not implement device-to-device DLPack interchange. Use
+`XlaDevice::download` for explicit host readback. `RequireZeroCopy` never silently falls back to a transfer.

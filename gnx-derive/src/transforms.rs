@@ -20,7 +20,7 @@ struct JittableInput {
 }
 
 #[derive(Clone)]
-struct JittableSignature {
+pub(crate) struct JittableSignature {
     inputs: Vec<Type>,
     output: Option<Type>,
 }
@@ -176,7 +176,7 @@ pub fn jit(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
     ProcTokenStream::from(expanded)
 }
 
-fn closure_signature(input: &Expr) -> Option<JittableSignature> {
+pub(crate) fn closure_signature(input: &Expr) -> Option<JittableSignature> {
     let Expr::Closure(ExprClosure { inputs, output, .. }) = input else {
         return None;
     };
@@ -194,7 +194,10 @@ fn closure_signature(input: &Expr) -> Option<JittableSignature> {
     Some(JittableSignature { inputs, output })
 }
 
-fn expand_jittable(signature: Option<JittableSignature>, callable: Expr) -> TokenStream2 {
+pub(crate) fn expand_jittable(
+    signature: Option<JittableSignature>,
+    callable: Expr,
+) -> TokenStream2 {
     let err = require_transforms_crate();
     let impls = match signature {
         Some(signature) => expand_signature_impls(signature),

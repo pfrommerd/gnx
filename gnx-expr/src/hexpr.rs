@@ -147,6 +147,32 @@ pub struct HExpr {
     pub(crate) name_hint: Option<Cow<'static, str>>,
 }
 impl HExpr {
+    /// Move the flagged explicit inputs, in order, to the end of the closure.
+    /// Transformations use this to turn arguments they don't map or
+    /// differentiate into captures of the body.
+    ///
+    /// # Panics
+    /// If `captured` doesn't have one flag per input.
+    pub fn capture_inputs(&self, captured: &[bool]) -> HExpr {
+        assert_eq!(captured.len(), self.inputs.len(), "one flag per input");
+        let mut closure = self.closure.clone();
+        let mut inputs = Vec::new();
+        for (param, &capture) in self.inputs.iter().zip(captured) {
+            if capture {
+                closure.push(param.clone());
+            } else {
+                inputs.push(param.clone());
+            }
+        }
+        HExpr {
+            closure,
+            inputs,
+            instructions: self.instructions.clone(),
+            outputs: self.outputs.clone(),
+            name_hint: self.name_hint.clone(),
+        }
+    }
+
     pub fn with_name_hint(mut self, hint: impl Into<Cow<'static, str>>) -> Self {
         self.name_hint = Some(hint.into());
         self

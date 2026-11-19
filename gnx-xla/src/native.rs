@@ -1,21 +1,24 @@
+pub(crate) mod cpu;
 mod lower;
+mod pipeline;
 
 use std::fmt;
 use std::future::Future;
 use std::io::{self, ErrorKind};
 use std::sync::{Arc, Mutex};
 
+use cpu::{Buffer, Client, Executable};
 use futures_channel::oneshot;
 use gnx_expr::{Expr, Value};
 use gnx_math::{
     ArrayInfo, DataHandle, Device, DeviceId, ExecOpts, ExecutionBoundary, HostBuffer, HostId,
     LocalAllocations, MemoryLocation, ShardStorage, TransferPolicy,
 };
-use xla::{PjRtBuffer, PjRtClient, PjRtLoadedExecutable};
 
 #[doc(hidden)]
-pub use inventory as __inventory;
-pub use lower::{LoweringContext, Registration, XlaLowering};
+pub use gnx_expr as __gnx_expr;
+pub use lower::{LoweringContext, XlaLowering};
+pub use pipeline::pipeline;
 pub use xla::XlaOp;
 
 #[derive(Clone)]
@@ -25,8 +28,8 @@ struct CpuRuntime {
     host: HostId,
     ordinal: u64,
     kind: String,
-    client: PjRtClient,
-    allocations: LocalAllocations<PjRtBuffer>,
+    client: Arc<Client>,
+    allocations: LocalAllocations<Buffer>,
 }
 
 impl XlaDevice {
@@ -49,21 +52,8 @@ impl XlaDevice {
                 "XLA host transfers require a little-endian host",
             ));
         }
-        let client = native(PjRtClient::cpu())?;
-        let devices = client.addressable_devices();
-        let [device] = devices.as_slice() else {
-            return Err(unsupported(
-                "gnx-xla currently requires one addressable CPU device",
-            ));
-        };
-        if client.device_count() != 1 {
-            return Err(unsupported(
-                "gnx-xla does not support distributed CPU execution",
-            ));
-        }
-        let ordinal =
-            u64::try_from(device.id()).map_err(|_| invalid("invalid XLA device ordinal"))?;
-        let kind = device.kind();
+        let client = Client::new()?;
+        let (ordinal, kind) = client.device_info()?;
         Ok(Self(Arc::new(CpuRuntime {
             host,
             ordinal,
@@ -103,8 +93,9 @@ impl XlaDevice {
                         lower::metadata(expr.value_info(var).expect("checked SSA output")).cloned()
                     })
                     .collect::<io::Result<Vec<_>>>()?;
-                let native_program = lower::lower(&expr)?;
-                let executable = native(self.0.client.compile(&native_program))?;
+                let native_program = pipeline().run(expr).map_err(pass_error)?;
+                let bytes = native(native_program.proto().to_bytes())?;
+                let executable = self.0.client.compile(&bytes)?;
                 Ok::<_, io::Error>((executable, output))
             })
             .transpose()?;
@@ -117,16 +108,14 @@ impl XlaDevice {
     }
 
     #[cfg(feature = "mesh")]
-    pub(crate) fn compile_partition(&self, bytes: &[u8]) -> io::Result<PjRtLoadedExecutable> {
-        let proto = native(xla::HloModuleProto::parse_proto(bytes, true))?;
-        let computation = xla::XlaComputation::from_proto(&proto);
-        native(self.0.client.compile(&computation))
+    pub(crate) fn compile_partition(&self, bytes: &[u8]) -> io::Result<Executable> {
+        self.0.client.compile(bytes)
     }
 
     #[cfg(feature = "mesh")]
     pub(crate) fn run_partition(
         &self,
-        executable: &PjRtLoadedExecutable,
+        executable: &Executable,
         inputs: &[DataHandle],
         output: &[ArrayInfo],
     ) -> io::Result<Vec<DataHandle>> {
@@ -139,33 +128,25 @@ impl XlaDevice {
 
     fn run_native(
         &self,
-        executable: &PjRtLoadedExecutable,
-        inputs: &[Arc<PjRtBuffer>],
+        executable: &Executable,
+        inputs: &[Arc<Buffer>],
         output: &[ArrayInfo],
     ) -> io::Result<Vec<DataHandle>> {
-        let mut results = native(executable.execute_b(inputs))?;
-        if results.len() != 1 || results[0].len() != output.len() {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "unexpected XLA replica or output count",
-            ));
-        }
-        results
-            .pop()
-            .unwrap()
+        executable
+            .run(inputs, output.len())?
             .into_iter()
             .zip(output)
-            .map(|(buffer, info)| self.retain(info.clone(), Arc::new(buffer)))
+            .map(|(buffer, info)| self.retain(info.clone(), buffer))
             .collect()
     }
 
-    /// Copy a packed or strided host array into this PJRT client, or retain a
-    /// reference to an allocation it already owns.
+    /// Borrow a compatible packed host allocation, or retain an allocation
+    /// that this client owns. Incompatible storage requires `AllowCopy`.
     pub fn import(&self, data: &DataHandle, policy: TransferPolicy) -> io::Result<DataHandle> {
         if self.resolve(data)?.is_some() {
             return Ok(data.clone());
         }
-        let buffer = self.import_native(data, policy)?;
+        let buffer = self.host_import(data, policy)?;
         self.retain(data.info(), buffer)
     }
 
@@ -177,53 +158,34 @@ impl XlaDevice {
         let buffer = self
             .resolve(data)?
             .ok_or_else(|| unsupported("this XLA client does not own the allocation"))?;
-        let literal = native(buffer.to_literal_sync())?;
-        let mut bytes = vec![0; literal.size_bytes()];
-        native(literal.copy_untyped_to(&mut bytes))?;
-        HostBuffer::new(data.info(), bytes)
+        buffer.download(data.info())
     }
 
-    fn resolve(&self, data: &DataHandle) -> io::Result<Option<Arc<PjRtBuffer>>> {
+    fn resolve(&self, data: &DataHandle) -> io::Result<Option<Arc<Buffer>>> {
         let buffer = data
             .single_allocation()
             .and_then(|reference| self.0.allocations.resolve(reference));
         if let Some(ref buffer) = buffer {
-            check_buffer(buffer, data.array_info())?;
+            buffer.check(data.array_info())?;
         }
         Ok(buffer)
     }
 
-    fn import_native(
-        &self,
-        data: &DataHandle,
-        policy: TransferPolicy,
-    ) -> io::Result<Arc<PjRtBuffer>> {
+    fn import_native(&self, data: &DataHandle, policy: TransferPolicy) -> io::Result<Arc<Buffer>> {
         if let Some(buffer) = self.resolve(data)? {
             return Ok(buffer);
         }
-        // xla-rs's host upload uses PJRT kImmutableOnlyDuringCall. It does
-        // not expose borrowing or external-reference hooks for other clients.
-        if policy == TransferPolicy::RequireZeroCopy {
-            return Err(unsupported("xla-rs cannot alias this external allocation"));
-        }
-        let host = data.to_host()?;
-        let dimensions = lower::dimensions(host.info())?
-            .into_iter()
-            .map(|n| n as usize)
-            .collect::<Vec<_>>();
-        let devices = self.0.client.addressable_devices();
-        Ok(Arc::new(native(self.0.client.buffer_from_host_raw_bytes(
-            lower::element(host.info().dtype()),
-            host.bytes(),
-            &dimensions,
-            devices.first(),
-        ))?))
+        self.host_import(data, policy).map(Arc::new)
     }
 
-    fn retain(&self, info: ArrayInfo, buffer: Arc<PjRtBuffer>) -> io::Result<DataHandle> {
-        check_buffer(&buffer, &info)?;
-        let buffer = Arc::try_unwrap(buffer)
-            .map_err(|_| io::Error::other("unexpected shared native allocation"))?;
+    fn host_import(&self, data: &DataHandle, policy: TransferPolicy) -> io::Result<Buffer> {
+        self.0
+            .client
+            .import(data.clone().into_host(policy)?, policy)
+    }
+
+    fn retain(&self, info: ArrayInfo, buffer: Buffer) -> io::Result<DataHandle> {
+        buffer.check(&info)?;
         DataHandle::single(
             info,
             MemoryLocation::host(self.host()),
@@ -242,22 +204,12 @@ impl fmt::Debug for XlaDevice {
     }
 }
 
-fn check_buffer(buffer: &PjRtBuffer, info: &ArrayInfo) -> io::Result<()> {
-    if native(buffer.on_device_shape())? != lower::shape(info)? {
-        return Err(io::Error::new(
-            ErrorKind::InvalidData,
-            "XLA returned mismatched array metadata",
-        ));
-    }
-    Ok(())
-}
-
 /// A compiled expression can run repeatedly on its owning CPU runtime.
 pub struct XlaExecutable {
     device: XlaDevice,
     signature: Expr,
     boundary: ExecutionBoundary,
-    program: Option<(PjRtLoadedExecutable, Vec<ArrayInfo>)>,
+    program: Option<(Executable, Vec<ArrayInfo>)>,
 }
 
 impl XlaExecutable {
@@ -314,12 +266,94 @@ impl Device for XlaDevice {
     }
 }
 
-fn invalid(message: &'static str) -> io::Error {
+fn invalid(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(ErrorKind::InvalidInput, message)
 }
-fn unsupported(message: &'static str) -> io::Error {
+fn unsupported(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(ErrorKind::Unsupported, message)
+}
+/// Preserve the kind of an I/O error raised inside a pass.
+pub(crate) fn pass_error(error: gnx_expr::pass::PassError) -> io::Error {
+    let kind = error
+        .source
+        .downcast_ref::<io::Error>()
+        .map_or(ErrorKind::Other, io::Error::kind);
+    io::Error::new(kind, error)
 }
 fn native<T>(result: xla::Result<T>) -> io::Result<T> {
     result.map_err(io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gnx_math::{ByteOrder, DType, Lease, MemoryView, Shape, StridedLayout};
+
+    #[test]
+    fn cpu_aliases_an_aligned_snapshot_and_retains_its_storage() {
+        let device = XlaDevice::cpu().unwrap();
+        let info = ArrayInfo::new(Shape::fixed([2]), DType::F32);
+        let values = [1_f32, 2.]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let host = HostBuffer::copy_from_slice(info, &values).unwrap();
+        let address = host.bytes().as_ptr();
+        let source = DataHandle::new(host);
+        let buffer = device
+            .import(&source, TransferPolicy::RequireZeroCopy)
+            .unwrap();
+        assert_eq!(
+            device.resolve(&buffer).unwrap().unwrap().address().unwrap(),
+            address
+        );
+        drop(source);
+        assert_eq!(device.download(&buffer).unwrap().bytes(), values);
+    }
+
+    #[test]
+    fn strict_import_rejects_a_misaligned_view_before_copying() {
+        let device = XlaDevice::cpu().unwrap();
+        let source =
+            HostBuffer::copy_from_slice(ArrayInfo::new(Shape::fixed([5]), DType::U8), &[0; 5])
+                .unwrap();
+        let info = ArrayInfo::new(Shape::fixed([1]), DType::F32);
+        let address = source.bytes().as_ptr().cast_mut();
+        // SAFETY: the view reads four initialized bytes after the first byte,
+        // and the lease keeps the immutable source allocation alive.
+        let view = unsafe {
+            MemoryView::new(
+                info.clone(),
+                address,
+                Some(5),
+                StridedLayout {
+                    byte_offset: 1,
+                    byte_strides: vec![4],
+                    byte_order: ByteOrder::Little,
+                },
+                true,
+                None,
+                Lease::on_drop(move || drop(source)),
+            )
+        }
+        .unwrap();
+        let data = DataHandle::single(
+            info,
+            MemoryLocation::host(device.host()),
+            ShardStorage::Local {
+                view,
+                allocation: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            device
+                .import(&data, TransferPolicy::RequireZeroCopy)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Unsupported
+        );
+        let copied = device.import(&data, TransferPolicy::AllowCopy).unwrap();
+        assert_eq!(device.download(&copied).unwrap().bytes(), [0; 4]);
+    }
 }
