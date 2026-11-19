@@ -4,8 +4,8 @@ use gnx_expr::{
     Capture, CellTrace, Expr, InputSpec, Invocation, LoweringError, ObjectTracer, Op, Operation,
     Trace, TraceContext, ValueInfo,
 };
-use gnx_math_base::ops::reduction::{ReduceAddOperation, reduce_add};
-use gnx_math_base::ops::{add_op, mul_op};
+use gnx_array::ops::reduction::{ReduceAddOperation, reduce_add};
+use gnx_array::ops::{add_op, mul_op};
 use gnx_transforms::ExpandTransforms;
 use gnx_transforms::ad::region::{jvp, vjp};
 use gnx_transforms::ad::{DiffParameters, JvpOperation, VjpOperation};

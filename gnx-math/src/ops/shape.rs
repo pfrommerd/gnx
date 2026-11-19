@@ -14,7 +14,7 @@ impl ConcatenateOperation {
         self.axis
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     ConcatenateOperation,
     "concatenate",
     |op, eqn| {
@@ -42,7 +42,7 @@ impl PadOperation {
         &self.padding
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     PadOperation,
     "pad",
     |op, eqn| {

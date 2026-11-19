@@ -158,6 +158,16 @@ fn map_rejects_specs_that_do_not_match_the_arguments() {
 }
 
 #[test]
+fn array_arithmetic_differentiates_through_broadcasts() {
+    let device = XlaDevice::cpu().unwrap();
+    let f = |x: Array, y: Array| sum(&((&x % &y) / &y - x));
+    let (dx, dy) = grad(f).invoke((floats(&[2], &[5., -3.]), scalar(2.)));
+    eval(&device, &(dx.clone(), dy.clone()));
+    close(&values(&device, &dx), &[-0.5, -0.5]);
+    close(&values(&device, &dy), &[-0.5]);
+}
+
+#[test]
 fn grad_and_value_and_grad_follow_wrt() {
     let device = XlaDevice::cpu().unwrap();
     let traces = AtomicUsize::new(0);

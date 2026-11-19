@@ -1,7 +1,7 @@
+use gnx_array::ops::reduction::{ReduceAddOperation, ReduceOperation, reduce_add};
+use gnx_array::ops::{AddOperation, broadcast_in_dim_op};
 use gnx_expr::pass::Builder;
 use gnx_expr::{Eqn, Expr, Var};
-use gnx_math_base::ops::reduction::{ReduceAddOperation, ReduceOperation, reduce_add};
-use gnx_math_base::ops::{AddOperation, broadcast_in_dim_op};
 
 use crate::ad::{Dual, JvpRule, Operand, Tangent, TransposeRule, def::deflinear};
 use crate::util::{copy_eqn, dims};

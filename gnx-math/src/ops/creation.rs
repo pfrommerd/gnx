@@ -11,7 +11,7 @@ impl IotaOperation {
         self.axis
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     IotaOperation,
     "iota",
     |op, eqn| {
@@ -41,7 +41,7 @@ impl ConstantOperation {
         f64::from_bits(self.bits)
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     ConstantOperation,
     "constant",
     |_op, eqn| {
@@ -69,7 +69,7 @@ impl ScalarBoundOperation {
         self.lower
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     ScalarBoundOperation,
     "scalar_bound",
     |_op, eqn| {

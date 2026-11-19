@@ -26,7 +26,7 @@ impl CumulativeOperation {
         self.reverse
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     CumulativeOperation,
     "cumulative",
     |op, eqn| {
@@ -64,7 +64,7 @@ impl SortOperation {
         self.stable
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     SortOperation,
     "sort",
     |op, eqn| {
@@ -92,7 +92,7 @@ impl TopKOperation {
         self.k
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     TopKOperation,
     "top_k",
     |_op, eqn| {
@@ -136,7 +136,7 @@ impl ApproxTopKOperation {
         self.original_size
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     ApproxTopKOperation,
     "approx_top_k",
     |op, eqn| {

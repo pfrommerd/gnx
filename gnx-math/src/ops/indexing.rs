@@ -11,7 +11,7 @@ impl SliceOperation {
         &self.ranges
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     SliceOperation,
     "slice",
     |op, eqn| {
@@ -36,7 +36,7 @@ pub fn slice(ranges: &[(usize, usize, usize)]) -> Op {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct DynamicSliceOperation;
-gnx_math_base::array_operation!(DynamicSliceOperation, "dynamic_slice", |eqn| arity(
+gnx_array::array_operation!(DynamicSliceOperation, "dynamic_slice", |eqn| arity(
     eqn,
     1 + result_rank(eqn)?
 ));
@@ -46,7 +46,7 @@ pub fn dynamic_slice() -> Op {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct DynamicUpdateSliceOperation;
-gnx_math_base::array_operation!(DynamicUpdateSliceOperation, "dynamic_update_slice", |eqn| {
+gnx_array::array_operation!(DynamicUpdateSliceOperation, "dynamic_update_slice", |eqn| {
     arity(eqn, 2 + result_rank(eqn)?)
 });
 pub fn dynamic_update_slice() -> Op {
@@ -55,7 +55,7 @@ pub fn dynamic_update_slice() -> Op {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct SelectNOperation;
-gnx_math_base::array_operation!(SelectNOperation, "select_n", |eqn| {
+gnx_array::array_operation!(SelectNOperation, "select_n", |eqn| {
     if eqn.inputs().len() < 2 {
         return Err(signature("select_n needs a selector and at least one case"));
     }
@@ -99,7 +99,7 @@ impl GatherOperation {
         &self.parameters
     }
 }
-gnx_math_base::array_operation!(
+gnx_array::array_operation!(
     GatherOperation,
     "gather",
     |op, eqn| {
@@ -163,7 +163,7 @@ impl ScatterOperation {
     }
 }
 
-gnx_math_base::array_operation!(ScatterOperation, "scatter", |op, eqn| {
+gnx_array::array_operation!(ScatterOperation, "scatter", |op, eqn| {
     if op.update == ScatterUpdate::Apply {
         if eqn.inputs().len() != 3 || eqn.outputs().len() != 1
             || eqn.subexprs().len() != 1 || !eqn.subexprs()[0].closure().is_empty()

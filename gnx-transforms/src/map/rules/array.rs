@@ -3,14 +3,22 @@
 //! `zeros`, `ones` and `eye` take no operands, so they are never batched and
 //! need no rule.
 
-use gnx_math_base::ops::{
+use gnx_array::ops::{
     AddOperation, BroadcastInDimOperation, MulOperation, ReshapeOperation, RevOperation,
     SelectOperation, TransposeOperation, broadcast_in_dim_op, reshape_op, rev_op, transpose_op,
 };
 
 use crate::map::def::{defbatch, defbroadcasting, leading, shifted};
 
-defbroadcasting!(AddOperation, MulOperation, SelectOperation);
+use gnx_array::ops::{DivOperation, RemOperation, SubOperation};
+defbroadcasting!(
+    AddOperation,
+    SubOperation,
+    MulOperation,
+    DivOperation,
+    RemOperation,
+    SelectOperation
+);
 
 defbatch!(BroadcastInDimOperation, |op| Ok(broadcast_in_dim_op(
     &leading(op.dims())
@@ -25,11 +33,9 @@ use crate::map::batch::materialize;
 use crate::map::{BatchRule, Batched};
 use crate::util::with_axis;
 use crate::{TransformError, TransformResult};
+use gnx_array::ops::reduction::{ReduceAddOperation, ReduceOperation, reduce_add_op, reduce_op};
 use gnx_expr::pass::Builder;
 use gnx_expr::{Eqn, Op};
-use gnx_math_base::ops::reduction::{
-    ReduceAddOperation, ReduceOperation, reduce_add_op, reduce_op,
-};
 
 defbatch!(ReduceAddOperation, |op| Ok(reduce_add_op(&shifted(
     op.axes()

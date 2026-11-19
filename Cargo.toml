@@ -2,7 +2,6 @@
 members = [
     "gnx",
     "gnx-array",
-    "gnx-math-base",
     "gnx-transforms",
     "gnx-derive",
     "gnx-expr",

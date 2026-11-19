@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use gnx_array::{ArrayInfo, Shape, fixed_dims};
+use crate::{ArrayInfo, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
 use gnx_expr::{Expr, SubExpr, ValueInfo, Var};
 
@@ -84,7 +84,7 @@ pub fn check_region(eqn: &Eqn) -> Result<usize> {
     Ok(output.shape().dims().len())
 }
 
-fn check_reducer(reducer: &Expr, dtypes: &[gnx_array::DType]) -> Result<()> {
+fn check_reducer(reducer: &Expr, dtypes: &[crate::DType]) -> Result<()> {
     let count = dtypes.len();
     if !reducer.closure().is_empty()
         || reducer.inputs().len() != 2 * count

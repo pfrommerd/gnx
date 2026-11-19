@@ -4,12 +4,12 @@
 
 use std::sync::Arc;
 
+use gnx_array::ops::{ones_op, zeros_op};
 use gnx_expr::{
     Capture, CellTrace, Invocation, Kind, ObjectTracer, Op, Trace, TraceContext, ValueInfo,
 };
 use gnx_graph::util::GraphExt;
 use gnx_graph::{Builder, Graph, Key, Of};
-use gnx_math_base::ops::{ones_op, zeros_op};
 
 use crate::body::Body;
 use crate::cache::{TraceEntry, TracerBuilder, kind, rebuild_graph, split_graph};

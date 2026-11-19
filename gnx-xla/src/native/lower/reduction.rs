@@ -1,8 +1,8 @@
 use std::io;
 
+use gnx_array::ops::reduction::ReduceAddOperation;
 use gnx_expr::{Eqn, Expr};
 use gnx_math::ops::reduction::{ReduceOperation, ReduceWindowOperation};
-use gnx_math_base::ops::reduction::ReduceAddOperation;
 use xla::{ElementType, XlaBuilder, XlaComputation, XlaOp};
 
 use super::{

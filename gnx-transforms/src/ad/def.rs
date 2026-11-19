@@ -181,7 +181,7 @@ impl<'a> Val<'a> {
     }
 
     pub fn reshape(self, info: ValueInfo) -> Self {
-        self.cx.emit(gnx_math_base::ops::reshape_op(), &[self], info)
+        self.cx.emit(gnx_array::ops::reshape_op(), &[self], info)
     }
 }
 
@@ -449,7 +449,8 @@ pub fn transpose<const N: usize>(
 /// tangent; contributions of nonzero tangents are summed.
 ///
 /// For reverse mode the contributions must be linear in `t`, built from
-/// operations that themselves have transpose rules.
+/// operations that themselves have transpose rules. For an operation owned by
+/// another crate, `defjvp!(extern OpType, ...)` registers a local rule provider.
 ///
 /// ```ignore
 /// defjvp!(AddOperation, |_, t, _| Ok(t), |_, t, _| Ok(t));
@@ -459,6 +460,10 @@ pub fn transpose<const N: usize>(
 /// ```
 #[macro_export]
 macro_rules! defjvp {
+    // Register a local rule provider when the operation is owned by another crate.
+    (extern $op:ty, $($rules:tt)+) => {
+        $crate::__ad_def!(@norm external_jvp $op [] $($rules)+);
+    };
     ($op:ty, $($rules:tt)+) => {
         $crate::__ad_def!(@norm jvp $op [] $($rules)+);
     };
@@ -474,6 +479,9 @@ macro_rules! defjvp {
 /// ```
 #[macro_export]
 macro_rules! deftranspose {
+    (extern $op:ty, $($rules:tt)+) => {
+        $crate::__ad_def!(@norm external_transpose $op [] $($rules)+);
+    };
     ($op:ty, $($rules:tt)+) => {
         $crate::__ad_def!(@norm transpose $op [] $($rules)+);
     };
@@ -522,6 +530,17 @@ macro_rules! __ad_def {
     };
 
     (@emit jvp $op:ty [$($g:tt)*]) => {
+        $crate::__ad_def!(@impl_jvp $op [$($g)*]);
+        $crate::__private::gnx_expr::register_op_interface!(dyn $crate::ad::JvpRule: $op);
+    };
+    (@emit external_jvp $op:ty [$($g:tt)*]) => {
+        const _: () = {
+            struct Rule;
+            $crate::__ad_def!(@impl_jvp Rule [$($g)*]);
+            $crate::__private::gnx_expr::register_op_interface!(dyn $crate::ad::JvpRule: $op => Rule);
+        };
+    };
+    (@impl_jvp $op:ty [$($g:tt)*]) => {
         impl $crate::ad::JvpRule for $op {
             fn jvp(
                 &self,
@@ -537,9 +556,19 @@ macro_rules! __ad_def {
                 )
             }
         }
-        $crate::__private::gnx_expr::register_op_interface!(dyn $crate::ad::JvpRule: $op);
     };
     (@emit transpose $op:ty [$($g:tt)*]) => {
+        $crate::__ad_def!(@impl_transpose $op [$($g)*]);
+        $crate::__private::gnx_expr::register_op_interface!(dyn $crate::ad::TransposeRule: $op);
+    };
+    (@emit external_transpose $op:ty [$($g:tt)*]) => {
+        const _: () = {
+            struct Rule;
+            $crate::__ad_def!(@impl_transpose Rule [$($g)*]);
+            $crate::__private::gnx_expr::register_op_interface!(dyn $crate::ad::TransposeRule: $op => Rule);
+        };
+    };
+    (@impl_transpose $op:ty [$($g:tt)*]) => {
         impl $crate::ad::TransposeRule for $op {
             fn transpose(
                 &self,
@@ -556,7 +585,6 @@ macro_rules! __ad_def {
                 )
             }
         }
-        $crate::__private::gnx_expr::register_op_interface!(dyn $crate::ad::TransposeRule: $op);
     };
     (@emit linear $op:ty [$($g:tt)*]) => {
         $crate::__ad_def!(@derived linear_jvp $op);

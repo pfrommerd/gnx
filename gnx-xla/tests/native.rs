@@ -41,6 +41,23 @@ fn unpack(device: &XlaDevice, value: &Value) -> Vec<f32> {
 }
 
 #[test]
+fn array_arithmetic_broadcasts_and_evaluates_lazily() {
+    use gnx::Array;
+    let device = XlaDevice::cpu().unwrap();
+    let a = Array::from_data(floats(&[2, 1], &[-5., 8.]));
+    let b = Array::from_data(floats(&[2], &[2., 4.]));
+    let results = vec![&a + &b, a.clone() - &b, &a * b.clone(), a.clone() / b.clone(), a % b];
+    assert!(results.iter().all(|v| v.data().is_none() && v.shape() == &Shape::fixed([2, 2])));
+    block_on(device.eval(&results, COPY)).unwrap();
+    for (result, expected) in results.iter().zip([
+        [-3., -1., 10., 12.], [-7., -9., 6., 4.], [-10., -20., 16., 32.],
+        [-2.5, -1.25, 4., 2.], [-1., -1., 0., 0.],
+    ]) {
+        assert_eq!(unpack(&device, &Value::new(result.data().unwrap().clone())), expected);
+    }
+}
+
+#[test]
 fn compile_nested_call_reuse_outputs_and_forward_remote_refs() {
     let device = XlaDevice::cpu().unwrap();
     let array = array_info(&[2], DType::F32);

@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
+use gnx_array::ops::reduction::{array, check_region, emit};
 use gnx_array::{ArrayInfo, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
 use gnx_expr::{Expr, ValueInfo, Var};
-use gnx_math_base::ops::reduction::{array, check_region, emit};
 
 use super::{Dialect, Eqn, Op, Operation, Result, fmt, signature};
 
-pub use gnx_math_base::ops::reduction::{ReduceOperation, reduce, reduce_op};
+pub use gnx_array::ops::reduction::{ReduceOperation, reduce, reduce_op};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Window {
@@ -31,7 +31,7 @@ impl ReduceWindowOperation {
     }
 }
 
-gnx_math_base::array_operation!(ReduceWindowOperation, "reduce_window", |op, eqn| {
+gnx_array::array_operation!(ReduceWindowOperation, "reduce_window", |op, eqn| {
     op.window.check(check_region(eqn)?)
 }, window;
     fn lower(&self, eqn: &gnx_expr::HEqn, ctx: &mut gnx_expr::lower::LoweringContext<'_>) -> Result<()> {

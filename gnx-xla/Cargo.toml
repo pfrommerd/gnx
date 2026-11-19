@@ -5,13 +5,13 @@ edition = "2024"
 
 [features]
 default = []
-native = ["dep:cc", "dep:xla", "dep:futures-channel", "dep:gnx-math-base", "dep:gnx-transforms"]
+native = ["dep:cc", "dep:xla", "dep:futures-channel", "dep:gnx-array", "dep:gnx-transforms"]
 
 [dependencies]
 futures-channel = { version = "0.3", optional = true }
 gnx-expr = { path = "../gnx-expr" }
 gnx-math = { path = "../gnx-math" }
-gnx-math-base = { path = "../gnx-math-base", optional = true }
+gnx-array = { path = "../gnx-array", optional = true }
 gnx-transforms = { path = "../gnx-transforms", optional = true }
 xla = { version = "=0.5.5", optional = true }
 

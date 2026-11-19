@@ -12,9 +12,6 @@ use crate::ops::dtype::*;
 use crate::ops::special::*;
 
 defbroadcasting!(
-    SubOperation,
-    DivOperation,
-    RemOperation,
     NegOperation,
     AbsOperation,
     SignOperation,

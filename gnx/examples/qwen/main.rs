@@ -1,0 +1,206 @@
+//! Greedy text completion with Qwen3.5-0.8B or Qwen3.8-27B on native GNX/XLA.
+mod model;
+mod tensor;
+
+use futures_executor::block_on;
+use gnx::{
+    Array, Eval, ExecOpts, Shape,
+    array::{ArrayInfo, DType},
+    buffer::{DataHandle, HostBuffer},
+};
+use gnx_xla::XlaDevice;
+use model::{Config, Weights};
+use safetensors::SafeTensors;
+use serde::Deserialize;
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+};
+use tokenizers::Tokenizer;
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+#[derive(Deserialize)]
+struct Checkpoint {
+    text_config: Config,
+}
+
+fn weights(dir: &Path) -> Result<Weights> {
+    let mut weights = Weights::new();
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().is_none_or(|s| s != "safetensors") {
+            continue;
+        }
+        let bytes = fs::read(&path)?;
+        let shard = SafeTensors::deserialize(&bytes)?;
+        for (name, v) in shard.tensors() {
+            if !name.starts_with("model.language_model.") && name != "lm_head.weight" {
+                continue;
+            }
+            let dtype = match v.dtype() {
+                safetensors::Dtype::BF16 => DType::BF16,
+                safetensors::Dtype::F32 => DType::F32,
+                other => return Err(format!("{name}: unsupported weight dtype {other:?}").into()),
+            };
+            let info = ArrayInfo::new(Shape::fixed(v.shape().iter().copied()), dtype);
+            let array = Array::from_data(DataHandle::new(HostBuffer::copy_from_slice(
+                info,
+                v.data(),
+            )?));
+            if weights.insert(name.clone(), array).is_some() {
+                return Err(format!("duplicate weight {name} in {}", path.display()).into());
+            }
+        }
+    }
+    Ok(weights)
+}
+const USAGE: &str = "qwen [--model-dir DIR] [--prompt TEXT | --chat] [--max-new-tokens N]";
+fn main() -> Result<()> {
+    let mut dir = PathBuf::from("Qwen3.5-0.8B");
+    let mut prompt = None;
+    let mut chat = false;
+    let mut limit = 16usize;
+    let mut args = env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--model-dir" => dir = args.next().ok_or("missing model directory")?.into(),
+            "--prompt" => prompt = Some(args.next().ok_or("missing prompt")?),
+            "--chat" => chat = true,
+            "--max-new-tokens" => limit = args.next().ok_or("missing token count")?.parse()?,
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            _ => return Err(format!("unknown option {arg}; usage: {USAGE}").into()),
+        }
+    }
+    if chat && prompt.is_some() {
+        return Err("choose either --chat or --prompt".into());
+    }
+    let Checkpoint { text_config: model } =
+        serde_json::from_slice(&fs::read(dir.join("config.json"))?)?;
+    let tokenizer = Tokenizer::from_file(dir.join("tokenizer.json"))?;
+    let w = weights(&dir)?;
+    model.validate(&w)?;
+    let device = XlaDevice::cpu()?;
+    let session = Decoder {
+        model,
+        w,
+        device,
+        tokenizer,
+    };
+    if chat {
+        return session.chat(limit);
+    }
+    let prompt = prompt.as_deref().unwrap_or("The capital of France is");
+    let encoding = session.tokenizer.encode(prompt, false)?;
+    let generated = session.generate(encoding.get_ids(), limit, |_| Ok(()))?;
+    println!("{prompt}{}", session.tokenizer.decode(&generated, true)?);
+    Ok(())
+}
+
+struct Decoder {
+    model: Config,
+    w: Weights,
+    device: XlaDevice,
+    tokenizer: Tokenizer,
+}
+impl Decoder {
+    fn chat(&self, limit: usize) -> Result<()> {
+        let mut history = String::new();
+        eprintln!("Enter a message. /reset clears the conversation; /quit or Ctrl-D exits.");
+        loop {
+            print!("You: ");
+            io::stdout().flush()?;
+            let mut line = String::new();
+            if io::stdin().read_line(&mut line)? == 0 {
+                break;
+            }
+            let message = line.trim();
+            match message {
+                "/quit" => break,
+                "/reset" => {
+                    history.clear();
+                    continue;
+                }
+                "" => continue,
+                _ => (),
+            }
+            // Text-only Qwen chat template with thinking disabled. Past assistant
+            // messages contain the answer without the empty thinking prefix.
+            let turn = format!("<|im_start|>user\n{message}<|im_end|>\n<|im_start|>assistant\n");
+            let prompt = format!("{history}{turn}<think>\n\n</think>\n\n");
+            let encoded = self.tokenizer.encode(prompt.as_str(), false)?;
+            if !self.fits(encoded.len(), limit) {
+                eprintln!("Context is full. Use /reset or enter a shorter message.");
+                continue;
+            }
+            print!("Assistant: ");
+            io::stdout().flush()?;
+            let mut stream = self.tokenizer.decode_stream(true);
+            let ids = self.generate(encoded.get_ids(), limit, |id| {
+                if let Some(text) = stream.step(id)? {
+                    print!("{text}");
+                    io::stdout().flush()?;
+                }
+                Ok(())
+            })?;
+            println!();
+            history.push_str(&turn);
+            history.push_str(self.tokenizer.decode(&ids, true)?.trim());
+            history.push_str("<|im_end|>\n");
+        }
+        Ok(())
+    }
+
+    fn fits(&self, prompt_len: usize, limit: usize) -> bool {
+        prompt_len.saturating_add(limit.saturating_sub(1)) <= self.model.max_position_embeddings
+    }
+    fn generate(
+        &self,
+        ids: &[u32],
+        limit: usize,
+        mut on_token: impl FnMut(u32) -> Result<()>,
+    ) -> Result<Vec<u32>> {
+        let Self {
+            model,
+            w,
+            device,
+            tokenizer,
+        } = self;
+        if ids.is_empty() || ids.iter().any(|&id| id as usize >= model.vocab_size) {
+            return Err("expected a nonempty text prompt with valid token IDs".into());
+        }
+        if !self.fits(ids.len(), limit) {
+            return Err("requested sequence exceeds model context length".into());
+        }
+        if limit == 0 {
+            return Ok(vec![]);
+        }
+        let mut cache = vec![];
+        let mut generated = vec![];
+        let mut id = ids[0];
+        for pos in 0..ids.len() + limit - 1 {
+            let predict = pos + 1 >= ids.len();
+            let (next, token) = model.step(w, id, pos, &cache, predict);
+            // Materialize all cache entries together, keeping the allocations on the device.
+            let mut roots = next.clone();
+            roots.extend(token.iter().cloned());
+            block_on(device.eval(&roots, ExecOpts::default()))?;
+            cache = next;
+            if let Some(token) = token {
+                id =
+                    u32::from_le_bytes(device.download(token.data().unwrap())?.bytes().try_into()?);
+                if id == model.eos_token_id || Some(id) == tokenizer.token_to_id("<|im_end|>") {
+                    break;
+                }
+                on_token(id)?;
+                generated.push(id);
+            } else {
+                id = ids[pos + 1];
+            }
+        }
+        Ok(generated)
+    }
+}

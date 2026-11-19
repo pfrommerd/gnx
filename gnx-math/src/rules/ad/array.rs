@@ -23,12 +23,12 @@ fn negate<'a>(cx: &'a Ctx<'a>, x: Val<'a>) -> Val<'a> {
     unary(cx, neg_op(), x)
 }
 
-defjvp!(SubOperation, |_, t, _| Ok(t), |cx, t, _| Ok(negate(cx, t)));
-deftranspose!(SubOperation, |_, ct, _| Ok(ct), |cx, ct, _| Ok(negate(
+defjvp!(extern SubOperation, |_, t, _| Ok(t), |cx, t, _| Ok(negate(cx, t)));
+deftranspose!(extern SubOperation, |_, ct, _| Ok(ct), |cx, ct, _| Ok(negate(
     cx, ct
 )));
 deflinear!(NegOperation, |cx, ct, _| Ok(negate(cx, ct)));
-defjvp!(DivOperation, |cx, t, [_, y]| Ok(divide(cx, t, y)), |cx,
+defjvp!(extern DivOperation, |cx, t, [_, y]| Ok(divide(cx, t, y)), |cx,
                                                              t,
                                                              [
     _,
@@ -37,7 +37,7 @@ defjvp!(DivOperation, |cx, t, [_, y]| Ok(divide(cx, t, y)), |cx,
     negate(cx, divide(cx, t * cx.ans()?, y))
 ));
 deftranspose!(
-    DivOperation,
+    extern DivOperation,
     |cx, ct, [_, y]| Ok(divide(cx, ct, y.val()?)),
     None
 );
@@ -467,7 +467,7 @@ defjvp!(BesselI1eOperation, |cx, t, [x]| {
 });
 
 defjvp!(NextafterOperation, |_, t, _| Ok(t), None);
-defjvp!(RemOperation, |_, t, _| Ok(t), |cx, t, [x, y]| {
+defjvp!(extern RemOperation, |_, t, _| Ok(t), |cx, t, [x, y]| {
     let z = divide(cx, x, y);
     let magnitude = unary(cx, floor_op(), unary(cx, abs_op(), z));
     Ok(negate(cx, t) * unary(cx, sign_op(), z) * magnitude)

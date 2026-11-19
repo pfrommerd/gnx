@@ -9,13 +9,19 @@ use std::fmt;
 
 use gnx_expr::{Dialect, Eqn, LoweringError, Op, Operation};
 
-use gnx_array::ArrayInfo;
+use crate::ArrayInfo;
 
 pub struct ArrayDialect;
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct AddOperation;
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct MulOperation;
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct SubOperation;
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct DivOperation;
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct RemOperation;
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ZerosOperation;
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -144,6 +150,9 @@ pub mod reduction;
 
 array_operation!(AddOperation, "add", |eqn| arity(eqn, 2));
 array_operation!(MulOperation, "mul", |eqn| arity(eqn, 2));
+array_operation!(SubOperation, "sub", |eqn| arity(eqn, 2));
+array_operation!(DivOperation, "div", |eqn| arity(eqn, 2));
+array_operation!(RemOperation, "rem", |eqn| arity(eqn, 2));
 array_operation!(ZerosOperation, "zeros", |eqn| arity(eqn, 0));
 array_operation!(OnesOperation, "ones", |eqn| arity(eqn, 0));
 array_operation!(ReshapeOperation, "reshape", |eqn| arity(eqn, 1));
@@ -198,6 +207,16 @@ pub fn add_op() -> Op {
 /// Elementwise multiplication (logical and for booleans).
 pub fn mul_op() -> Op {
     Op::new(MulOperation)
+}
+
+pub fn sub_op() -> Op {
+    Op::new(SubOperation)
+}
+pub fn div_op() -> Op {
+    Op::new(DivOperation)
+}
+pub fn rem_op() -> Op {
+    Op::new(RemOperation)
 }
 
 /// An array of zeros with the result's metadata.

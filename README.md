@@ -32,9 +32,51 @@ extra input copy and takes no `allow_copy` flag. In Rust, use
 `HostBuffer::copy_from_slice` to create an aligned snapshot. Results already
 owned by the same XLA client can also be reused without copying.
 
+## Qwen text generation in Rust
+
+With the native XLA environment above, run the `gnx` example on a local
+[Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) checkpoint:
+
+```sh
+hf download Qwen/Qwen3.5-0.8B --local-dir Qwen3.5-0.8B \
+  --include 'config.json' 'tokenizer.json' '*.safetensors'
+cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
+  --model-dir Qwen3.5-0.8B --prompt 'The capital of France is' --max-new-tokens 4
+```
+
+To chat interactively with the same checkpoint:
+
+```sh
+cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
+  --model-dir Qwen3.5-0.8B --chat --max-new-tokens 64
+```
+
+Enter one message per line. Replies stream as they are generated. `/reset` clears
+history; `/quit` or Ctrl-D exits. The token limit applies to each reply. Chat
+loads the weights once and reprocesses the conversation history on each turn.
+
+For [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), substitute
+`Qwen/Qwen3.8-27B` and `Qwen3.8-27B` in those commands. Use the original BF16
+checkpoint and allow enough CPU RAM for the weights (roughly 54 GB for the 27B
+text decoder), a checkpoint shard, and XLA execution buffers.
+
+[`gnx/examples/qwen`](gnx/examples/qwen) runs greedy completion on raw text.
+Prompt and generated tokens pass through the same single-token decoder. The
+linear projections, feed-forward blocks, and recurrent updates use `#[gnx::jit]`;
+`device.eval` materializes the next token and layer caches together. Only the
+generated token ID is read back. This example favors clarity over throughput:
+full-attention caches grow with the sequence, and evaluation compiles each step.
+
 ## Array operations
 
-The Rust primitive constructors live under `gnx_math::ops` in modules for
+`Array` supports lazy elementwise `+`, `-`, `*`, `/`, and `%` (remainder) on
+owned or borrowed arrays. For example, `(&a - &b) * &scale` builds a trace;
+`device.eval` executes it. Operands must have matching dtypes, and fixed shapes
+broadcast from the right. Use `try_add`, `try_sub`, `try_mul`, `try_div`, or
+`try_rem` to handle incompatible operands without a panic.
+
+`gnx_array::ops` defines the core array dialect and its primitive constructors.
+`gnx_math::ops` re-exports those primitives and adds modules for
 elementwise math, bitwise operations, dtypes, creation, shape, indexing,
 reductions, ordering, contractions, FFT, linear algebra, and special functions.
 The same modules are available through `gnx::ops` in expression macros.
