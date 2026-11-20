@@ -1,4 +1,4 @@
-mod cuda_runtime;
+use gnx_cuda_build as cuda_runtime;
 #[cfg(feature = "lapack")]
 mod lapacke;
 mod libclang;

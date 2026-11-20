@@ -1,6 +1,6 @@
-use sha2::{Digest, Sha256};
+pub use gnx_cuda_build::download;
 use std::{
-    env, fs, io,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -63,27 +63,4 @@ pub fn install(out_dir: &Path, target: &str, variant: &str) -> PathBuf {
         .arg(stage.path()));
     fs::rename(stage.path().join("xla_extension"), &root).expect("install verified XLA extension");
     root
-}
-
-pub fn download(url: &str, archive: &Path, expected: &str) {
-    run(Command::new("curl")
-        .args([
-            "-q",
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--location",
-            "--proto",
-            "=https",
-            "--retry",
-            "3",
-            "--output",
-        ])
-        .arg(archive)
-        .arg(url));
-
-    let mut hash = Sha256::new();
-    io::copy(&mut fs::File::open(archive).unwrap(), &mut hash).expect("hash downloaded archive");
-    let actual = format!("{:x}", hash.finalize());
-    assert_eq!(actual, expected, "SHA-256 mismatch for {url}");
 }

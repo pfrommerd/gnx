@@ -2,13 +2,20 @@
 members = [
     "gnx",
     "gnx-common",
+    "gnx-cuda-build",
     "gnx-transforms",
     "gnx-derive",
     "gnx-expr",
     "gnx-graph",
     "gnx-io",
+    "gnx-torch",
     "gnx-xla",
     "gnx-xla-sys",
     "gnxlib", "gnx-math",
 ]
+exclude = ["gnx-torch/vendor/torch-sys"]
 resolver = "3"
+
+[patch.crates-io]
+# Resolve the verified runtime before tch's own native bindings are built.
+torch-sys = { path = "gnx-torch/vendor/torch-sys" }

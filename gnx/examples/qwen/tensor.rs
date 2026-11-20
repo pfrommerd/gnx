@@ -3,7 +3,7 @@ use gnx::ops::contraction::{DotDimensions, dot_general};
 use gnx::{
     Array, Shape,
     array::{ArrayInfo, DType, Dim},
-    expr::{Invocation, Op, ValueInfo, hexpr},
+    expr::{Invocation, Op, ValueInfo},
     ops::{self, elementwise as e},
 };
 
@@ -71,21 +71,10 @@ pub fn silu(x: &Array) -> Array {
     x * sigmoid(x)
 }
 pub fn sum(x: &Array, axis: usize) -> Array {
-    let m = info(&[], DType::F32);
-    let combiner = hexpr! { |x: &m, y: &m| => { z: &m = array::add x, y; in (z) } };
     let mut s = dims(x);
     s.remove(axis);
-    Invocation::invoke(
-        ops::reduction::reduce_op(&[axis]),
-        vec![(combiner.into(), vec![])],
-        vec![x.tracer().clone(), scalar(0.).into_tracer().into()],
-        vec![info(&s, DType::F32)],
-    )
-    .remove(0)
-    .try_cast::<Array>()
-    .ok()
-    .unwrap()
-    .into()
+    // Use the native reduction rather than tracing a scalar add per element.
+    apply(ops::reduction::reduce_add_op(&[axis]), &[x], &s, x.dtype())
 }
 pub fn keep_sum(x: &Array) -> Array {
     let mut s = dims(x);

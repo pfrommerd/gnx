@@ -9,7 +9,7 @@ use gnx_expr::{Expr, ValueInfo, Var};
 
 use super::{Dialect, Eqn, Op, Operation, Result, fmt, signature};
 
-pub use gnx_common::ops::reduction::{ReduceOperation, reduce, reduce_op};
+pub use gnx_common::ops::reduction::{ReduceOperation, reduce, reduce_add_op, reduce_op};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Window {

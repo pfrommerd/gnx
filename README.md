@@ -2,6 +2,50 @@
 
 A JAX- and PyTorch-compatible library for generative modeling.
 
+## TorchScript backend (CPU and CUDA)
+
+`gnx-torch` traces fixed-shape GNX expressions with `tch` 0.22.0. On Linux
+x86_64 (GNU), Cargo downloads LibTorch 2.9.0: CPU by default, CUDA 13 with
+the `gnx-torch/cuda` feature. The CUDA build uses the native SDK from the
+PyTorch wheel (glibc 2.28+) without installing or running Python. On Apple
+Silicon the managed runtime is CPU-only. The build verifies the pinned SHA-256
+**before** extraction and reuses the verified install across builds. With a
+C++17 compiler, `curl`, `unzip`, and `tar` (for CUDA):
+
+```sh
+cargo test --locked -p gnx-torch
+```
+
+Neither `LIBTORCH` nor `LD_LIBRARY_PATH` needs to be set for managed builds
+and the Qwen binary. The backend's native bridge carries its own runtime paths;
+keep both the Cargo build output and LibTorch cache when running a local binary. The cache defaults to `$XDG_CACHE_HOME/gnx/libtorch` (or
+`~/.cache/gnx/libtorch`); set `GNX_LIBTORCH_CACHE` to relocate it before building.
+Keep the shared CUDA libraries in `$XDG_CACHE_HOME/gnx/cuda` as well
+(`~/.cache/gnx/cuda` by default; override with `GNX_CUDA_CACHE` at build time).
+Allow several GB for the initial download and extraction. To use an
+existing installation, or on an unlisted target, set `LIBTORCH` or use
+`LIBTORCH_USE_PYTORCH=1` with matching PyTorch. These explicit overrides bypass
+the managed download.
+
+Compile once with `let program = TorchDevice::cpu()?.compile(&expr)?`, then
+call `program.run(&args, opts)?` with captures followed by explicit inputs.
+Use `ExecOpts { transfers: TransferPolicy::AllowCopy }` for host inputs; tensors
+already imported on the device can be reused with the default zero-copy policy.
+`device.download(&handle)?` reads a result back into a packed `HostBuffer`.
+
+Use `TorchDevice::cuda(0)?` for the first CUDA-visible GPU. This requires a
+compatible NVIDIA driver and the CUDA-enabled runtime selected by `--features cuda`.
+An unavailable GPU or invalid ordinal returns an error instead of falling back to CPU. To exercise
+GPU import, device-buffer reuse, saved-module replay and readback, run
+`cargo test --locked -p gnx-torch --features cuda --test cuda -- --include-ignored`.
+
+See the [Torch operation matrix](gnx-torch/README.md) for arithmetic, comparisons,
+selection, shape operations, and their dtype restrictions. The backend builds a
+C++17 bridge against those same LibTorch headers to emit runtime conditionals
+and loops. Saved modules execute using standard TorchScript operators. `program.modules()` exposes
+one TorchScript module per distinct computed output for inspection or saving.
+Shared intermediates can therefore be recomputed across distinct outputs.
+
 ## Native XLA backend
 
 `gnx-xla` provides single-device execution through `gnx-xla-sys` and PJRT.
@@ -30,7 +74,17 @@ CPU archive with `curl`, verifies its pinned SHA-256 before extracting it with
 a SHA-256-pinned PJRT plugin, NVIDIA runtime libraries (including `libcudart`,
 cuBLAS and cuDNN), and GPU compiler tools. Allow several GB for the first build.
 No Python installation, system CUDA toolkit, or `LD_LIBRARY_PATH` setup is needed.
-Use `XLA_EXTENSION_VARIANT=cuda12` for CUDA 12 or `cpu` to skip the GPU downloads.
+On GNU/Linux x86_64, the default managed CUDA 13 backends share the same NVIDIA
+libraries, including cuDNN 9.13. You can keep `TorchDevice::cuda(0)?` and
+`XlaDevice::cuda(0)?` alive in the same process. They still own separate buffers.
+To test convolutions with both initialization orders, run:
+
+```sh
+cargo test --release --locked -p gnx --features qwen-example --test cuda_coexist -- --ignored
+```
+
+For XLA alone, use `XLA_EXTENSION_VARIANT=cuda12` for CUDA 12, or `cpu` to
+skip XLA's GPU downloads. These overrides do not select Torch's runtime.
 macOS builds are CPU-only.
 
 The plugin and driver are opened only when a GPU client is requested. The same
@@ -94,7 +148,9 @@ owned by the same XLA client can also be reused without copying.
 
 ## Qwen text generation in Rust
 
-With the native XLA environment above, run the `gnx` example on a local
+`qwen-example` builds both XLA and Torch with their CUDA features enabled.
+XLA is the default backend; execution is on CPU unless `--cuda` is passed.
+Run the example on a local
 [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) checkpoint:
 
 ```sh
@@ -120,6 +176,16 @@ cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
 
 `--cuda` selects ordinal 0; `--cuda 1` selects the second visible GPU. Weights
 and layer caches stay on that device, so it must have enough VRAM for both.
+
+Select Torch from the **same binary**, with no additional feature or environment setup:
+
+```sh
+cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
+  --backend torch --cuda --model-dir Qwen3.5-0.8B --chat
+```
+
+Omit `--cuda` to run on CPU with either backend. For a smaller Torch-only CPU
+build, `--features qwen-torch` omits XLA and downloads the CPU LibTorch archive.
 
 Enter one message per line. Replies stream as they are generated. `/reset` clears
 history; `/quit` or Ctrl-D exits. The token limit applies to each reply. Chat

@@ -15,14 +15,17 @@ ordered-float = "5.1.0"
 thiserror = "2"
 futures-executor = { version = "0.3", optional = true }
 gnx-xla = { path = "../gnx-xla", default-features = false, optional = true }
+gnx-torch = { path = "../gnx-torch", optional = true }
 safetensors = { version = "0.6", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }
 
 [features]
-qwen-example = ["dep:clap", "dep:gnx-xla", "gnx-xla/cuda", "dep:futures-executor", "dep:safetensors", "dep:serde", "dep:serde_json", "dep:tokenizers"]
+qwen-common = ["dep:clap", "dep:futures-executor", "dep:safetensors", "dep:serde", "dep:serde_json", "dep:tokenizers"]
+qwen-example = ["qwen-torch", "dep:gnx-xla", "gnx-xla/cuda", "gnx-torch/cuda"]
+qwen-torch = ["qwen-common", "dep:gnx-torch"]
 
 [[example]]
 name = "qwen"
-required-features = ["qwen-example"]
+required-features = ["qwen-common"]

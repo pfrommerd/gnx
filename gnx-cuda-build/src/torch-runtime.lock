@@ -1,0 +1,5 @@
+# CUDA dependencies specific to the native PyTorch 2.9.0+cu130 wheel.
+1aee33a5da6e1db083fe2b90082def8915f30f3248d5896bcec36a579d941bfc https://files.pythonhosted.org/packages/a5/9f/be0a41ca4a4917abf5cb9ae0daff1a6060cc5de950aec0396de9f3b52bc5/nvidia_curand-10.4.0.35-py3-none-manylinux_2_27_x86_64.whl
+c8f9813eff24d61586699c615e39817e2b4e4f642cace32733c2ab6f663a7eab https://files.pythonhosted.org/packages/ad/0a/4adf0c9bb1241cd1314fc923fde00f3749c7fc785b1e3b3f4a104cd3090c/nvidia_cufile-1.15.0.42-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+25e30a8a7323935d4ad0340b95a0b69926eee755767e8e0b1cf8dd85b197d3fd https://files.pythonhosted.org/packages/fd/53/43b0d71f4e702fa9733f8b4571fdca50a8813f1e450b656c239beff12315/nvidia_cusparselt_cu13-0.8.0-py3-none-manylinux2014_x86_64.whl
+c14d09571697d2e57cb079c8daec88ab1c68cb3586532bfbd4886125a08339b7 https://files.pythonhosted.org/packages/6f/e9/8530afb8ed38d16bbc89cec80a4dd6a52dbf59bc93e546c3658cfa8b1f9b/nvidia_nvshmem_cu13-3.3.24-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl

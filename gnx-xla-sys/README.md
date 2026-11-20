@@ -14,6 +14,9 @@ plugin dynamically; CPU operation does not require a GPU or a driver. Set
 `XLA_EXTENSION_VARIANT` to override the managed variant. GNU/Linux
 (x86_64 and aarch64) supports `cpu`, `cuda12`, and `cuda13`; macOS (Intel and
 Apple Silicon) supports `cpu` only. Other targets require `XLA_EXTENSION_DIR`.
+On x86_64 GNU/Linux the managed CUDA 13 plugin uses the same checksum-pinned
+runtime files as `gnx-torch/cuda`, including cuDNN and its dynamically loaded
+components. `GNX_CUDA_CACHE` relocates this shared cache before building.
 
 Bindgen first tries to load libclang locally. If discovery fails and
 `LIBCLANG_PATH` is unset, the build downloads a SHA-256-pinned libclang 18.1.1

@@ -1,0 +1,53 @@
+name: TorchScript CPU
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    runs-on: ubuntu-24.04
+    env:
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject a corrupt download before installation
+        run: |
+          mkdir -p "$RUNNER_TEMP/mock-bin"
+          cat > "$RUNNER_TEMP/mock-bin/curl" <<'SH'
+          #!/bin/sh
+          while [ "$1" != --output ]; do shift; done
+          echo corrupt > "$2"
+          SH
+          chmod +x "$RUNNER_TEMP/mock-bin/curl"
+          if PATH="$RUNNER_TEMP/mock-bin:$PATH" GNX_LIBTORCH_CACHE="$RUNNER_TEMP/bad-cache" cargo check --locked -p gnx-torch > "$RUNNER_TEMP/verify.log" 2>&1; then exit 1; fi
+          grep 'LibTorch SHA-256 mismatch' "$RUNNER_TEMP/verify.log"
+          test -z "$(find "$RUNNER_TEMP/bad-cache" -name .gnx-verified -print)"
+      - name: Build and test with managed LibTorch
+        run: |
+          env -u LIBTORCH -u LD_LIBRARY_PATH cargo test --locked -p gnx-torch
+          # cargo test sets its own loader environment. Also launch a linked
+          # test executable directly to exercise the embedded runtime path.
+          test_bin=$(find target/debug/deps -maxdepth 1 -type f -name 'control_flow-*' -executable | head -1)
+          env -u LD_LIBRARY_PATH "$test_bin" --exact reloaded_cond_executes_only_the_selected_branch
+      - name: Verify the release Qwen executable uses the self-locating Torch bridge
+        run: |
+          cargo build --locked --release -p gnx --features qwen-torch --example qwen
+          qwen=target/release/examples/qwen
+          env -u LD_LIBRARY_PATH "$qwen" --help
+          # On Ubuntu libstdc++ is on the default search path, so a successful
+          # launch alone would miss a regression affecting hosts such as NixOS.
+          deps=$(readelf -d "$qwen" | grep '(NEEDED)')
+          shim=$(sed -nE 's/.*\[(\/[^]]*\/libgnx_torch_native\.so)\].*/\1/p' <<< "$deps")
+          test -f "$shim"
+          if grep -Eq '\[(libstdc\+\+|libtorch_cpu|libc10)\.so' <<< "$deps"; then exit 1; fi
+          paths=$(readelf -d "$shim" | sed -nE '/\((RUNPATH|RPATH)\)/s/.*\[(.*)\].*/\1/p')
+          IFS=: read -ra dirs <<< "$paths"
+          for lib in libtorch_cpu.so libstdc++.so.6 libgcc_s.so.1; do
+            found=false
+            for dir in "${dirs[@]}"; do
+              if [[ -f "$dir/$lib" ]]; then found=true; break; fi
+            done
+            "$found" || { echo "Missing runtime path for $lib: $paths"; exit 1; }
+          done

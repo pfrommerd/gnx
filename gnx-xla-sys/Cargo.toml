@@ -59,14 +59,14 @@ version = "9.1.3"
 features = ["deflate"]
 default-features = false
 
-[build-dependencies.sha2]
-version = "0.10"
-
 [build-dependencies.tempfile]
 version = "3"
 
 [build-dependencies.bindgen]
 version = "0.72"
+
+[build-dependencies.gnx-cuda-build]
+path = "../gnx-cuda-build"
 
 [build-dependencies.cc]
 version = "1.0"
