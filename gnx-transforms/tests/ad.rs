@@ -1,11 +1,11 @@
-use gnx_array::{ArrayInfo, DType, Shape};
+use gnx_common::{ArrayInfo, DType, Shape};
 use gnx_expr::pass::{Builder, Dce, Pipeline};
 use gnx_expr::{
     Capture, CellTrace, Expr, InputSpec, Invocation, LoweringError, ObjectTracer, Op, Operation,
     Trace, TraceContext, ValueInfo,
 };
-use gnx_array::ops::reduction::{ReduceAddOperation, reduce_add};
-use gnx_array::ops::{add_op, mul_op};
+use gnx_common::ops::reduction::{ReduceAddOperation, reduce_add};
+use gnx_common::ops::{add_op, mul_op};
 use gnx_transforms::ExpandTransforms;
 use gnx_transforms::ad::region::{jvp, vjp};
 use gnx_transforms::ad::{DiffParameters, JvpOperation, VjpOperation};

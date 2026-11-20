@@ -1,9 +1,10 @@
 [package]
-name = "gnx-array"
+name = "gnx-common"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 gnx-expr = { path = "../gnx-expr" }
+paste = "1.0.15"
 ordered-float = "5.3.0"
 uuid = { version = "1.19.0", features = ["v4"] }

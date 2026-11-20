@@ -1,5 +1,5 @@
-pub use gnx_array::fixed_dims;
-pub use gnx_array::ops::{
+pub use gnx_common::fixed_dims;
+pub use gnx_common::ops::{
     AddOperation, ArrayDialect, BroadcastInDimOperation, EyeOperation, MulOperation, OnesOperation,
     ReshapeOperation, RevOperation, SelectOperation, TransposeOperation, ZerosOperation, add_op,
     array, broadcast_in_dim_op, eye_op, mul_op, ones_op, reshape_op, rev_op, select_op,
@@ -8,7 +8,7 @@ pub use gnx_array::ops::{
 
 use std::fmt;
 
-use gnx_array::ops::{arity, result_rank, signature, strictly_increasing};
+use gnx_common::ops::{arity, result_rank, signature, strictly_increasing};
 use gnx_expr::{Dialect, Eqn, Op, Operation};
 
 type Result<T> = std::result::Result<T, gnx_expr::LoweringError>;
@@ -18,7 +18,7 @@ macro_rules! simple_operations {
         #[derive(Clone, PartialEq, Eq, Hash)]
         pub struct $ty;
 
-        gnx_array::array_operation!($ty, stringify!($alias), |eqn| arity(eqn, $arity));
+        gnx_common::array_operation!($ty, stringify!($alias), |eqn| arity(eqn, $arity));
 
         pub fn $ctor() -> Op {
             Op::new($ty)

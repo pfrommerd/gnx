@@ -37,7 +37,7 @@ impl ReduceJvpRule for NonAdditiveReduce {
             let indicator = b.emit1(
                 crate::ops::elementwise::eq_op(),
                 &[x, result],
-                info(&input_shape, gnx_array::DType::Bool),
+                info(&input_shape, gnx_common::DType::Bool),
             );
             let indicator = b.emit1(
                 crate::ops::dtype::convert_element_type_op(),
@@ -346,7 +346,7 @@ fn gather_window_winners(
         elementwise::{ge_op, le_op},
         select_op,
     };
-    use gnx_array::DType;
+    use gnx_common::DType;
     let input = b.info(operand).clone();
     let scalar = info(&[], dtype(&input)?);
     let index_scalar = info(&[], DType::I64);

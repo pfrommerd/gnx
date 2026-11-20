@@ -7,7 +7,7 @@ use gnx_graph::{
     Bound, Builder, Filter, Graph, GraphConsumer, GraphContext, GraphId, GraphSource, Leaf, Node,
     Nothing, NullSource, Of, SourceError, TypedGraph, View,
 };
-use gnx_array::{Array, ArrayInfo, ArrayRef, DType, Shape};
+use gnx_common::{Array, ArrayInfo, ArrayRef, DType, Shape};
 
 fn info() -> ValueInfo {
     ValueInfo::new(ArrayInfo::new(Shape::fixed([4]), DType::F32))

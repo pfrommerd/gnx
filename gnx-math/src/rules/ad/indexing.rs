@@ -361,7 +361,7 @@ fn equal(b: &mut Builder, a: Var, c: Var) -> TransformResult<Var> {
     Ok(b.emit1(
         crate::ops::elementwise::eq_op(),
         &[a, c],
-        info(&shape, gnx_array::DType::Bool),
+        info(&shape, gnx_common::DType::Bool),
     ))
 }
 
@@ -428,7 +428,7 @@ fn replacement(
     p: &ScatterParameters,
 ) -> TransformResult<Vec<Dual>> {
     use crate::ops::{add_op, creation::iota, ones_op, reshape_op};
-    use gnx_array::DType;
+    use gnx_common::DType;
     let output = b.info(x.primal).clone();
     let x_shape = dims(&output)?;
     let update_shape = dims(b.info(u.primal))?;

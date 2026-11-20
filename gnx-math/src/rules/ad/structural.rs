@@ -74,7 +74,7 @@ deflinear!(
     |cx, ct, [input, _]| {
         let input_shape = input.dims()?;
         let output_shape = ct.dims()?;
-        let mask_info = |shape: &[usize]| info(shape, gnx_array::DType::Bool);
+        let mask_info = |shape: &[usize]| info(shape, gnx_common::DType::Bool);
         let ones = cx.emit(crate::ops::ones_op(), &[], mask_info(&input_shape));
         let false_value = cx.zeros(&mask_info(&[]));
         let mask = cx.emit(

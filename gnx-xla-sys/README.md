@@ -1,5 +1,6 @@
-# xla-rs
-Experimentation using the xla compiler from rust
+# gnx-xla-sys
+GNX's XLA bindings, based on Laurent Mazare's `xla-rs`. See [GNX.md](GNX.md)
+for GNX-specific extensions. The upstream usage and benchmarks follow below.
 
 Set `XLA_EXTENSION_DIR` to use an existing unpacked `xla_extension` directory.
 Otherwise the build downloads a [v0.11.0 release archive](https://github.com/elixir-nx/xla/releases/tag/v0.11.0)

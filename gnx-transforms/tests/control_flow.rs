@@ -2,7 +2,7 @@ use gnx_expr::{
     Capture, CellTrace, HExpr, InputSpec, Kind, LoweringError, ObjectTracer, Trace, TraceContext,
     ValueInfo, hexpr,
 };
-use gnx_array::{ArrayInfo, DType, Shape};
+use gnx_common::{ArrayInfo, DType, Shape};
 use gnx_transforms::cf::{ScanParameters, cond, scan, scan_op, switch, while_loop};
 use gnx_transforms::ops;
 

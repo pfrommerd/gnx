@@ -10,7 +10,7 @@ use crate::ops::{
     mul_op, ones_op, reshape_op,
     shape::{concatenate, pad},
 };
-use gnx_array::DType;
+use gnx_common::DType;
 use gnx_expr::pass::Builder;
 use gnx_expr::{Eqn, Op, Var};
 

@@ -5,7 +5,7 @@ use std::fmt;
 
 use gnx_expr::{Dialect, Eqn, Invocation, LoweringError, Op, Operation};
 
-use gnx_array::{Array, ArrayInfo};
+use gnx_common::{Array, ArrayInfo};
 
 pub struct ShardDialect;
 #[derive(Clone, PartialEq, Eq, Hash)]

@@ -14,7 +14,7 @@ impl ConcatenateOperation {
         self.axis
     }
 }
-gnx_array::array_operation!(
+gnx_common::array_operation!(
     ConcatenateOperation,
     "concatenate",
     |op, eqn| {
@@ -42,7 +42,7 @@ impl PadOperation {
         &self.padding
     }
 }
-gnx_array::array_operation!(
+gnx_common::array_operation!(
     PadOperation,
     "pad",
     |op, eqn| {
@@ -60,7 +60,7 @@ pub fn pad(padding: &[(i64, i64, usize)]) -> Op {
     })
 }
 
-use gnx_array::{ArrayInfo, DType, Shape, fixed_dims};
+use gnx_common::{ArrayInfo, DType, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
 use gnx_expr::{ValueInfo, Var};
 

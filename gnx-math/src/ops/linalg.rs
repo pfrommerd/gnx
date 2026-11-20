@@ -9,7 +9,7 @@ impl CholeskyOperation {
         self.symmetrize
     }
 }
-gnx_array::array_operation!(
+gnx_common::array_operation!(
     CholeskyOperation,
     "cholesky",
     |_op, eqn| arity(eqn, 1),
@@ -36,7 +36,7 @@ impl TriangularSolveOperation {
         self.options
     }
 }
-gnx_array::array_operation!(
+gnx_common::array_operation!(
     TriangularSolveOperation,
     "triangular_solve",
     |_op, eqn| arity(eqn, 2),
@@ -65,7 +65,7 @@ impl OrmqrOperation {
         self.options
     }
 }
-gnx_array::array_operation!(OrmqrOperation, "ormqr", |_op, eqn| arity(eqn, 3), options);
+gnx_common::array_operation!(OrmqrOperation, "ormqr", |_op, eqn| arity(eqn, 3), options);
 pub fn ormqr(options: OrmqrOptions) -> Op {
     Op::new(OrmqrOperation { options })
 }
@@ -79,7 +79,7 @@ impl SymmetricProductOperation {
         self.coefficients.map(f64::from_bits)
     }
 }
-gnx_array::array_operation!(
+gnx_common::array_operation!(
     SymmetricProductOperation,
     "symmetric_product",
     |_op, eqn| arity(eqn, 2),
@@ -104,7 +104,7 @@ macro_rules! matrix_operation {
         #[derive(Clone, PartialEq, Eq, Hash)]
         pub struct $ty { $($field: $v),* }
         impl $ty { $(pub fn $field(&self) -> $v { self.$field })* }
-        gnx_array::array_operation!($ty, stringify!($ctor), |$op, eqn| signature_count(eqn, $inputs, $outputs));
+        gnx_common::array_operation!($ty, stringify!($ctor), |$op, eqn| signature_count(eqn, $inputs, $outputs));
         pub fn $ctor($($field: $v),*) -> Op { Op::new($ty { $($field),* }) }
     };
 }
@@ -125,7 +125,7 @@ impl EigOperation {
         self.differentiate_vectors
     }
 }
-gnx_array::array_operation!(EigOperation, "eig", |op, eqn| signature_count(
+gnx_common::array_operation!(EigOperation, "eig", |op, eqn| signature_count(
     eqn,
     1,
     1 + usize::from(op.left) + usize::from(op.right)
@@ -165,7 +165,7 @@ impl CustomLinearSolveOperation {
     }
 }
 
-gnx_array::array_operation!(CustomLinearSolveOperation, "custom_linear_solve", |op, eqn| {
+gnx_common::array_operation!(CustomLinearSolveOperation, "custom_linear_solve", |op, eqn| {
     let n = eqn.outputs().len();
     let regions = eqn.subexprs();
     if n == 0 || eqn.inputs().len() != op.parameters + n || !(regions.len() == 2 || regions.len() == 3) {

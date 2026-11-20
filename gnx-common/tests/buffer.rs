@@ -1,5 +1,5 @@
 use gnx_expr::{ConcreteValue, Value};
-use gnx_array::{
+use gnx_common::{
     AllocationId, AllocationRef, Array, ArrayInfo, ByteOrder, DType, DataHandle, DlpackRequest,
     HostBuffer, HostId, Lease, LocalAllocations, MemoryLocation, MemoryView, OwnerId, Shape, Shard,
     ShardStorage, StridedLayout, TransferPolicy,
@@ -37,7 +37,7 @@ fn packed_host_buffer_rejects_invalid_storage() {
     assert!(HostBuffer::new(half, vec![0; 8]).is_err());
     let boolean = ArrayInfo::new(Shape::fixed([1]), DType::Bool);
     assert!(HostBuffer::new(boolean, vec![2]).is_err());
-    let dynamic = ArrayInfo::new([gnx_array::Dim::Dynamic].into_iter().collect(), DType::U8);
+    let dynamic = ArrayInfo::new([gnx_common::Dim::Dynamic].into_iter().collect(), DType::U8);
     assert!(HostBuffer::new(dynamic, vec![]).is_err());
 }
 

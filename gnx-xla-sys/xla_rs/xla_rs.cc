@@ -1,5 +1,9 @@
 #include "xla_rs.h"
 #include "gpu_client.h"
+#include "absl/log/initialize.h"
+#include "absl/log/internal/globals.h"
+#include "absl/log/log_sink.h"
+#include "absl/log/log_sink_registry.h"
 #ifdef XLA_RS_CUDA_DIR
 #include <dlfcn.h>
 #endif
@@ -1584,7 +1588,29 @@ status compile_with_autotune_cache(const pjrt_client client,
 // path, and being a runtime setting it can be called at any time.
 void set_min_log_level(int severity) {
   absl::SetMinLogLevel(static_cast<absl::LogSeverityAtLeast>(severity));
-  absl::SetStderrThreshold(static_cast<absl::LogSeverityAtLeast>(severity));
+}
+
+namespace {
+class RustLogSink final : public absl::LogSink {
+ public:
+  explicit RustLogSink(gnx_log_callback callback) : callback_(callback) {}
+  void Send(const absl::LogEntry& entry) override {
+    const auto file = entry.source_filename();
+    const auto text = entry.text_message();
+    callback_(static_cast<int>(entry.log_severity()),
+              reinterpret_cast<const uint8_t*>(file.data()), file.size(),
+              entry.source_line(), reinterpret_cast<const uint8_t*>(text.data()), text.size());
+  }
+ private:
+  gnx_log_callback callback_;
+};
+}  // namespace
+
+void gnx_install_log_sink(gnx_log_callback callback) {
+  // Registered once by Rust. Keep the sink alive for native teardown logs.
+  absl::AddLogSink(new RustLogSink(callback));
+  absl::SetStderrThreshold(absl::LogSeverityAtLeast::kInfinity);
+  if (!absl::log_internal::IsInitialized()) absl::InitializeLog();
 }
 
 status first_error(const xla_builder b) {

@@ -1,9 +1,7 @@
 use std::fmt::Display;
 use std::marker::PhantomData;
 
-use crate::Error;
-use crate::{GraphContext, GraphId};
-use gnx_array::array::Array;
+use crate::{Array, Error, GraphContext, GraphId};
 
 mod builtins;
 

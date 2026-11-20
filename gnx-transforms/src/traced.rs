@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use gnx_array::ops::{ones_op, zeros_op};
+use gnx_common::ops::{ones_op, zeros_op};
 use gnx_expr::{
     Capture, CellTrace, Invocation, Kind, ObjectTracer, Op, Trace, TraceContext, ValueInfo,
 };

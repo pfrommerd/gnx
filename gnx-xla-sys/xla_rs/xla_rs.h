@@ -334,6 +334,9 @@ status compile_with_autotune_cache(const pjrt_client, const xla_computation,
                                    const char *load_from, const char *dump_to,
                                    pjrt_loaded_executable *);
 void set_min_log_level(int severity);
+typedef void (*gnx_log_callback)(int severity, const uint8_t* file, size_t file_len,
+                                 int line, const uint8_t* text, size_t text_len);
+void gnx_install_log_sink(gnx_log_callback callback);
 status execute(const pjrt_loaded_executable, const literal *, int,
                pjrt_buffer ***);
 status execute_b(const pjrt_loaded_executable, const pjrt_buffer *, int,

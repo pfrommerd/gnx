@@ -2,7 +2,7 @@ use crate::util::impl_lifetime_free;
 use crate::*;
 
 use gnx_expr::trace::{Generic, CellTrace, ObjectTracer, Tracer, CellTracer};
-use gnx_array::{Array, ArrayInfo, ArrayRef};
+use gnx_common::{Array, ArrayInfo, ArrayRef};
 
 use super::trace::{cell_ref, into_cell_ref, into_value_ref, value_ref};
 use std::any::TypeId;

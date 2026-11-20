@@ -21,7 +21,7 @@ impl FftOperation {
         &self.lengths
     }
 }
-gnx_array::array_operation!(
+gnx_common::array_operation!(
     FftOperation,
     "fft",
     |op, eqn| {

@@ -1,4 +1,4 @@
-use gnx_graph::{
+use gnx_common::{
     DataVisitor, Deserialize, Deserializer, Error, Expecting, MapAccess, SeqAccess, Serialize,
     Serializer,
 };

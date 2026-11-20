@@ -1,4 +1,4 @@
-pub use gnx_array::{array, buffer};
+pub use gnx_common::{array, buffer};
 pub mod device;
 pub mod ops;
 mod rules;

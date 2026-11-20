@@ -2,8 +2,8 @@ use std::fmt::Display;
 use std::io::Write;
 
 use super::{Result, TomlError, Value};
-use gnx_math::Array;
-use gnx_graph::{
+use gnx_common::Array;
+use gnx_common::{
     GraphId, Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
     SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };

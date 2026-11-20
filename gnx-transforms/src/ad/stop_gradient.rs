@@ -1,6 +1,6 @@
 use std::fmt;
 
-use gnx_array::Array;
+use gnx_common::Array;
 use gnx_expr::{Dialect, Eqn, Invocation, LoweringError, Op, Operation};
 
 use super::AdDialect;

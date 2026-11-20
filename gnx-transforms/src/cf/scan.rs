@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use gnx_array::{ArrayInfo, Dim};
+use gnx_common::{ArrayInfo, Dim};
 use gnx_expr::lower::{LoweringContext, RegionArgument};
 use gnx_expr::{Capture, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace, ValueInfo};
 

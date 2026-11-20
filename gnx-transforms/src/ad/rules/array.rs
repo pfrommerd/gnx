@@ -1,6 +1,6 @@
 //! Forward-mode and transposition rules for the `array` dialect.
 
-use gnx_array::ops::{
+use gnx_common::ops::{
     AddOperation, BroadcastInDimOperation, MulOperation, ReshapeOperation, RevOperation,
     SelectOperation, TransposeOperation,
 };

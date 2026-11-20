@@ -698,11 +698,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "gnx-array"
+name = "gnx-common"
 version = "0.1.0"
 dependencies = [
  "gnx-expr",
  "ordered-float",
+ "paste",
  "uuid",
 ]
 
@@ -731,7 +732,7 @@ name = "gnx-graph"
 version = "0.1.0"
 dependencies = [
  "anyhash",
- "gnx-array",
+ "gnx-common",
  "gnx-derive",
  "gnx-expr",
  "indexmap",
@@ -744,9 +745,7 @@ name = "gnx-io"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "gnx-expr",
- "gnx-graph",
- "gnx-math",
+ "gnx-common",
  "object_store",
  "ordered-float",
  "paste",
@@ -756,7 +755,7 @@ dependencies = [
 name = "gnx-math"
 version = "0.1.0"
 dependencies = [
- "gnx-array",
+ "gnx-common",
  "gnx-expr",
  "gnx-transforms",
 ]
@@ -766,7 +765,7 @@ name = "gnx-transforms"
 version = "0.1.0"
 dependencies = [
  "dashmap",
- "gnx-array",
+ "gnx-common",
  "gnx-derive",
  "gnx-expr",
  "gnx-graph",
@@ -781,12 +780,29 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "gnx",
- "gnx-array",
+ "gnx-common",
  "gnx-expr",
  "gnx-graph",
  "gnx-math",
  "gnx-transforms",
- "xla",
+ "gnx-xla-sys",
+]
+
+[[package]]
+name = "gnx-xla-sys"
+version = "0.5.5"
+dependencies = [
+ "bindgen",
+ "cc",
+ "clang-sys",
+ "libc",
+ "log",
+ "num-derive",
+ "num-traits",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "zip",
 ]
 
 [[package]]
@@ -2228,22 +2244,6 @@ name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
-
-[[package]]
-name = "xla"
-version = "0.5.5"
-dependencies = [
- "bindgen",
- "cc",
- "clang-sys",
- "libc",
- "num-derive",
- "num-traits",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
- "zip",
-]
 
 [[package]]
 name = "yoke"

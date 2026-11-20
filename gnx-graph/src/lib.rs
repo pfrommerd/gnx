@@ -1,13 +1,10 @@
 mod builtins;
 mod core;
-mod des;
-mod ser;
 
 pub use anyhash;
 pub use builtins::*;
 pub use core::*;
-pub use des::*;
-pub use ser::*;
+pub use gnx_common::{des::*, ser::*};
 pub use traits::*;
 pub mod traits;
 pub mod util;

@@ -12,10 +12,10 @@
 //! The following example illustrates how to build and run a simple computation.
 //! ```ignore
 //! // Create a CPU client.
-//! let client = xla::PjRtClient::cpu()?;
+//! let client = gnx_xla_sys::PjRtClient::cpu()?;
 //!
 //! // A builder object is used to store the graph of XlaOp.
-//! let builder = xla::XlaBuilder::new("test-builder");
+//! let builder = gnx_xla_sys::XlaBuilder::new("test-builder");
 //!
 //! // Build a simple graph summing two constants.
 //! let cst20 = xla_builder.constant_r0(20f32);
@@ -27,13 +27,14 @@
 //!
 //! // Compile this computation for the target device and then execute it.
 //! let result = client.compile(&sum)?;
-//! let result = &result.execute::<xla::Literal>(&[])?;
+//! let result = &result.execute::<gnx_xla_sys::Literal>(&[])?;
 //!
 //! // Retrieve the resulting value.
 //! let result = result[0][0].to_literal_sync()?.to_vec::<f32>()?;
 //! ```
 
 mod c_lib;
+mod logging;
 #[cfg(feature = "pjrt")]
 pub mod pjrt;
 #[cfg(feature = "cpu-pjrt")]

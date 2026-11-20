@@ -55,6 +55,7 @@ pub struct PjRtClient(Arc<PjRtClientInternal>);
 impl PjRtClient {
     /// A CPU client, this can run computations on multiple CPUs at the same time.
     pub fn cpu() -> Result<Self> {
+        crate::logging::init();
         let mut ptr: c_lib::pjrt_client = std::ptr::null_mut();
         let status = unsafe { c_lib::pjrt_cpu_client_create(&mut ptr) };
         super::handle_status(status)?;
@@ -65,6 +66,7 @@ impl PjRtClient {
     /// this memory can either be allocated dynamically or pre-allocated depending on
     /// `preallocate`.
     pub fn gpu(memory_fraction: f64, preallocate: bool) -> Result<Self> {
+        crate::logging::init();
         let mut ptr: c_lib::pjrt_client = std::ptr::null_mut();
         let status =
             unsafe { c_lib::pjrt_gpu_client_create(&mut ptr, memory_fraction, preallocate) };
@@ -97,6 +99,7 @@ impl PjRtClient {
         let tags: Vec<i32> = options.iter().map(|(_, v)| v.tag()).collect();
         let key_ptrs: Vec<*const std::ffi::c_char> = keys.iter().map(|k| k.as_ptr()).collect();
         let value_ptrs: Vec<*const std::ffi::c_char> = values.iter().map(|v| v.as_ptr()).collect();
+        crate::logging::init();
         let mut ptr: c_lib::pjrt_client = std::ptr::null_mut();
         let status = unsafe {
             c_lib::pjrt_plugin_client_create(
@@ -115,6 +118,7 @@ impl PjRtClient {
 
     /// A TPU client.
     pub fn tpu(max_inflight_computations: usize) -> Result<Self> {
+        crate::logging::init();
         let mut ptr: c_lib::pjrt_client = std::ptr::null_mut();
         let status =
             unsafe { c_lib::pjrt_tpu_client_create(&mut ptr, max_inflight_computations as i32) };

@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! struct Axpy;
-//! impl xla::ffi::Handler for Axpy {
+//! impl gnx_xla_sys::ffi::Handler for Axpy {
 //!     const TRAITS: HandlerTraits = HandlerTraits::COMMAND_BUFFER_COMPATIBLE;
 //!     fn execute(frame: &CallFrame) -> Result<(), String> {
 //!         let a: f32 = frame.attr("a").ok_or("missing attribute a")?;
@@ -21,7 +21,7 @@
 //!         Ok(())
 //!     }
 //! }
-//! xla::ffi::register_handler::<Axpy>("axpy", "CUDA")?;
+//! gnx_xla_sys::ffi::register_handler::<Axpy>("axpy", "CUDA")?;
 //! let out = builder.custom_call_ffi("axpy", &[x, y], ElementType::F32, &[n], "{a = 2.0 : f32}")?;
 //! ```
 //!

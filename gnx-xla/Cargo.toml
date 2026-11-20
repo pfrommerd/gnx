@@ -12,9 +12,9 @@ cuda = ["xla/cuda"]
 futures-channel = "0.3"
 gnx-expr = { path = "../gnx-expr" }
 gnx-math = { path = "../gnx-math" }
-gnx-array = { path = "../gnx-array" }
+gnx-common = { path = "../gnx-common" }
 gnx-transforms = { path = "../gnx-transforms" }
-xla = { version = "=0.5.5", features = ["pjrt"] }
+xla = { package = "gnx-xla-sys", path = "../gnx-xla-sys", features = ["pjrt"] }
 
 [dev-dependencies]
 futures-executor = "0.3"

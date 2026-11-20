@@ -4,10 +4,17 @@ A JAX- and PyTorch-compatible library for generative modeling.
 
 ## Native XLA backend
 
-`gnx-xla` provides single-device execution through `xla-rs` and PJRT.
+`gnx-xla` provides single-device execution through `gnx-xla-sys` and PJRT.
 `XlaDevice::cpu()` selects the CPU; `XlaDevice::cuda(0)` selects the first
 CUDA-visible GPU. `XlaDevice::compile` returns a reusable executable.
 The default `lapack` feature adds CPU LAPACKE decompositions; Qwen omits it.
+
+Creating a builder or client automatically routes XLA's Abseil logs to the
+Rust `log` target `xla`. Install your application's logger before that point
+to capture startup records. With no logger, ordinary records are discarded.
+The bridge suppresses Abseil's process-wide stderr copy; fatal errors still
+terminate. Earlier startup messages and plugins writing directly to stderr
+can bypass the bridge.
 
 With a C++17 compiler, `curl`, and `tar` on PATH, run:
 
@@ -15,7 +22,7 @@ With a C++17 compiler, `curl`, and `tar` on PATH, run:
 cargo test --locked -p gnx-xla
 ```
 
-On GNU/Linux and macOS (x86_64 or aarch64), `xla-rs` downloads the matching
+On GNU/Linux and macOS (x86_64 or aarch64), `gnx-xla-sys` downloads the matching
 [`xla_extension` v0.11.0](https://github.com/elixir-nx/xla/releases/tag/v0.11.0)
 CPU archive with `curl`, verifies its pinned SHA-256 before extracting it with
 `tar`, and caches it in Cargo's build output. On GNU/Linux x86_64 and aarch64,
@@ -55,8 +62,8 @@ on that GPU can reuse the returned handle under the default policy.
 
 For an offline build or a custom runtime, set `XLA_EXTENSION_DIR` to the
 unpacked `xla_extension` directory to bypass the managed XLA and CUDA downloads.
-A custom extension retains its own driver and toolkit requirements. On Linux, vendored
-`xla-rs` links its C++ bindings as `libxla_rs.so`. Executables record the absolute
+A custom extension retains its own driver and toolkit requirements. On Linux,
+`gnx-xla-sys` links its C++ bindings as `libxla_rs.so`. Executables record the absolute
 path to that library in Cargo's build output; the library carries the search
 paths for XLA and its native dependencies. Native NixOS CUDA builds also search
 `/run/opengl-driver/lib` for `libcuda.so.1`, so the NVIDIA driver directory does
@@ -138,7 +145,7 @@ owned or borrowed arrays. For example, `(&a - &b) * &scale` builds a trace;
 broadcast from the right. Use `try_add`, `try_sub`, `try_mul`, `try_div`, or
 `try_rem` to handle incompatible operands without a panic.
 
-`gnx_array::ops` defines the core array dialect and its primitive constructors.
+`gnx_common::ops` defines the core array dialect and its primitive constructors.
 `gnx_math::ops` re-exports those primitives and adds modules for
 elementwise math, bitwise operations, dtypes, creation, shape, indexing,
 reductions, ordering, contractions, FFT, linear algebra, and special functions.

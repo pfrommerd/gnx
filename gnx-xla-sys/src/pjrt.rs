@@ -30,11 +30,13 @@ unsafe impl Sync for Executable {}
 
 impl Client {
     pub fn new() -> io::Result<Arc<Self>> {
+        crate::logging::init();
         output(|out, report| unsafe { gnx_pjrt_new(out, report) }).map(|raw| Arc::new(Self(raw)))
     }
 
     /// Create a client restricted to one CUDA-visible device, without preallocating VRAM.
     pub fn cuda(ordinal: usize) -> io::Result<Arc<Self>> {
+        crate::logging::init();
         let ordinal = c_int::try_from(ordinal)
             .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "CUDA ordinal out of range"))?;
         output(|out, report| unsafe { gnx_pjrt_cuda_new(ordinal, out, report) })

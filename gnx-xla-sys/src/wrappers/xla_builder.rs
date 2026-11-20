@@ -14,6 +14,7 @@ impl XlaBuilder {
     /// Create a new builder with the associated name, the name is only used for debugging
     /// purposes.
     pub fn new(name: &str) -> XlaBuilder {
+        crate::logging::init();
         let name = std::ffi::CString::new(name).unwrap();
         let xla_builder = unsafe { c_lib::xla_builder_create(name.as_ptr()) };
         XlaBuilder(Rc::new(XlaBuilderInternal(xla_builder)))

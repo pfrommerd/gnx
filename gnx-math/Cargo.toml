@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 gnx-expr = { path = "../gnx-expr" }
-gnx-array = { path = "../gnx-array" }
+gnx-common = { path = "../gnx-common" }
 gnx-transforms = { path = "../gnx-transforms" }

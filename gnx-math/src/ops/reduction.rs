@@ -2,14 +2,14 @@
 
 use std::sync::Arc;
 
-use gnx_array::ops::reduction::{array, check_region, emit};
-use gnx_array::{ArrayInfo, Shape, fixed_dims};
+use gnx_common::ops::reduction::{array, check_region, emit};
+use gnx_common::{ArrayInfo, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
 use gnx_expr::{Expr, ValueInfo, Var};
 
 use super::{Dialect, Eqn, Op, Operation, Result, fmt, signature};
 
-pub use gnx_array::ops::reduction::{ReduceOperation, reduce, reduce_op};
+pub use gnx_common::ops::reduction::{ReduceOperation, reduce, reduce_op};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Window {
@@ -31,7 +31,7 @@ impl ReduceWindowOperation {
     }
 }
 
-gnx_array::array_operation!(ReduceWindowOperation, "reduce_window", |op, eqn| {
+gnx_common::array_operation!(ReduceWindowOperation, "reduce_window", |op, eqn| {
     op.window.check(check_region(eqn)?)
 }, window;
     fn lower(&self, eqn: &gnx_expr::HEqn, ctx: &mut gnx_expr::lower::LoweringContext<'_>) -> Result<()> {
@@ -114,7 +114,7 @@ fn arg_extreme(
     b: &mut Builder,
     input: Var,
     axis: usize,
-    index_dtype: gnx_array::DType,
+    index_dtype: gnx_common::DType,
     max: bool,
 ) -> Result<Var> {
     use super::{
@@ -123,7 +123,7 @@ fn arg_extreme(
         elementwise::{eq_op, gt_op, lt_op, ne_op},
         select_op,
     };
-    use gnx_array::DType;
+    use gnx_common::DType;
     let x = array(b.info(input))?.clone();
     let shape = fixed_dims(&x).map_err(|_| signature("arg reduction requires fixed dimensions"))?;
     if shape.get(axis).is_none_or(|&dim| dim == 0) {
@@ -178,7 +178,7 @@ pub fn argmin(
     b: &mut Builder,
     input: Var,
     axis: usize,
-    index_dtype: gnx_array::DType,
+    index_dtype: gnx_common::DType,
 ) -> Result<Var> {
     arg_extreme(b, input, axis, index_dtype, false)
 }
@@ -186,7 +186,7 @@ pub fn argmax(
     b: &mut Builder,
     input: Var,
     axis: usize,
-    index_dtype: gnx_array::DType,
+    index_dtype: gnx_common::DType,
 ) -> Result<Var> {
     arg_extreme(b, input, axis, index_dtype, true)
 }

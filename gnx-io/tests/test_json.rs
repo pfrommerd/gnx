@@ -1,4 +1,4 @@
-use gnx_graph::{Deserialize, Serialize};
+use gnx_common::{Deserialize, Serialize};
 use gnx_io::json::{JsonError, JsonParser, Map, Number, Value, to_string};
 use gnx_io::util::StrSource;
 
@@ -202,7 +202,7 @@ fn test_json_writer_escapes_strings_and_rejects_nonfinite_numbers() {
     struct Infinite;
 
     impl Serialize for Infinite {
-        fn serialize<S: gnx_graph::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        fn serialize<S: gnx_common::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             serializer.serialize_f64(f64::INFINITY)
         }
     }

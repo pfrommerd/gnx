@@ -91,7 +91,7 @@ fn predicate<'a>(
     Ok(cx.emit(
         op,
         &[lhs, rhs],
-        gnx_transforms::util::info(&lhs.dims()?, gnx_array::DType::Bool),
+        gnx_transforms::util::info(&lhs.dims()?, gnx_common::DType::Bool),
     ))
 }
 
@@ -190,7 +190,7 @@ fn without_zero<'a>(cx: &'a Ctx<'a>, x: Val<'a>) -> gnx_transforms::TransformRes
 defjvp!(AbsOperation, |cx, t, [x]| {
     if matches!(
         gnx_transforms::util::dtype(&x.info())?,
-        gnx_array::DType::C64 | gnx_array::DType::C128
+        gnx_common::DType::C64 | gnx_common::DType::C128
     ) {
         let real = cx.ans()?;
         let norm = without_zero(cx, real)?;
@@ -256,14 +256,14 @@ defjvp!(
         let power = binary(cx, pow_op(), x, sub(cx, y, one(cx, y)));
         let product = if matches!(
             raw,
-            gnx_array::DType::I8
-                | gnx_array::DType::I16
-                | gnx_array::DType::I32
-                | gnx_array::DType::I64
-                | gnx_array::DType::U8
-                | gnx_array::DType::U16
-                | gnx_array::DType::U32
-                | gnx_array::DType::U64
+            gnx_common::DType::I8
+                | gnx_common::DType::I16
+                | gnx_common::DType::I32
+                | gnx_common::DType::I64
+                | gnx_common::DType::U8
+                | gnx_common::DType::U16
+                | gnx_common::DType::U32
+                | gnx_common::DType::U64
         ) {
             let zero = y.zeros_like();
             cx.select(
@@ -343,7 +343,7 @@ defjvp!(
 deflinear!(ConjOperation, |cx, ct, [input]| {
     if matches!(
         gnx_transforms::util::dtype(&input.info())?,
-        gnx_array::DType::C64 | gnx_array::DType::C128
+        gnx_common::DType::C64 | gnx_common::DType::C128
     ) {
         Ok(cx.emit(conj_op(), &[ct], input.info()))
     } else {
@@ -450,9 +450,9 @@ defjvp!(BesselI0eOperation, |cx, t, [x]| {
 });
 defjvp!(BesselI1eOperation, |cx, t, [x]| {
     let epsilon = match gnx_transforms::util::dtype(&x.info())? {
-        gnx_array::DType::F64 => f64::EPSILON,
-        gnx_array::DType::F16 => 0.0009765625,
-        gnx_array::DType::BF16 => 0.0078125,
+        gnx_common::DType::F64 => f64::EPSILON,
+        gnx_common::DType::F16 => 0.0009765625,
+        gnx_common::DType::BF16 => 0.0078125,
         _ => f32::EPSILON as f64,
     };
     let eps = constant(cx, epsilon, x)?;

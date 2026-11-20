@@ -181,7 +181,7 @@ impl<'a> Val<'a> {
     }
 
     pub fn reshape(self, info: ValueInfo) -> Self {
-        self.cx.emit(gnx_array::ops::reshape_op(), &[self], info)
+        self.cx.emit(gnx_common::ops::reshape_op(), &[self], info)
     }
 }
 
