@@ -7,7 +7,7 @@ pub use object_store::{
     PutOptions, PutPayload, PutPayloadMut, PutResult, Result,
 };
 
-/// Shared object-store handle used by gnx-io.
+/// Shared handle to an object store.
 #[derive(Clone, Debug)]
 pub struct Store {
     inner: Arc<dyn ObjectStore>,

@@ -802,6 +802,7 @@ name = "gnx-common"
 version = "0.1.0"
 dependencies = [
  "gnx-expr",
+ "object_store",
  "ordered-float",
  "paste",
  "uuid",
@@ -855,7 +856,6 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "gnx-common",
- "object_store",
  "ordered-float",
  "paste",
 ]

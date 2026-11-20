@@ -7,6 +7,7 @@ mod error;
 pub mod ops;
 mod path;
 pub mod ser;
+pub mod store;
 
 pub use array::*;
 pub use buffer::*;
