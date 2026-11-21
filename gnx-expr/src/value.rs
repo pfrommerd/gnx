@@ -57,7 +57,7 @@ impl Value {
 }
 
 #[derive(Clone)]
-pub struct ValueInfo(Arc<dyn AnyInfo>);
+pub struct ValueInfo(Arc<dyn AnyInfo>, Option<Arc<[crate::Symbol]>>);
 
 impl From<&ValueInfo> for ValueInfo {
     fn from(info: &ValueInfo) -> Self {
@@ -66,11 +66,27 @@ impl From<&ValueInfo> for ValueInfo {
 }
 
 impl ValueInfo {
+    /// Outer symbols for the dialect payload’s ordered symbol slots.
+    pub fn with_symbols(mut self, symbols: impl IntoIterator<Item = crate::Symbol>) -> Self {
+        let symbols: Vec<_> = symbols.into_iter().collect();
+        self.1 = (!symbols.is_empty()).then(|| symbols.into());
+        self
+    }
+    pub fn symbols(&self) -> &[crate::Symbol] {
+        self.1.as_deref().unwrap_or_default()
+    }
+    pub fn remap_symbols(&self, f: impl FnMut(crate::Symbol) -> crate::Symbol) -> Self {
+        if self.1.is_none() {
+            return self.clone();
+        }
+        self.clone()
+            .with_symbols(self.symbols().iter().copied().map(f))
+    }
     pub fn new<T: AnyInfo>(value: T) -> Self {
         // if T is ValueInfo, use it directly
         match castaway::cast!(value, Self) {
             Ok(value) => return value,
-            Err(value) => ValueInfo(Arc::new(value)),
+            Err(value) => ValueInfo(Arc::new(value), None),
         }
     }
 
@@ -119,7 +135,18 @@ impl ValueInfo {
 
 impl Display for ValueInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(self.0.as_ref(), f)
+        Display::fmt(self.0.as_ref(), f)?;
+        if !self.symbols().is_empty() {
+            write!(f, "@[")?;
+            for (i, s) in self.symbols().iter().enumerate() {
+                if i != 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{s}")?;
+            }
+            write!(f, "]")?;
+        }
+        Ok(())
     }
 }
 
@@ -184,19 +211,27 @@ where
 
 impl Debug for ValueInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(self.0.as_ref(), f)
+        if self.symbols().is_empty() {
+            Debug::fmt(self.0.as_ref(), f)
+        } else {
+            f.debug_tuple("ValueInfo")
+                .field(&self.0)
+                .field(&self.symbols())
+                .finish()
+        }
     }
 }
 
 impl Hash for ValueInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.type_id().hash(state);
+        self.symbols().hash(state);
         self.0.dyn_hash(state);
     }
 }
 impl PartialEq for ValueInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.0.dyn_eq(other.0.as_ref())
+        self.symbols() == other.symbols() && self.0.dyn_eq(other.0.as_ref())
     }
 }
 impl Eq for ValueInfo {}

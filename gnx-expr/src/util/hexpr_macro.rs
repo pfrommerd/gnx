@@ -9,13 +9,15 @@ pub struct HExprBuilder<'a> {
     scope: VarScope,
     vars: BTreeMap<&'static str, Var>,
     info: Option<ValueInfo>,
-    outer: Option<&'a mut dyn FnMut(&'static str) -> Option<Kind>>,
+    outer: Option<&'a mut dyn FnMut(&'static str) -> Option<(Kind, ValueInfo)>>,
 }
 
 impl HExprBuilder<'_> {
     pub fn new(info: Option<ValueInfo>) -> Self {
         Self {
             expr: HExpr {
+                symbol_inputs: vec![],
+                symbol_closure: vec![],
                 closure: vec![],
                 inputs: vec![],
                 instructions: vec![],
@@ -36,22 +38,25 @@ impl HExprBuilder<'_> {
         var
     }
 
-    fn resolve(&mut self, name: &'static str) -> Option<(Var, Kind)> {
+    fn resolve(&mut self, name: &'static str) -> Option<(Var, Kind, ValueInfo)> {
         if let Some(&var) = self.vars.get(name) {
-            return self.expr.kind(&var).cloned().map(|kind| (var, kind));
+            return self
+                .expr
+                .definition(&var)
+                .map(|(kind, info)| (var, kind, info.clone()));
         }
-        let kind = (self.outer.as_mut()?)(name)?;
+        let (kind, info) = (self.outer.as_mut()?)(name)?;
         let var = self.define(name);
-        self.expr.closure.push((var, kind.clone()));
-        Some((var, kind))
+        self.expr.closure.push((var, kind, info.clone()));
+        Some((var, kind, info))
     }
 
     fn lookup(&mut self, name: &'static str, cell: bool) -> (Var, ValueInfo) {
-        let (var, kind) = self
+        let (var, kind, info) = self
             .resolve(name)
             .unwrap_or_else(|| panic!("undefined variable `{name}`"));
         let info = match (kind, cell) {
-            (Kind::Cell(info), true) | (Kind::Value(info), false) => info,
+            (Kind::Cell, true) | (Kind::Value, false) => info,
             (_, true) => panic!("expected a cell for `{name}`"),
             (_, false) => panic!("expected a value for `{name}`"),
         };
@@ -68,38 +73,32 @@ impl HExprBuilder<'_> {
         let info = info
             .or_else(|| self.info.clone())
             .expect("missing ValueInfo annotation");
-        let kind = if cell {
-            Kind::Cell(info)
-        } else {
-            Kind::Value(info)
-        };
+        let kind = if cell { Kind::Cell } else { Kind::Value };
         let var = self.define(name);
         let params = if closure {
             &mut self.expr.closure
         } else {
             &mut self.expr.inputs
         };
-        params.push((var, kind));
+        params.push((var, kind, info));
     }
 
     pub fn create_cell(&mut self, name: &'static str, initial: &'static str) {
         let (initial, info) = self.lookup(initial, false);
-        let kind = Kind::Cell(info);
         let cell = self.define(name);
         self.expr.instructions.push(HInstr::CreateCell {
             cell,
             initial,
-            kind,
+            info,
         });
     }
 
     pub fn read_cell(&mut self, name: &'static str, cell: &'static str) {
         let (cell, info) = self.lookup(cell, true);
-        let kind = Kind::Value(info);
         let output = self.define(name);
         self.expr
             .instructions
-            .push(HInstr::ReadCell { cell, output, kind });
+            .push(HInstr::ReadCell { cell, output, info });
     }
 
     pub fn write_cell(&mut self, cell: &'static str, value: &'static str) {
@@ -127,34 +126,34 @@ impl HExprBuilder<'_> {
         let mut child = HExprBuilder::new(self.info.clone());
         let mut captures = Vec::new();
         let mut outer = |name| {
-            let (var, kind) = self.resolve(name)?;
+            let (var, kind, info) = self.resolve(name)?;
             captures.push(var);
-            Some(kind)
+            Some((kind, info))
         };
         child.outer = Some(&mut outer);
         HSubExpr::new(Arc::new(build(child)), captures)
     }
 
-    pub fn output(&mut self, name: &'static str) -> (Var, Kind) {
+    pub fn output(&mut self, name: &'static str) -> (Var, Kind, ValueInfo) {
         self.typed_output(
             name,
             self.info.clone().expect("missing ValueInfo annotation"),
         )
     }
 
-    pub fn typed_output(&mut self, name: &'static str, info: ValueInfo) -> (Var, Kind) {
+    pub fn typed_output(&mut self, name: &'static str, info: ValueInfo) -> (Var, Kind, ValueInfo) {
         // Even an unused equation result needs a fresh SSA variable.
         let var = if name == "_" {
             self.scope.create_var()
         } else {
             self.define(name)
         };
-        (var, Kind::Value(info))
+        (var, Kind::Value, info)
     }
 
     pub fn eqn(
         &mut self,
-        outputs: Vec<(Var, Kind)>,
+        outputs: Vec<(Var, Kind, ValueInfo)>,
         op: Op,
         inputs: Vec<Var>,
         subexprs: Vec<HSubExpr>,

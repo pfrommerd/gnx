@@ -3,7 +3,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 
 use dashmap::DashMap;
-use gnx_expr::{Capture, CellTrace, ContextID, HExpr, Kind, ObjectTracer, Trace, TraceContext};
+use gnx_expr::{
+    Capture, CellTrace, ContextID, HExpr, Kind, ObjectTracer, Trace, TraceContext, ValueInfo,
+};
 use gnx_graph::anyhash::HasherWrite;
 use gnx_graph::util::{GraphExt, IterSource};
 use gnx_graph::{
@@ -66,7 +68,7 @@ where
     {
         let (builder, arguments) = split_graph(&input);
         let kinds = arguments.iter().map(kind).collect();
-        let entry = self.entry(builder, kinds, name_hint, body)?;
+        let entry = self.entry_with_key(builder, kinds, name_hint, body, true)?;
         Ok((entry, arguments))
     }
 
@@ -76,13 +78,56 @@ where
     pub(crate) fn entry<E>(
         &self,
         builder: TracerBuilder<I>,
-        kinds: Vec<Kind>,
+        kinds: Vec<(Kind, ValueInfo)>,
         name_hint: Option<&Cow<'static, str>>,
         body: impl FnOnce(I::Owned) -> Result<O, E>,
     ) -> Result<Arc<TraceEntry<O>>, E> {
-        let key: Arc<TraceKey<I::Owned>> = Arc::new(TraceKey { builder, kinds });
+        self.entry_with_key(builder, kinds, name_hint, body, false)
+    }
+    fn entry_with_key<E>(
+        &self,
+        builder: TracerBuilder<I>,
+        kinds: Vec<(Kind, ValueInfo)>,
+        name_hint: Option<&Cow<'static, str>>,
+        body: impl FnOnce(I::Owned) -> Result<O, E>,
+        abstract_ids: bool,
+    ) -> Result<Arc<TraceEntry<O>>, E> {
+        // Call sites instantiate a cached body's input symbols. Transforms
+        // requesting an explicit signature consume its original namespace.
+        let mut scope = gnx_expr::VarScope::new();
+        let mut ids = std::collections::BTreeMap::new();
+        let mut sorts = Vec::new();
+        let ctx = TraceContext::current();
+        let key_kinds = kinds
+            .iter()
+            .map(|(k, info)| {
+                (
+                    *k,
+                    info.remap_symbols(|s| {
+                        *ids.entry(s).or_insert_with(|| {
+                            sorts.push(
+                                ctx.as_ref()
+                                    .and_then(|c| c.symbol_info(s))
+                                    .expect("symbol not declared in tracing scope"),
+                            );
+                            if abstract_ids {
+                                scope.create_symbol()
+                            } else {
+                                s
+                            }
+                        })
+                    }),
+                )
+            })
+            .collect();
+        let key: Arc<TraceKey<I::Owned>> = Arc::new(TraceKey {
+            builder,
+            kinds: key_kinds,
+            abstract_ids: abstract_ids && !sorts.is_empty(),
+            sorts,
+        });
         let slot = self.slot(&key);
-        slot.get_or_trace(|| TraceEntry::trace(&key.builder, &key.kinds, name_hint, body))
+        slot.get_or_trace(|| TraceEntry::trace(&key.builder, &kinds, name_hint, body))
     }
 
     fn slot(&self, key: &Arc<TraceKey<I::Owned>>) -> Arc<TraceSlot<O>> {
@@ -142,16 +187,21 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
     fn is_cacheable(&self) -> bool {
         // A trace can outlive its caller's scope, but a captured local handle
         // cannot. Concrete values and root handles are safe to keep.
-        self.closure.iter().all(|object| match object {
-            ObjectTracer::Ref(value) => {
-                value.try_concrete().is_some() || value.context_id() == &ContextID::ROOT
-            }
-            ObjectTracer::Cell(cell) => cell.context_id() == &ContextID::ROOT,
-        })
+        self.expr.symbol_closure().is_empty()
+            && self.closure.iter().all(|object| match object {
+                ObjectTracer::Ref(value) => {
+                    value.info().symbols().is_empty()
+                        && (value.try_concrete().is_some()
+                            || value.context_id() == &ContextID::ROOT)
+                }
+                ObjectTracer::Cell(cell) => {
+                    cell.type_info().symbols().is_empty() && cell.context_id() == &ContextID::ROOT
+                }
+            })
     }
     fn trace<B: Builder<ObjectTracer>, E>(
         input_builder: &B,
-        kinds: &[Kind],
+        kinds: &[(Kind, ValueInfo)],
         name_hint: Option<&Cow<'static, str>>,
         body: impl FnOnce(B::Graph) -> Result<O, E>,
     ) -> Result<Self, E> {
@@ -189,8 +239,10 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
 }
 
 struct TraceKey<G: Graph> {
+    sorts: Vec<gnx_expr::SymbolInfo>,
+    abstract_ids: bool,
     builder: TracerBuilder<G>,
-    kinds: Vec<Kind>,
+    kinds: Vec<(Kind, ValueInfo)>,
 }
 
 impl<G: GraphHash> Hash for TraceKey<G> {
@@ -200,13 +252,17 @@ impl<G: GraphHash> Hash for TraceKey<G> {
             &mut GraphHashWriter(state),
             &mut GraphHashContext::new(),
         );
+        self.sorts.hash(state);
+        self.abstract_ids.hash(state);
         self.kinds.hash(state);
     }
 }
 
 impl<G: GraphEq> PartialEq for TraceKey<G> {
     fn eq(&self, other: &Self) -> bool {
-        self.kinds == other.kinds
+        self.sorts == other.sorts
+            && self.abstract_ids == other.abstract_ids
+            && self.kinds == other.kinds
             && G::builders_eq::<ObjectTracer>(
                 &self.builder,
                 &other.builder,
@@ -225,17 +281,17 @@ impl<H: Hasher> HasherWrite for GraphHashWriter<'_, H> {
     }
 }
 
-pub(crate) fn kind(object: &ObjectTracer) -> Kind {
+pub(crate) fn kind(object: &ObjectTracer) -> (Kind, ValueInfo) {
     match object {
-        ObjectTracer::Ref(value) => Kind::Value(value.info().clone()),
-        ObjectTracer::Cell(cell) => Kind::Cell(cell.type_info().clone()),
+        ObjectTracer::Ref(value) => (Kind::Value, value.info().clone()),
+        ObjectTracer::Cell(cell) => (Kind::Cell, cell.type_info().clone()),
     }
 }
 
-fn placeholder(kind: &Kind) -> ObjectTracer {
+fn placeholder(kind: &(Kind, ValueInfo)) -> ObjectTracer {
     match kind {
-        Kind::Value(info) => Trace::placeholder(info.clone()).into(),
-        Kind::Cell(info) => CellTrace::placeholder(info.clone()).into(),
+        (Kind::Value, info) => Trace::placeholder(info.clone()).into(),
+        (Kind::Cell, info) => CellTrace::placeholder(info.clone()).into(),
     }
 }
 

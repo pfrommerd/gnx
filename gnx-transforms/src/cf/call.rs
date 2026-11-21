@@ -50,7 +50,7 @@ impl Operation for CallOperation {
             return Err(LoweringError::CallArity);
         }
         let region = ctx.lower_region(sub, eqn.inputs())?;
-        let physical = ctx.allocate_results(&region.program().output_infos);
+        let physical = ctx.allocate_results(region.output_infos());
         ctx.bind_region_results(eqn.outputs(), &region, &physical)?;
         ctx.apply_region_updates(&region, &physical)?;
         if !region.program().expr.eqns().is_empty() || !physical.is_empty() {
@@ -103,12 +103,12 @@ where
         body.closure()
             .iter()
             .chain(body.inputs())
-            .all(|(_, kind)| matches!(kind, Kind::Value(_)))
+            .all(|(_, kind, _)| matches!(kind, Kind::Value))
     );
     assert!(
         body.outputs()
             .iter()
-            .all(|var| matches!(body.kind(var), Some(Kind::Value(_))))
+            .all(|var| matches!(body.kind(var), Some(Kind::Value)))
     );
     let captures: Vec<_> = captures.into_iter().map(Into::into).collect();
     let inputs: Vec<_> = inputs.into_iter().map(Into::into).collect();
@@ -144,13 +144,36 @@ pub fn defer_call(
     captures: &[ObjectTracer],
     inputs: &[ObjectTracer],
 ) -> Vec<ObjectTracer> {
+    let symbol_captures = body.symbol_closure().iter().map(|v| v.0).collect();
+    defer_call_with_symbols(body, symbol_captures, captures, inputs)
+}
+/// Record a call binding the child’s symbol closure explicitly in caller order.
+pub fn defer_call_with_symbols(
+    body: Arc<HExpr>,
+    symbol_captures: Vec<gnx_expr::Symbol>,
+    captures: &[ObjectTracer],
+    inputs: &[ObjectTracer],
+) -> Vec<ObjectTracer> {
+    let metas = |args: &[ObjectTracer]| {
+        args.iter()
+            .map(|obj| match obj {
+                ObjectTracer::Ref(v) => v.info().clone(),
+                ObjectTracer::Cell(c) => c.type_info().clone(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let symbols = body
+        .bind_symbols(&symbol_captures, &metas(captures), &metas(inputs), |s| {
+            gnx_expr::TraceContext::current()?.symbol_info(s)
+        })
+        .expect("invalid call symbol bindings");
     assert_eq!(captures.len(), body.closure().len());
     assert_eq!(inputs.len(), body.inputs().len());
     let bindings: BTreeMap<_, _> = body
         .closure()
         .iter()
         .chain(body.inputs())
-        .map(|(var, _)| *var)
+        .map(|(var, ..)| *var)
         .zip(captures.iter().chain(inputs))
         .collect();
     let mut locals = BTreeMap::<CellKey, DeferredLocal>::new();
@@ -181,9 +204,9 @@ pub fn defer_call(
         .outputs()
         .iter()
         .map(|var| {
-            body.kind(var)
+            body.definition(var)
+                .map(|(kind, info)| (kind, info.remap_symbols(|s| symbols[&s])))
                 .expect("undefined deferred call output")
-                .clone()
         })
         .collect();
     let mut projections = Vec::new();
@@ -193,17 +216,17 @@ pub fn defer_call(
         .iter()
         .zip(&outputs)
         .enumerate()
-        .map(|(index, (var, kind))| {
+        .map(|(index, (var, (kind, _)))| {
             if let Some(&binding) = bindings.get(var) {
                 return ResultSlot::Passthrough(binding);
             }
             match kind {
-                Kind::Value(_) => {
+                Kind::Value => {
                     let slot = projections.len();
                     projections.push(DeferredProjection::Value(index));
                     ResultSlot::Value(slot)
                 }
-                Kind::Cell(_) => ResultSlot::FreshCell(*fresh.entry(*var).or_insert_with(|| {
+                Kind::Cell => ResultSlot::FreshCell(*fresh.entry(*var).or_insert_with(|| {
                     let slot = projections.len();
                     projections.push(DeferredProjection::CellContents(index));
                     slot
@@ -215,6 +238,7 @@ pub fn defer_call(
         call_op(),
         DeferredApplyPlan {
             regions: vec![DeferredRegion {
+                symbol_captures,
                 body,
                 captures: captures.to_vec(),
             }],

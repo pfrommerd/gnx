@@ -41,7 +41,11 @@ pub fn map(
     };
     expect_inputs(
         &body.expr,
-        signature_.inputs.iter().cloned().map(Kind::Value),
+        signature_
+            .inputs
+            .iter()
+            .cloned()
+            .map(|info| (Kind::Value, info)),
     )?;
     let outputs = parameters.mapped(&signature_.outputs, out_axes)?;
     parameters.check(

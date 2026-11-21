@@ -19,12 +19,12 @@ fn cell_syntax_preserves_metadata_and_lowers_without_dialect_cell_ops() {
         HInstr::ReadCell {
             cell,
             output,
-            kind: read_kind,
+            info: read_info,
         },
         HInstr::CreateCell {
             cell: fresh,
             initial,
-            kind: fresh_kind,
+            info: fresh_info,
         },
         HInstr::WriteCell {
             cell: written,
@@ -38,14 +38,14 @@ fn cell_syntax_preserves_metadata_and_lowers_without_dialect_cell_ops() {
     assert_eq!(*written, captured);
     assert_eq!(output, initial);
     assert_eq!(output, value);
-    assert_eq!(read_kind, &Kind::Value(cell_info.clone()));
-    assert_eq!(fresh_kind, &Kind::Cell(cell_info.clone()));
-    assert_eq!(body.kind(output), Some(&Kind::Value(cell_info.clone())));
-    assert_eq!(body.kind(fresh), Some(&Kind::Cell(cell_info.clone())));
+    assert_eq!(read_info, &cell_info);
+    assert_eq!(fresh_info, &cell_info);
+    assert_eq!(body.kind(output), Some(Kind::Value));
+    assert_eq!(body.kind(fresh), Some(Kind::Cell));
     let lowered = body
         .lower(&InputSpec {
-            closure: vec![(InputId::Closure(0), Kind::Cell(cell_info))],
-            inputs: vec![(InputId::Input(0), Kind::Value(default))],
+            closure: vec![(InputId::Closure(0), Kind::Cell, cell_info)],
+            inputs: vec![(InputId::Input(0), Kind::Value, default)],
         })
         .unwrap();
     assert!(lowered.expr.eqns().is_empty());
@@ -81,14 +81,11 @@ fn hexpr_prints_nested_bodies_inline() {
     );
     assert_eq!(eqn.op(), &gnx_transforms::cf::call_op());
     assert!(Arc::ptr_eq(eqn.subexprs()[0].expr(), &inner));
-    assert_eq!(
-        body.kind(&eqn.outputs()[0].0),
-        Some(&Kind::Value(info.clone()))
-    );
+    assert_eq!(body.kind(&eqn.outputs()[0].0), Some(Kind::Value));
     let lowered = body
         .lower(&InputSpec {
             closure: vec![],
-            inputs: vec![(InputId::Input(0), Kind::Value(info))],
+            inputs: vec![(InputId::Input(0), Kind::Value, info)],
         })
         .unwrap();
     lowered.expr.check().unwrap();
@@ -119,8 +116,8 @@ fn inline_hexpr_captures_cells_and_values_across_regions() {
         inner.closure(),
         &[middle.expr().closure()[0].0, middle.expr().closure()[1].0]
     );
-    assert_eq!(inner.expr().closure()[0].1, Kind::Cell(info.clone()));
-    assert_eq!(inner.expr().closure()[1].1, Kind::Value(info.clone()));
+    assert_eq!(inner.expr().closure()[0].1, Kind::Cell);
+    assert_eq!(inner.expr().closure()[1].1, Kind::Value);
     assert_eq!(
         body.to_string(),
         concat!(
@@ -138,8 +135,8 @@ fn inline_hexpr_captures_cells_and_values_across_regions() {
         .lower(&InputSpec {
             closure: vec![],
             inputs: vec![
-                (InputId::Input(0), Kind::Cell(info.clone())),
-                (InputId::Input(1), Kind::Value(info)),
+                (InputId::Input(0), Kind::Cell, info.clone()),
+                (InputId::Input(1), Kind::Value, info),
             ],
         })
         .unwrap();

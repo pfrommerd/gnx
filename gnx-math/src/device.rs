@@ -80,14 +80,17 @@ impl ExecutionBoundary {
             }
             eqns.reverse();
             let mut pick = |(var, info): &(Var, ValueInfo)| {
-                used.contains(var).then(|| {
+                (used.contains(var) || !info.symbols().is_empty()).then(|| {
                     argument_indices.push(parameters[var]);
                     (*var, info.clone())
                 })
             };
             let closure = expr.closure().iter().filter_map(&mut pick).collect();
             let inputs = expr.inputs().iter().filter_map(&mut pick).collect();
-            let mut program = Expr::new(closure, inputs, eqns, outputs);
+            let mut program = Expr::new(closure, inputs, eqns, outputs).with_symbols(
+                expr.symbol_closure().to_vec(),
+                expr.symbol_inputs().to_vec(),
+            );
             if let Some(name) = expr.name_hint() {
                 program = program.with_name_hint(name.to_owned());
             }

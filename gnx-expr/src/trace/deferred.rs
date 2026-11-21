@@ -11,6 +11,7 @@ use super::{
 /// A region and its bindings in a deferred application. How explicit operands
 /// are passed to the region is defined by the operation.
 pub struct DeferredRegion {
+    pub symbol_captures: Vec<crate::Symbol>,
     pub body: Arc<HExpr>,
     pub captures: Vec<ObjectTracer>,
 }
@@ -33,7 +34,7 @@ pub struct DeferredLocal {
 pub struct DeferredApplyPlan {
     pub regions: Vec<DeferredRegion>,
     pub inputs: Vec<ObjectTracer>,
-    pub outputs: Vec<Kind>,
+    pub outputs: Vec<(Kind, ValueInfo)>,
     pub projections: Vec<DeferredProjection>,
     /// List each caller-local cell used as an input or capture once.
     pub locals: Vec<DeferredLocal>,
@@ -46,7 +47,7 @@ pub struct DeferredApply {
     pub(super) op: Op,
     pub(super) regions: Vec<DeferredRegion>,
     pub(super) inputs: Vec<ObjectTracer>,
-    pub(super) kinds: Vec<Kind>,
+    pub(super) kinds: Vec<(Kind, ValueInfo)>,
     pub(super) results: Vec<Projection>,
     pub(super) value_parents: Vec<Trace>,
     pub(super) aliasing_parents: Vec<Arc<Invocation>>,
@@ -116,6 +117,7 @@ impl Invocation {
             .map(|region| {
                 assert_eq!(region.body.closure().len(), region.captures.len());
                 DeferredRegion {
+                    symbol_captures: region.symbol_captures,
                     body: region.body,
                     captures: region.captures.into_iter().map(&mut bind).collect(),
                 }
@@ -135,11 +137,11 @@ impl Invocation {
             .map(|projection| {
                 let info = match (&projection, &plan.outputs) {
                     (DeferredProjection::Value(index), kinds) => match &kinds[*index] {
-                        Kind::Value(info) => info,
+                        (Kind::Value, info) => info,
                         _ => panic!("expected a value projection"),
                     },
                     (DeferredProjection::CellContents(index), kinds) => match &kinds[*index] {
-                        Kind::Cell(info) => info,
+                        (Kind::Cell, info) => info,
                         _ => panic!("expected a cell projection"),
                     },
                 };

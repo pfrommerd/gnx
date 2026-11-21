@@ -49,7 +49,8 @@ impl BatchRule for CallOperation {
             Some(name) => SubExpr::new(
                 Arc::new(Expr::clone(region.expr()).with_name_hint(format!("map({name})"))),
                 region.closure().to_vec(),
-            ),
+            )
+            .with_symbol_captures(region.symbol_captures),
             None => region,
         };
         let result_infos = output_infos(eqn)

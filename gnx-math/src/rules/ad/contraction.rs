@@ -227,7 +227,7 @@ impl TransposeRule for CustomLinearSolveOperation {
         for (&cotangent, (_, info)) in cotangents.iter().zip(eqn.outputs()) {
             args.push(instantiate(b, cotangent, info));
         }
-        let out = b.inline(region.expr(), &[], &args);
+        let out = b.inline(region.expr(), &region.symbol_captures, &[], &args)?;
         let mut result = vec![Tangent::Zero; self.parameters()];
         result.extend(out.into_iter().zip(&operands[self.parameters()..]).map(
             |(value, operand)| {

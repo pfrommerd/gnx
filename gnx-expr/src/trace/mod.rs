@@ -126,7 +126,7 @@ pub enum Invocation {
     Apply {
         context_id: ContextID,
         op: Op,
-        subexprs: Vec<(Arc<HExpr>, Vec<Trace>)>,
+        subexprs: Vec<(Arc<HExpr>, Vec<Trace>, Vec<crate::Symbol>)>,
         inputs: Vec<Trace>,
         outputs: Vec<ValueInfo>,
         result_slots: OnceLock<Box<[Weak<TraceData>]>>,
@@ -200,7 +200,7 @@ impl Invocation {
             Self::DeferredApply(apply) => &apply.context_id,
         }
     }
-    pub fn subexprs(&self) -> &[(Arc<HExpr>, Vec<Trace>)] {
+    pub fn subexprs(&self) -> &[(Arc<HExpr>, Vec<Trace>, Vec<crate::Symbol>)] {
         match self {
             Self::Apply { subexprs, .. } => subexprs,
             _ => &[],
@@ -220,7 +220,7 @@ impl Invocation {
         };
         self.inputs()
             .iter()
-            .chain(self.subexprs().iter().flat_map(|(_, captures)| captures))
+            .chain(self.subexprs().iter().flat_map(|(_, captures, _)| captures))
             .chain(value)
             .chain(match self {
                 Self::DeferredApply(apply) => apply.value_parents.as_slice(),
@@ -257,7 +257,33 @@ impl Invocation {
     where
         I: Into<TraceInput>,
     {
-        for (expr, closure) in &subexprs {
+        Self::invoke_scoped(
+            op,
+            subexprs
+                .into_iter()
+                .map(|(expr, closure)| {
+                    let captures = expr.symbol_closure().iter().map(|(s, _)| *s).collect();
+                    (expr, closure, captures)
+                })
+                .collect(),
+            inputs,
+            outputs,
+        )
+    }
+
+    /// Like invoke, with explicit parent symbol bindings for each child.
+    pub fn invoke_scoped<I: Into<TraceInput>>(
+        op: Op,
+        subexprs: Vec<(Arc<HExpr>, Vec<TraceInput>, Vec<crate::Symbol>)>,
+        inputs: Vec<I>,
+        outputs: Vec<ValueInfo>,
+    ) -> Vec<Tracer<Generic>> {
+        for (expr, closure, symbols) in &subexprs {
+            assert_eq!(
+                expr.symbol_closure().len(),
+                symbols.len(),
+                "symbol capture arity mismatch"
+            );
             assert_eq!(
                 closure.len(),
                 expr.closure().len(),
@@ -275,7 +301,9 @@ impl Invocation {
             .collect();
         let subexprs = subexprs
             .into_iter()
-            .map(|(expr, closure)| (expr, closure.into_iter().map(internal).collect()))
+            .map(|(expr, closure, symbols)| {
+                (expr, closure.into_iter().map(internal).collect(), symbols)
+            })
             .collect();
         let invocation = Arc::new(Self::Apply {
             context_id: TraceContext::current_id(),

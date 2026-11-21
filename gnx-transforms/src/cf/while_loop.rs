@@ -31,7 +31,10 @@ pub fn while_loop(
 ) -> RegionResult<Vec<Trace>> {
     let infos: Vec<_> = carry.iter().map(|trace| trace.info().clone()).collect();
     for region in [predicate, body] {
-        expect_inputs(region.expr(), infos.iter().cloned().map(Kind::Value))?;
+        expect_inputs(
+            region.expr(),
+            infos.iter().cloned().map(|info| (Kind::Value, info)),
+        )?;
     }
     if value_results(predicate.expr())? != [scalar(DType::Bool)]
         || value_results(body.expr())? != infos

@@ -5,7 +5,7 @@ use super::*;
 
 /// A canonical cell identity in the parent region. The handle never reaches Expr.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RegionCell(CellBinding);
+pub struct RegionCell(pub(super) CellBinding);
 
 /// An explicit region parameter is either a distinct runtime argument or a
 /// statically bound cell. Captures are bound separately by HSubExpr.
@@ -23,12 +23,14 @@ enum Slot {
 }
 
 pub struct StructuredRegion {
+    symbol_captures: Vec<crate::Symbol>,
     program: LoweredExpr,
     slots: BTreeMap<InputId, Slot>,
     num_arguments: usize,
 }
 
 pub struct FixedRegion {
+    symbol_captures: Vec<crate::Symbol>,
     expr: Arc<Expr>,
     trace_body: Arc<HExpr>,
     captures: Vec<Var>,
@@ -37,6 +39,7 @@ pub struct FixedRegion {
 impl FixedRegion {
     pub fn subexpr(&self) -> RegionUse {
         RegionUse {
+            symbol_captures: self.symbol_captures.clone(),
             expr: self.expr.clone(),
             trace_body: self.trace_body.clone(),
             captures: self.captures.clone(),
@@ -45,11 +48,11 @@ impl FixedRegion {
 }
 
 impl LoweringContext<'_> {
-    fn ssa_info(&self, var: Var) -> Result<ValueInfo, LoweringError> {
+    pub(super) fn ssa_info(&self, var: Var) -> Result<ValueInfo, LoweringError> {
         self.lowerer
             .bound_inputs
             .values()
-            .find_map(|(kind, v)| (*v == var).then(|| value_info(kind).clone()))
+            .find_map(|(_, v, info)| (*v == var).then(|| info.clone()))
             .or_else(|| {
                 self.lowerer
                     .eqns
@@ -83,25 +86,40 @@ impl LoweringContext<'_> {
         if sub.closure().len() != body.closure().len() || arguments.len() != body.inputs().len() {
             return Err(LoweringError::RegionSignature("region binding arity"));
         }
+        let mut values = argument_infos.iter();
+        let actual = arguments
+            .iter()
+            .map(|arg| match arg {
+                RegionArgument::Value => values.next().cloned().ok_or(LoweringError::CallArity),
+                RegionArgument::Cell(v) => self.object_info(*v, Kind::Cell),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let symbols = self.child_bindings(sub, &actual)?;
+        let body = if symbols.is_empty() {
+            Cow::Borrowed(body.as_ref())
+        } else {
+            Cow::Owned(body.substitute_symbols(&symbols))
+        };
         let mut identities = BTreeMap::new();
         let mut slots = BTreeMap::new();
-        let mut spec_binding = |slot, id, kind: &Kind| {
+        let mut spec_binding = |slot, id, kind: &Kind, info: &ValueInfo| {
             let id = *identities.entry(slot).or_insert(id);
             slots.insert(id, slot);
-            (id, kind.clone())
+            (id, *kind, info.clone())
         };
         let mut num_arguments = 0;
         let mut inputs = Vec::new();
-        for (index, (argument, (_, kind))) in arguments.iter().zip(body.inputs()).enumerate() {
+        for (index, (argument, (_, kind, info))) in arguments.iter().zip(body.inputs()).enumerate()
+        {
             let slot = match (argument, kind) {
-                (RegionArgument::Value, Kind::Value(info))
+                (RegionArgument::Value, Kind::Value)
                     if argument_infos.get(num_arguments) == Some(info) =>
                 {
                     let slot = Slot::Argument(num_arguments);
                     num_arguments += 1;
                     slot
                 }
-                (RegionArgument::Cell(var), Kind::Cell(info)) => {
+                (RegionArgument::Cell(var), Kind::Cell) => {
                     let cell = RegionCell(self.lowerer.cell(*var)?);
                     if &self.cell_state(cell)?.1 != info {
                         return Err(LoweringError::RegionSignature("region cell metadata"));
@@ -110,22 +128,23 @@ impl LoweringContext<'_> {
                 }
                 _ => return Err(LoweringError::RegionSignature("region argument metadata")),
             };
-            inputs.push(spec_binding(slot, InputId::Input(index), kind));
+            inputs.push(spec_binding(slot, InputId::Input(index), kind, info));
         }
         if num_arguments != argument_infos.len() {
             return Err(LoweringError::RegionSignature("region argument arity"));
         }
         let mut closure = Vec::new();
-        for (index, (&var, (_, kind))) in sub.closure().iter().zip(body.closure()).enumerate() {
+        for (index, (&var, (_, kind, info))) in sub.closure().iter().zip(body.closure()).enumerate()
+        {
             let slot = match kind {
-                Kind::Value(info) => {
+                Kind::Value => {
                     let (var, actual) = self.value_operand(var)?;
                     if actual != *info {
                         return Err(LoweringError::RegionSignature("region capture metadata"));
                     }
                     Slot::Capture(var)
                 }
-                Kind::Cell(info) => {
+                Kind::Cell => {
                     let cell = RegionCell(self.lowerer.cell(var)?);
                     if &self.cell_state(cell)?.1 != info {
                         return Err(LoweringError::RegionSignature(
@@ -135,10 +154,11 @@ impl LoweringContext<'_> {
                     Slot::Cell(cell)
                 }
             };
-            closure.push(spec_binding(slot, InputId::Closure(index), kind));
+            closure.push(spec_binding(slot, InputId::Closure(index), kind, info));
         }
         let program = body.lower(&InputSpec { closure, inputs })?;
         Ok(StructuredRegion {
+            symbol_captures: body.symbol_closure.iter().map(|v| v.0).collect(),
             program,
             slots,
             num_arguments,
@@ -149,7 +169,7 @@ impl LoweringContext<'_> {
     /// cell states. State slots are interleaved at `position` in physical results.
     pub fn bind_structured_results(
         &mut self,
-        logical: &[(Var, Kind)],
+        logical: &[(Var, Kind, ValueInfo)],
         cells: &[RegionCell],
         position: usize,
         physical: &[(Var, ValueInfo)],
@@ -159,8 +179,8 @@ impl LoweringContext<'_> {
         }
         let (before, rest) = physical.split_at(position);
         let (states, after) = rest.split_at(cells.len());
-        for ((var, kind), (value, actual)) in logical.iter().zip(before.iter().chain(after)) {
-            if !matches!(kind, Kind::Value(info) if info == actual) {
+        for ((var, kind, info), (value, actual)) in logical.iter().zip(before.iter().chain(after)) {
+            if !matches!(kind, Kind::Value if info == actual) {
                 return Err(LoweringError::RegionSignature("structured result metadata"));
             }
             self.lowerer.values.insert(*var, *value);
@@ -225,6 +245,7 @@ impl StructuredRegion {
             .map(|(id, slot)| (*slot, id_params[id].clone()))
             .collect();
         let mut scope = VarScope {
+            next_symbol: 0,
             next_id: id_params
                 .values()
                 .map(|(var, _)| *var)
@@ -323,10 +344,12 @@ impl StructuredRegion {
         let trace_params = |params: &[(Var, ValueInfo)]| {
             params
                 .iter()
-                .map(|(var, info)| (*var, Kind::Value(info.clone())))
+                .map(|(var, info)| (*var, Kind::Value, info.clone()))
                 .collect()
         };
         let trace_body = Arc::new(HExpr {
+            symbol_closure: original.symbol_closure.clone(),
+            symbol_inputs: original.symbol_inputs.clone(),
             closure: trace_params(&closure),
             inputs: trace_params(&inputs),
             instructions: self.program.trace_body.instructions.clone(),
@@ -334,6 +357,8 @@ impl StructuredRegion {
             name_hint: original.name_hint.clone(),
         });
         let expr = Expr {
+            symbol_closure: original.symbol_closure.clone(),
+            symbol_inputs: original.symbol_inputs.clone(),
             closure,
             inputs,
             eqns: original.eqns.clone(),
@@ -342,6 +367,7 @@ impl StructuredRegion {
         };
         expr.check()?;
         Ok(FixedRegion {
+            symbol_captures: self.symbol_captures.clone(),
             expr: Arc::new(expr),
             trace_body,
             captures,

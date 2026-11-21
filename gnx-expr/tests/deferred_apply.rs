@@ -17,7 +17,12 @@ impl Dialect for TestDialect {
 
 impl std::fmt::Display for TestOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
+        write!(
+            f,
+            "{}::{}",
+            Operation::dialect(self).name(),
+            Operation::name(self)
+        )
     }
 }
 
@@ -61,10 +66,12 @@ fn write_only_deferred_apply_preserves_the_operation_and_all_regions() {
         DeferredApplyPlan {
             regions: vec![
                 DeferredRegion {
+                    symbol_captures: vec![],
                     body: write.clone(),
                     captures: vec![],
                 },
                 DeferredRegion {
+                    symbol_captures: vec![],
                     body: read.clone(),
                     captures: vec![cell.into()],
                 },

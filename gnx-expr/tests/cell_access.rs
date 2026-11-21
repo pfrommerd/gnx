@@ -74,7 +74,12 @@ struct DefaultRegions;
 
 impl std::fmt::Display for DefaultRegions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
+        write!(
+            f,
+            "{}::{}",
+            Operation::dialect(self).name(),
+            Operation::name(self)
+        )
     }
 }
 
@@ -93,7 +98,12 @@ struct SelectedRegion(usize);
 
 impl std::fmt::Display for SelectedRegion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
+        write!(
+            f,
+            "{}::{}",
+            Operation::dialect(self).name(),
+            Operation::name(self)
+        )
     }
 }
 
@@ -116,7 +126,12 @@ struct DirectRead;
 
 impl std::fmt::Display for DirectRead {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
+        write!(
+            f,
+            "{}::{}",
+            Operation::dialect(self).name(),
+            Operation::name(self)
+        )
     }
 }
 
@@ -187,7 +202,7 @@ fn operation_controls_cell_effects_of_its_regions_and_operands() {
     let accesses: Vec<_> = body
         .inputs()
         .iter()
-        .map(|(var, _)| body.cell_access(var))
+        .map(|(var, ..)| body.cell_access(var))
         .collect();
     assert_eq!(
         accesses,

@@ -42,6 +42,9 @@ struct TraceContextState {
     // The thread id and stack offset
     // at which this context was created.
     thread_id: ThreadId,
+    symbol_scope: Rc<RefCell<crate::VarScope>>,
+    symbol_sorts: RefCell<std::collections::BTreeMap<crate::Symbol, crate::SymbolInfo>>,
+    parent: Option<TraceContext>,
     // Counter within the thread for this context.
     // ThreadID and local_id together uniquely identify a context
     // and will not be reused (unlike Rc::as_ptr, which may be reused).
@@ -63,6 +66,25 @@ pub struct TraceContext {
 }
 
 impl TraceContext {
+    /// Allocate a typed symbol in this tracing region. Active nested traces
+    /// share an allocator to distinguish local and inherited symbols; there
+    /// is no process-global symbol namespace.
+    pub fn create_symbol(&self, sort: crate::SymbolInfo) -> crate::Symbol {
+        let s = self.state.symbol_scope.borrow_mut().create_symbol();
+        self.state.symbol_sorts.borrow_mut().insert(s, sort);
+        s
+    }
+    pub(super) fn owns_symbol(&self, s: crate::Symbol) -> bool {
+        self.state.symbol_sorts.borrow().contains_key(&s)
+    }
+    pub fn symbol_info(&self, s: crate::Symbol) -> Option<crate::SymbolInfo> {
+        self.state
+            .symbol_sorts
+            .borrow()
+            .get(&s)
+            .cloned()
+            .or_else(|| self.state.parent.as_ref()?.symbol_info(s))
+    }
     pub fn id(&self) -> ContextID {
         ContextID::from(self)
     }
@@ -77,6 +99,12 @@ impl TraceContext {
             let ctx = TraceContext {
                 state: Rc::new(TraceContextState {
                     thread_id,
+                    symbol_scope: stack
+                        .last()
+                        .map(|p| p.state.symbol_scope.clone())
+                        .unwrap_or_default(),
+                    symbol_sorts: Default::default(),
+                    parent: stack.last().cloned(),
                     local_id,
                     stack_offset,
                     last_aliased_write: RefCell::new(None),

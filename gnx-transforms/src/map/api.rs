@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use gnx_expr::{Kind, ObjectTracer};
+use gnx_expr::{Kind, ObjectTracer, ValueInfo};
 use gnx_graph::util::Dag;
 use gnx_graph::{Graph, GraphEq, GraphHash};
 
@@ -75,7 +75,10 @@ where
     fn apply<A, E>(
         &self,
         input: A,
-        trace: impl FnOnce(TracerBuilder<I>, Vec<Kind>) -> Result<Arc<TraceEntry<F::Output>>, E>,
+        trace: impl FnOnce(
+            TracerBuilder<I>,
+            Vec<(Kind, ValueInfo)>,
+        ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<F::Output, ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -95,7 +98,7 @@ where
                 Some(axis) => {
                     let trace = value(object, "a mapped argument")?;
                     let (_, instance) = util::without_axis(trace.info(), axis)?;
-                    kinds.push(Kind::Value(instance));
+                    kinds.push((Kind::Value, instance));
                     captured.push(false);
                     mapped.push(trace);
                     in_axes.push(axis);

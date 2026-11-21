@@ -8,6 +8,8 @@ pub mod lower;
 pub mod pass;
 // pub mod expr_macro;
 // pub mod pretty;
+mod symbol;
+pub use symbol::{Symbol, SymbolInfo};
 pub mod trace;
 pub mod util;
 pub mod value;
@@ -32,11 +34,11 @@ pub mod __private {
     pub use inventory;
 }
 
-/// The shared kind of a traced value or cell and its immutable value metadata.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Access kind of a high-level definition; its ValueInfo is stored separately.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
-    Value(ValueInfo),
-    Cell(ValueInfo),
+    Value,
+    Cell,
 }
 
 pub trait Dialect: Sync {
@@ -176,13 +178,20 @@ impl Op {
 #[derive(Clone, Default, Hash, PartialEq, Eq, Debug)]
 pub struct VarScope {
     next_id: usize,
+    next_symbol: usize,
 }
 
 impl VarScope {
     pub fn new() -> VarScope {
-        VarScope { next_id: 0 }
+        Self::default()
     }
 
+    /// Allocate a symbol independently of the SSA variable counter.
+    pub fn create_symbol(&mut self) -> Symbol {
+        let s = Symbol(self.next_symbol);
+        self.next_symbol += 1;
+        s
+    }
     pub fn create_var(&mut self) -> Var {
         let v = Var::bind(self.next_id);
         self.next_id += 1;

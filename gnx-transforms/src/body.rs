@@ -75,9 +75,9 @@ impl BodySignature {
             inputs: body
                 .inputs()
                 .iter()
-                .map(|(var, kind)| match kind {
-                    Kind::Value(info) => Ok(info.clone()),
-                    Kind::Cell(_) => Err(LoweringError::ExpectedValue(*var)),
+                .map(|(var, kind, info)| match kind {
+                    Kind::Value => Ok(info.clone()),
+                    Kind::Cell => Err(LoweringError::ExpectedValue(*var)),
                 })
                 .collect::<Result<_, _>>()?,
             outputs: value_results(body)?,
@@ -85,12 +85,12 @@ impl BodySignature {
     }
 }
 
-fn value_infos(outputs: &[(Var, Kind)]) -> Result<Vec<ValueInfo>, LoweringError> {
+fn value_infos(outputs: &[(Var, Kind, ValueInfo)]) -> Result<Vec<ValueInfo>, LoweringError> {
     outputs
         .iter()
-        .map(|(var, kind)| match kind {
-            Kind::Value(info) => Ok(info.clone()),
-            Kind::Cell(_) => Err(LoweringError::ExpectedValue(*var)),
+        .map(|(var, kind, info)| match kind {
+            Kind::Value => Ok(info.clone()),
+            Kind::Cell => Err(LoweringError::ExpectedValue(*var)),
         })
         .collect()
 }
@@ -154,7 +154,7 @@ pub(crate) fn reject_cell_writes(body: &Body) -> Result<(), LoweringError> {
         .closure()
         .iter()
         .chain(hexpr.inputs())
-        .filter_map(|(var, _)| hexpr.cell_access(var))
+        .filter_map(|(var, ..)| hexpr.cell_access(var))
         .any(|access| matches!(access, CellAccess::Write | CellAccess::ReadWrite));
     if writes {
         return Err(signature(
@@ -169,7 +169,7 @@ pub(crate) fn reject_cell_writes(body: &Body) -> Result<(), LoweringError> {
 pub(crate) fn record(op: Op, body: &Body, inputs: &[Trace], outputs: Vec<ValueInfo>) -> Vec<Trace> {
     let mut locals = BTreeMap::<CellKey, DeferredLocal>::new();
     let mut external_access = CellAccess::Unused;
-    for ((var, _), object) in body.expr.closure().iter().zip(&body.captures) {
+    for ((var, ..), object) in body.expr.closure().iter().zip(&body.captures) {
         if let ObjectTracer::Cell(cell) = object {
             let access = body.expr.cell_access(var).unwrap_or(CellAccess::Unused);
             if cell.is_maybe_aliased() {
@@ -188,12 +188,13 @@ pub(crate) fn record(op: Op, body: &Body, inputs: &[Trace], outputs: Vec<ValueIn
         op,
         DeferredApplyPlan {
             regions: vec![DeferredRegion {
+                symbol_captures: body.expr.symbol_closure().iter().map(|(s, _)| *s).collect(),
                 body: body.expr.clone(),
                 captures: body.captures.clone(),
             }],
             inputs: inputs.iter().cloned().map(ObjectTracer::from).collect(),
             projections: (0..outputs.len()).map(DeferredProjection::Value).collect(),
-            outputs: outputs.into_iter().map(Kind::Value).collect(),
+            outputs: outputs.into_iter().map(|info| (Kind::Value, info)).collect(),
             locals: locals.into_values().collect(),
             external_access,
         },

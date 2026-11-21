@@ -23,7 +23,12 @@ impl Dialect for TestDialect {
 }
 impl std::fmt::Display for Compute {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
+        write!(
+            f,
+            "{}::{}",
+            Operation::dialect(self).name(),
+            Operation::name(self)
+        )
     }
 }
 
@@ -52,7 +57,7 @@ fn input_ids_are_original_offsets_and_explicit_inputs_take_precedence() {
     let inputs = [a.clone().into(), a.into(), b.into()];
     let spec = InputSpec::from_args(&closure, &inputs);
     assert_eq!(
-        spec.closure.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        spec.closure.iter().map(|(id, ..)| *id).collect::<Vec<_>>(),
         vec![
             InputId::Input(2),
             InputId::Closure(1),
@@ -62,7 +67,7 @@ fn input_ids_are_original_offsets_and_explicit_inputs_take_precedence() {
         ]
     );
     assert_eq!(
-        spec.inputs.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        spec.inputs.iter().map(|(id, ..)| *id).collect::<Vec<_>>(),
         vec![InputId::Input(0), InputId::Input(0), InputId::Input(2),]
     );
 }

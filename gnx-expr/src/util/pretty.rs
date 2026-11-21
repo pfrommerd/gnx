@@ -56,11 +56,14 @@ impl PrettyVarScope {
         scope
     }
 
-    fn aliases<T>(&self, parameters: &[(Var, T)], captures: &[Var]) -> Vec<(Var, String)> {
+    fn aliases(
+        &self,
+        parameters: impl Iterator<Item = Var>,
+        captures: &[Var],
+    ) -> Vec<(Var, String)> {
         parameters
-            .iter()
             .zip(captures)
-            .map(|((parameter, _), outer)| (*parameter, self.name_for(outer)))
+            .map(|(parameter, outer)| (parameter, self.name_for(outer)))
             .collect()
     }
 
@@ -77,11 +80,15 @@ impl PrettyVarScope {
         write!(f, ": {info}")
     }
 
-    fn fmt_definition(&self, (var, kind): &(Var, Kind), f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt_definition(
+        &self,
+        (var, kind, info): &(Var, Kind, ValueInfo),
+        f: &mut fmt::Formatter<'_>,
+    ) -> fmt::Result {
         self.fmt_var(var, f)?;
         match kind {
-            Kind::Value(info) => write!(f, ": {info}"),
-            Kind::Cell(info) => write!(f, "[:]: {info}"),
+            Kind::Value => write!(f, ": {info}"),
+            Kind::Cell => write!(f, "[:]: {info}"),
         }
     }
 
@@ -136,11 +143,12 @@ impl PrettyVarScope {
     ) -> fmt::Result {
         let cell_var = |var: &Var, f: &mut fmt::Formatter<'_>| {
             self.fmt_var(var, f)?;
-            if matches!(expr.kind(var), Some(Kind::Cell(_))) {
+            if matches!(expr.kind(var), Some(Kind::Cell)) {
                 write!(f, "[:]")?;
             }
             Ok(())
         };
+        fmt_symbol_params(f, expr.symbol_closure(), expr.symbol_inputs())?;
         fmt_lambda(
             f,
             self.visible_closure(expr.closure()),
@@ -162,6 +170,7 @@ impl PrettyVarScope {
                     fmt::Display::fmt(eqn.op(), f)?;
                     for sub in eqn.subexprs() {
                         write!(f, " [")?;
+                        fmt_symbol_args(f, &sub.symbol_captures)?;
                         printer.fmt_region(f, self, sub.expr(), sub.closure(), indent, cell_var)?;
                         write!(f, "]")?;
                     }
@@ -198,6 +207,7 @@ impl PrettyVarScope {
         printer: &PrettyPrinter<'_, Expr>,
         indent_level: usize,
     ) -> fmt::Result {
+        fmt_symbol_params(f, expr.symbol_closure(), expr.symbol_inputs())?;
         fmt_lambda(
             f,
             self.visible_closure(expr.closure()),
@@ -227,6 +237,7 @@ impl PrettyVarScope {
         fmt::Display::fmt(eqn.op(), f)?;
         for subexpr in eqn.subexprs() {
             write!(f, " [")?;
+            fmt_symbol_args(f, &subexpr.symbol_captures)?;
             printer.fmt_region(
                 f,
                 self,
@@ -397,12 +408,10 @@ impl<E> PrettyExpr<'_, E> {
 }
 
 trait PrintableExpr: Sized {
-    type Info;
-
     fn regions(&self) -> impl Iterator<Item = &Arc<Self>>;
     fn body_len(&self) -> usize;
     fn name_hint(&self) -> Option<&str>;
-    fn closure(&self) -> &[(Var, Self::Info)];
+    fn closure_vars(&self) -> impl Iterator<Item = Var>;
     fn fmt_body(
         &self,
         f: &mut fmt::Formatter<'_>,
@@ -413,8 +422,6 @@ trait PrintableExpr: Sized {
 }
 
 impl PrintableExpr for Expr {
-    type Info = ValueInfo;
-
     fn regions(&self) -> impl Iterator<Item = &Arc<Self>> {
         self.eqns()
             .iter()
@@ -427,8 +434,8 @@ impl PrintableExpr for Expr {
     fn name_hint(&self) -> Option<&str> {
         self.name_hint()
     }
-    fn closure(&self) -> &[(Var, ValueInfo)] {
-        self.closure()
+    fn closure_vars(&self) -> impl Iterator<Item = Var> {
+        self.closure().iter().map(|v| v.0)
     }
     fn fmt_body(
         &self,
@@ -442,8 +449,6 @@ impl PrintableExpr for Expr {
 }
 
 impl PrintableExpr for HExpr {
-    type Info = Kind;
-
     fn regions(&self) -> impl Iterator<Item = &Arc<Self>> {
         self.instructions()
             .iter()
@@ -457,8 +462,8 @@ impl PrintableExpr for HExpr {
     fn name_hint(&self) -> Option<&str> {
         self.name_hint()
     }
-    fn closure(&self) -> &[(Var, Kind)] {
-        self.closure()
+    fn closure_vars(&self) -> impl Iterator<Item = Var> {
+        self.closure().iter().map(|v| v.0)
     }
     fn fmt_body(
         &self,
@@ -570,7 +575,7 @@ impl<'a, E: PrintableExpr + 'a> PrettyPrinter<'a, E> {
             }
             Ok(())
         } else {
-            let aliases = scope.aliases(expr.closure(), captures);
+            let aliases = scope.aliases(expr.closure_vars(), captures);
             expr.fmt_body(
                 f,
                 &PrettyVarScope::child(&aliases),
@@ -603,6 +608,33 @@ impl<'a, E: PrintableExpr + 'a> PrettyPrinter<'a, E> {
     }
 }
 
+fn fmt_symbol_args(f: &mut fmt::Formatter<'_>, args: &[crate::Symbol]) -> fmt::Result {
+    if !args.is_empty() {
+        write!(f, "bind[")?;
+        fmt_list(f, args, |s, f| write!(f, "{s}"))?;
+        write!(f, "] ")?;
+    }
+    Ok(())
+}
+fn fmt_symbol_params(
+    f: &mut fmt::Formatter<'_>,
+    closure: &[(crate::Symbol, crate::SymbolInfo)],
+    inputs: &[(crate::Symbol, crate::SymbolInfo)],
+) -> fmt::Result {
+    if !closure.is_empty() || !inputs.is_empty() {
+        write!(f, "[")?;
+        let decl = |(s, t): &(crate::Symbol, crate::SymbolInfo), f: &mut fmt::Formatter<'_>| {
+            write!(f, "{s}: {t}")
+        };
+        if !closure.is_empty() {
+            fmt_list(f, closure, decl)?;
+            write!(f, "; ")?;
+        }
+        fmt_list(f, inputs, decl)?;
+        write!(f, "] ")?;
+    }
+    Ok(())
+}
 fn fmt_lambda<T>(
     f: &mut fmt::Formatter<'_>,
     closure: &[T],

@@ -39,6 +39,8 @@ pub fn dce(expr: &Expr) -> Expr {
     }
     eqns.reverse();
     Expr {
+        symbol_closure: expr.symbol_closure.clone(),
+        symbol_inputs: expr.symbol_inputs.clone(),
         closure: expr.closure.clone(),
         inputs: expr.inputs.clone(),
         eqns,
@@ -66,5 +68,5 @@ fn prune_region(sub: &SubExpr) -> SubExpr {
         .filter(|((var, _), _)| used.contains(var))
         .unzip();
     body.closure = closure;
-    SubExpr::new(Arc::new(body), captures)
+    SubExpr::new(Arc::new(body), captures).with_symbol_captures(sub.symbol_captures.clone())
 }

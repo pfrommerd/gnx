@@ -182,6 +182,8 @@ fn dump_after(pass: &str) -> bool {
 
 #[derive(PartialEq, Eq)]
 struct Signature {
+    symbol_inputs: Vec<(crate::Symbol, crate::SymbolInfo)>,
+    symbol_closure: Vec<(crate::Symbol, crate::SymbolInfo)>,
     closure: Vec<ValueInfo>,
     inputs: Vec<ValueInfo>,
     outputs: Vec<Option<ValueInfo>>,
@@ -193,6 +195,8 @@ impl Signature {
             params.iter().map(|(_, info)| info.clone()).collect()
         };
         Self {
+            symbol_inputs: expr.symbol_inputs.clone(),
+            symbol_closure: expr.symbol_closure.clone(),
             closure: params(expr.closure()),
             inputs: params(expr.inputs()),
             outputs: expr

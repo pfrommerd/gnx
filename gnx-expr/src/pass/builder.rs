@@ -11,6 +11,8 @@ use crate::{Eqn, Expr, Op, SubExpr, ValueInfo, Var, VarScope};
 /// [`Builder::region`]).
 #[derive(Default)]
 pub struct Builder {
+    symbol_closure: Vec<(crate::Symbol, crate::SymbolInfo)>,
+    symbol_inputs: Vec<(crate::Symbol, crate::SymbolInfo)>,
     scope: VarScope,
     closure: Vec<(Var, ValueInfo)>,
     inputs: Vec<(Var, ValueInfo)>,
@@ -24,6 +26,17 @@ impl Builder {
         Self::default()
     }
 
+    pub(crate) fn inherit_symbols(&mut self, expr: &Expr) {
+        self.symbol_closure = expr.symbol_closure.clone();
+        self.symbol_inputs = expr.symbol_inputs.clone();
+        self.scope.next_symbol = self
+            .symbol_closure
+            .iter()
+            .chain(&self.symbol_inputs)
+            .map(|(s, _)| s.0 + 1)
+            .max()
+            .unwrap_or(0);
+    }
     pub fn set_name_hint(&mut self, hint: Option<Cow<'static, str>>) {
         self.name_hint = hint;
     }
@@ -43,6 +56,22 @@ impl Builder {
         self.fresh_like(None, info)
     }
 
+    pub fn symbol_closure(&mut self, sort: crate::SymbolInfo) -> crate::Symbol {
+        let s = self.scope.create_symbol();
+        self.symbol_closure.push((s, sort));
+        s
+    }
+    pub fn symbol_input(&mut self, sort: crate::SymbolInfo) -> crate::Symbol {
+        let s = self.scope.create_symbol();
+        self.symbol_inputs.push((s, sort));
+        s
+    }
+    fn symbol_info(&self, s: crate::Symbol) -> Option<&crate::SymbolInfo> {
+        self.symbol_closure
+            .iter()
+            .chain(&self.symbol_inputs)
+            .find_map(|(id, sort)| (*id == s).then_some(sort))
+    }
     pub fn closure(&mut self, info: ValueInfo) -> Var {
         let var = self.fresh(info.clone());
         self.closure.push((var, info));
@@ -128,11 +157,30 @@ impl Builder {
         outputs
     }
 
-    /// Copy a closed expression's equations, binding its closure to `captures`
-    /// and its inputs to `inputs`. Returns its results.
-    pub fn inline(&mut self, expr: &Expr, captures: &[Var], inputs: &[Var]) -> Vec<Var> {
-        assert_eq!(captures.len(), expr.closure.len(), "inline capture arity");
-        assert_eq!(inputs.len(), expr.inputs.len(), "inline input arity");
+    /// Copy a region's equations into this builder and return its result variables.
+    /// Bind captured symbols explicitly and infer input symbols from operand metadata.
+    pub fn inline(
+        &mut self,
+        expr: &Expr,
+        symbol_captures: &[crate::Symbol],
+        captures: &[Var],
+        inputs: &[Var],
+    ) -> Result<Vec<Var>, crate::LoweringError> {
+        let symbols = crate::symbol::substitution(
+            &expr.symbol_closure,
+            symbol_captures,
+            &expr.symbol_inputs,
+            expr.closure
+                .iter()
+                .chain(&expr.inputs)
+                .map(|v| &v.1)
+                .zip(captures.iter().chain(inputs).map(|v| self.info(*v))),
+            |s| self.symbol_info(s).cloned(),
+        )?;
+        if captures.len() != expr.closure.len() || inputs.len() != expr.inputs.len() {
+            return Err(crate::LoweringError::CallArity);
+        }
+        expr.check()?;
         let mut map: HashMap<Var, Var> = expr
             .closure
             .iter()
@@ -145,23 +193,29 @@ impl Builder {
                 .outputs
                 .iter()
                 .map(|(var, info)| {
+                    let info = info.remap_symbols(|s| symbols[&s]);
                     let new = self.fresh_like(Some(*var), info.clone());
                     map.insert(*var, new);
-                    (new, info.clone())
+                    (new, info)
                 })
                 .collect();
             let eqn = Eqn::new_with_subexprs(
                 eqn.op.clone(),
                 eqn.subexprs
                     .iter()
-                    .map(|sub| SubExpr::new(sub.expr.clone(), rename(&map, &sub.captures)))
+                    .map(|sub| {
+                        SubExpr::new(sub.expr.clone(), rename(&map, &sub.captures))
+                            .with_symbol_captures(
+                                sub.symbol_captures.iter().map(|s| symbols[s]).collect(),
+                            )
+                    })
                     .collect(),
                 rename(&map, &eqn.inputs),
                 outputs,
             );
             self.push(eqn);
         }
-        rename(&map, &expr.outputs)
+        Ok(rename(&map, &expr.outputs))
     }
 
     /// Build a closed child region. `build` receives the child's closure
@@ -173,6 +227,30 @@ impl Builder {
         build: impl FnOnce(&mut Builder, &[Var], &[Var]) -> Result<Vec<Var>, E>,
     ) -> Result<SubExpr, E> {
         let mut child = Builder::new();
+        let mut symbol_captures = Vec::new();
+        let mut bound = std::collections::BTreeSet::new();
+        for &s in inputs.iter().flat_map(ValueInfo::symbols) {
+            if bound.insert(s) {
+                child.symbol_inputs.push((
+                    s,
+                    self.symbol_info(s)
+                        .expect("undeclared input symbol")
+                        .clone(),
+                ));
+            }
+        }
+        for &s in captures.iter().flat_map(|v| self.info(*v).symbols()) {
+            if bound.insert(s) {
+                child.symbol_closure.push((
+                    s,
+                    self.symbol_info(s)
+                        .expect("undeclared capture symbol")
+                        .clone(),
+                ));
+                symbol_captures.push(s);
+            }
+        }
+        child.scope.next_symbol = self.scope.next_symbol;
         let closure: Vec<_> = captures
             .iter()
             .map(|&var| child.closure(self.info(var).clone()))
@@ -182,14 +260,36 @@ impl Builder {
             .map(|info| child.input(info.clone()))
             .collect();
         let outputs = build(&mut child, &closure, &params)?;
-        Ok(SubExpr::new(
-            Arc::new(child.finish(outputs)),
-            captures.to_vec(),
-        ))
+        let mut expr = child.finish(outputs);
+        // A result type (or nested attachment) can capture a symbol even when
+        // the region has no captured value with that symbol in its metadata.
+        bound.extend(
+            expr.symbol_inputs
+                .iter()
+                .chain(&expr.symbol_closure)
+                .map(|v| v.0),
+        );
+        for &s in expr.eqns.iter().flat_map(|e| {
+            e.outputs
+                .iter()
+                .flat_map(|v| v.1.symbols())
+                .chain(e.subexprs.iter().flat_map(|r| &r.symbol_captures))
+        }) {
+            if bound.insert(s) {
+                expr.symbol_closure.push((
+                    s,
+                    self.symbol_info(s).expect("undeclared free symbol").clone(),
+                ));
+                symbol_captures.push(s);
+            }
+        }
+        Ok(SubExpr::new(Arc::new(expr), captures.to_vec()).with_symbol_captures(symbol_captures))
     }
 
     pub fn finish(self, outputs: Vec<Var>) -> Expr {
         Expr {
+            symbol_inputs: self.symbol_inputs,
+            symbol_closure: self.symbol_closure,
             closure: self.closure,
             inputs: self.inputs,
             eqns: self.eqns,

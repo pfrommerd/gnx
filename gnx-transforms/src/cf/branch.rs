@@ -132,15 +132,15 @@ fn lower_branch(
     let mut values = vec![selector];
     let mut infos = Vec::new();
     let mut args = Vec::new();
-    for (&operand, (_, kind)) in operands.iter().zip(first.expr().inputs()) {
+    for (&operand, (_, kind, _)) in operands.iter().zip(first.expr().inputs()) {
         match kind {
-            Kind::Value(_) => {
+            Kind::Value => {
                 let (value, info) = ctx.value_operand(operand)?;
                 values.push(value);
                 infos.push(info);
                 args.push(RegionArgument::Value);
             }
-            Kind::Cell(_) => args.push(RegionArgument::Cell(operand)),
+            Kind::Cell => args.push(RegionArgument::Cell(operand)),
         }
     }
     let regions = eqn

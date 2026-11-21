@@ -6,7 +6,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::eval::EVAL_DAG;
-use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, Var, VarScope};
+use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, ValueInfo, Var, VarScope};
 
 use super::{
     CellKey, CellTrace, ContextID, Generic, Invocation, ObjectTracer, ObjectTracerRef, Trace,
@@ -22,6 +22,8 @@ pub enum CaptureError {
     Cycle,
     #[error("capture roots and deferred dependencies must belong to the same scope")]
     MixedScopes,
+    UndefinedSymbol(crate::Symbol),
+    UnboundSymbolInput(crate::Symbol),
 }
 
 /// A captured DAG slice and its bindings in expression order.
@@ -70,7 +72,45 @@ impl Capture {
             ObjectTracerRef::Cell(_) => None,
         });
         let slice = emitter.discover(roots, ctx.last_aliased_write())?;
-        emitter.emit(&slice, outputs)
+        let mut capture = emitter.emit(&slice, outputs)?;
+        capture.declare_symbols(Some(ctx), true)?;
+        Ok(capture)
+    }
+
+    fn declare_symbols(
+        &mut self,
+        ctx: Option<&TraceContext>,
+        traced: bool,
+    ) -> Result<(), CaptureError> {
+        let e = &mut self.expr;
+        let mut seen = BTreeSet::new();
+        let mut declare = |s: crate::Symbol, decls: &mut Vec<_>| -> Result<(), CaptureError> {
+            if seen.insert(s) {
+                decls.push((
+                    s,
+                    ctx.and_then(|c| c.symbol_info(s))
+                        .ok_or(CaptureError::UndefinedSymbol(s))?,
+                ));
+            }
+            Ok(())
+        };
+        for (_, _, info) in &e.inputs {
+            for &s in info.symbols() {
+                declare(s, &mut e.symbol_inputs)?;
+            }
+        }
+        let mut free = Vec::new();
+        for &s in e.body_symbols() {
+            declare(s, &mut free)?;
+        }
+        e.symbol_closure = free;
+        if traced
+            && let Some(ctx) = ctx
+            && let Some((s, _)) = e.symbol_closure.iter().find(|(s, _)| ctx.owns_symbol(*s))
+        {
+            return Err(CaptureError::UnboundSymbolInput(*s));
+        }
+        Ok(())
     }
 
     /// Snapshot cell home values without recording a cell read. The home
@@ -113,7 +153,9 @@ impl Capture {
             let outputs = slice.eval_outputs(&roots, &pinned);
             emitter.emit(&slice, outputs)
         };
-        capture
+        let mut capture = capture?;
+        capture.declare_symbols(TraceContext::current().as_ref(), false)?;
+        Ok(capture)
     }
 
     pub fn expr(&self) -> &HExpr {
@@ -193,12 +235,13 @@ impl From<&Trace> for BindingKey {
     }
 }
 
-fn binding(object: ObjectTracerRef<'_>) -> (BindingKey, Kind) {
+fn binding(object: ObjectTracerRef<'_>) -> (BindingKey, Kind, ValueInfo) {
     match object {
-        ObjectTracerRef::Ref(value) => (value.into(), Kind::Value(value.info().clone())),
+        ObjectTracerRef::Ref(value) => (value.into(), Kind::Value, value.info().clone()),
         ObjectTracerRef::Cell(cell) => (
             BindingKey::Cell(CellKey::from(cell)),
-            Kind::Cell(cell.type_info().clone()),
+            Kind::Cell,
+            cell.type_info().clone(),
         ),
     }
 }
@@ -246,7 +289,7 @@ impl Slice {
     }
 }
 
-type BoundParam = ((Var, Kind), ObjectTracer);
+type BoundParam = ((Var, Kind, ValueInfo), ObjectTracer);
 
 struct Emitter {
     target: ContextID,
@@ -272,7 +315,7 @@ impl Emitter {
     }
 
     fn bind_input(&mut self, object: ObjectTracerRef<'_>) -> Result<(), CaptureError> {
-        let (key, kind) = binding(object);
+        let (key, kind, info) = binding(object);
         if self.bindings.contains_key(&key) {
             return Err(CaptureError::DuplicateInput);
         }
@@ -283,7 +326,7 @@ impl Emitter {
         }
         let var = self.vars.create_var();
         self.bindings.insert(key, var);
-        self.inputs.push(((var, kind), object.to_owned()));
+        self.inputs.push(((var, kind, info), object.to_owned()));
         Ok(())
     }
 
@@ -358,6 +401,8 @@ impl Emitter {
         let (input_params, inputs) = self.inputs.into_iter().unzip();
         Ok(Capture {
             expr: HExpr {
+                symbol_inputs: vec![],
+                symbol_closure: vec![],
                 closure: closure_params,
                 inputs: input_params,
                 instructions: self.instructions,
@@ -371,7 +416,7 @@ impl Emitter {
     }
 
     fn import(&mut self, object: ObjectTracerRef<'_>) -> Var {
-        let (key, kind) = binding(object);
+        let (key, kind, info) = binding(object);
         let var = self.vars.create_var();
         self.bindings.insert(key, var);
         let value = match object {
@@ -380,7 +425,7 @@ impl Emitter {
             }
             _ => object.to_owned(),
         };
-        self.closure.push(((var, kind), value));
+        self.closure.push(((var, kind, info), value));
         var
     }
 
@@ -423,7 +468,7 @@ impl Emitter {
         self.instructions.push(HInstr::CreateCell {
             cell: var,
             initial,
-            kind: Kind::Cell(cell.type_info().clone()),
+            info: cell.type_info().clone(),
         });
         Ok(var)
     }
@@ -439,7 +484,7 @@ impl Emitter {
             .collect()
     }
 
-    fn define_results(&mut self, inv: &Arc<Invocation>) -> Vec<(Var, Kind)> {
+    fn define_results(&mut self, inv: &Arc<Invocation>) -> Vec<(Var, Kind, ValueInfo)> {
         inv.outputs()
             .iter()
             .enumerate()
@@ -448,7 +493,7 @@ impl Emitter {
                 self.bindings
                     .entry(BindingKey::Result(inv.into(), index))
                     .or_insert(var);
-                (var, Kind::Value(info.clone()))
+                (var, Kind::Value, info.clone())
             })
             .collect()
     }
@@ -464,8 +509,9 @@ impl Emitter {
                 let inputs = self.value_args(inputs)?;
                 let subexprs = subexprs
                     .iter()
-                    .map(|(expr, captures)| {
-                        Ok(HSubExpr::new(expr.clone(), self.value_args(captures)?))
+                    .map(|(expr, captures, symbols)| {
+                        Ok(HSubExpr::new(expr.clone(), self.value_args(captures)?)
+                            .with_symbol_captures(symbols.clone()))
                     })
                     .collect::<Result<_, CaptureError>>()?;
                 HInstr::Apply(HEqn::new(
@@ -478,11 +524,11 @@ impl Emitter {
             Invocation::DeferredApply(apply) => return self.emit_deferred(inv.into(), apply),
             Invocation::ReadCell { cell, .. } => {
                 let cell = self.cell(cell)?;
-                let (output, kind) = self
+                let (output, _, info) = self
                     .define_results(inv)
                     .pop()
                     .expect("cell read has one result");
-                HInstr::ReadCell { cell, output, kind }
+                HInstr::ReadCell { cell, output, info }
             }
             Invocation::WriteCell { cell, value, .. } => HInstr::WriteCell {
                 cell: self.cell(cell)?,
@@ -503,17 +549,17 @@ impl Emitter {
             .regions
             .iter()
             .map(|region| {
-                Ok(HSubExpr::new(
-                    region.body.clone(),
-                    self.object_args(&region.captures)?,
-                ))
+                Ok(
+                    HSubExpr::new(region.body.clone(), self.object_args(&region.captures)?)
+                        .with_symbol_captures(region.symbol_captures.clone()),
+                )
             })
             .collect::<Result<_, CaptureError>>()?;
         let inputs = self.object_args(&apply.inputs)?;
         let results: Vec<_> = apply
             .kinds
             .iter()
-            .map(|kind| (self.vars.create_var(), kind.clone()))
+            .map(|(kind, info)| (self.vars.create_var(), *kind, info.clone()))
             .collect();
         self.instructions.push(HInstr::Apply(HEqn::new(
             apply.op.clone(),
@@ -534,7 +580,7 @@ impl Emitter {
                     self.instructions.push(HInstr::ReadCell {
                         cell,
                         output,
-                        kind: Kind::Value(apply.outputs[index].clone()),
+                        info: apply.outputs[index].clone(),
                     });
                     output
                 }

@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use crate::lower::LoweringError;
 use crate::util::pretty;
 use crate::{Op, ValueInfo, Var};
+use crate::{Symbol, SymbolInfo};
 use std::fmt;
 use std::sync::Arc;
 
@@ -50,13 +51,24 @@ impl Eqn {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SubExpr {
+    /// Parent symbols in the order of the child’s `symbol_closure`.
+    pub symbol_captures: Vec<Symbol>,
     pub expr: Arc<Expr>,
     pub captures: Vec<Var>,
 }
 
 impl SubExpr {
+    /// Bind the child’s free symbols to IDs in the enclosing region.
+    pub fn with_symbol_captures(mut self, captures: Vec<Symbol>) -> Self {
+        self.symbol_captures = captures;
+        self
+    }
     pub fn new(expr: Arc<Expr>, captures: Vec<Var>) -> Self {
-        Self { expr, captures }
+        Self {
+            expr,
+            captures,
+            symbol_captures: vec![],
+        }
     }
     pub fn expr(&self) -> &Arc<Expr> {
         &self.expr
@@ -70,6 +82,8 @@ impl SubExpr {
 /// variable. A value can be used or returned any number of times.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Expr {
+    pub(crate) symbol_closure: Vec<(Symbol, SymbolInfo)>,
+    pub(crate) symbol_inputs: Vec<(Symbol, SymbolInfo)>,
     pub(crate) closure: Vec<(Var, ValueInfo)>,
     pub(crate) inputs: Vec<(Var, ValueInfo)>,
     pub(crate) eqns: Vec<Eqn>,
@@ -77,6 +91,28 @@ pub struct Expr {
     pub(crate) name_hint: Option<Cow<'static, str>>,
 }
 impl Expr {
+    /// Declarations use IDs local to this region, not IDs in a caller.
+    pub fn with_symbols(
+        mut self,
+        closure: Vec<(Symbol, SymbolInfo)>,
+        inputs: Vec<(Symbol, SymbolInfo)>,
+    ) -> Self {
+        self.symbol_closure = closure;
+        self.symbol_inputs = inputs;
+        self
+    }
+    pub fn symbol_closure(&self) -> &[(Symbol, SymbolInfo)] {
+        &self.symbol_closure
+    }
+    pub fn symbol_inputs(&self) -> &[(Symbol, SymbolInfo)] {
+        &self.symbol_inputs
+    }
+    pub fn symbol_info(&self, s: Symbol) -> Option<&SymbolInfo> {
+        self.symbol_closure
+            .iter()
+            .chain(&self.symbol_inputs)
+            .find_map(|(id, sort)| (*id == s).then_some(sort))
+    }
     pub fn new(
         closure: Vec<(Var, ValueInfo)>,
         inputs: Vec<(Var, ValueInfo)>,
@@ -84,6 +120,8 @@ impl Expr {
         outputs: Vec<Var>,
     ) -> Self {
         Self {
+            symbol_closure: vec![],
+            symbol_inputs: vec![],
             closure,
             inputs,
             eqns,
@@ -141,6 +179,15 @@ impl Expr {
 
     /// Verify definition order, nested capture bindings, and result sources.
     pub fn check(&self) -> Result<(), LoweringError> {
+        crate::symbol::check_scope(
+            &self.symbol_closure,
+            &self.symbol_inputs,
+            self.inputs.iter().flat_map(|v| v.1.symbols()),
+            self.closure
+                .iter()
+                .chain(self.eqns.iter().flat_map(|e| &e.outputs))
+                .flat_map(|v| v.1.symbols()),
+        )?;
         let mut defined = BTreeSet::new();
         for &(var, _) in self.closure.iter().chain(&self.inputs) {
             if var.id().is_none() || !defined.insert(var) {
@@ -164,6 +211,11 @@ impl Expr {
                         actual: sub.captures.len(),
                     });
                 }
+                crate::symbol::check_captures(
+                    sub.expr.symbol_closure(),
+                    &sub.symbol_captures,
+                    |s| self.symbol_info(s),
+                )?;
                 sub.expr.check()?;
             }
             eqn.op().check_expr(eqn)?;

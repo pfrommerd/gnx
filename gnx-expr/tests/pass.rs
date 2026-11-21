@@ -121,7 +121,7 @@ fn inline_binds_captures_and_inputs() {
     let expr = program();
     let mut b = Builder::new();
     let x = b.input(info());
-    let results = b.inline(&expr, &[], &[x]);
+    let results = b.inline(&expr, &[], &[], &[x]).unwrap();
     assert_eq!(results[1], x);
     b.finish(results).check().unwrap();
 }

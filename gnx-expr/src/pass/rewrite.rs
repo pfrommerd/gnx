@@ -16,6 +16,7 @@ where
     F: FnMut(&mut Builder, &Eqn) -> Result<Option<Vec<Var>>, E>,
 {
     let mut builder = Builder::new();
+    builder.inherit_symbols(expr);
     builder.set_name_hint(expr.name_hint.clone());
     let mut map = HashMap::new();
     for (var, info) in &expr.closure {
@@ -35,7 +36,8 @@ where
                 Ok(SubExpr::new(
                     Arc::new(rewrite(&sub.expr, hook)?),
                     lookup(&map, &sub.captures),
-                ))
+                )
+                .with_symbol_captures(sub.symbol_captures.clone()))
             })
             .collect::<Result<Vec<_>, E>>()?;
         let outputs = eqn

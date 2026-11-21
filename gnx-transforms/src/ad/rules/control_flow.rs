@@ -68,10 +68,15 @@ impl JvpRule for CallOperation {
 
         // Primal call: the original bindings; returns the results and residuals.
         let operands = primals(inputs);
-        let region = b.region(&primals(captures), &infos(b, &operands), |rb, closure, params| {
-            name_after(rb, "jvp", body);
-            Ok::<_, TransformError>(rb.inline(&linear.primal, closure, params))
-        })?;
+        let region = b.region(
+            &primals(captures),
+            &infos(b, &operands),
+            |rb, closure, params| {
+                name_after(rb, "jvp", body);
+                rb.inline(&linear.primal, &[], closure, params)
+                    .map_err(TransformError::from)
+            },
+        )?;
         let mut primal_results = b.emit(
             call_op(),
             &operands,
@@ -91,7 +96,8 @@ impl JvpRule for CallOperation {
         args.extend(flagged_tangents(b, inputs, &input_flags));
         let region = b.region(&[], &infos(b, &args), |rb, _, params| {
             name_after(rb, "lin", body);
-            Ok::<_, TransformError>(rb.inline(&linear.tangent, &[], params))
+            rb.inline(&linear.tangent, &[], &[], params)
+                .map_err(TransformError::from)
         })?;
         let tangent_infos: Vec<_> = output_infos(eqn)
             .into_iter()
@@ -251,7 +257,7 @@ fn jvp_branches(
     let mut regions = Vec::new();
     for (index, (linear, captures)) in branches.iter().zip(captures).enumerate() {
         let region = b.region(&primals(captures), &operand_infos, |rb, closure, params| {
-            let mut results = rb.inline(&linear.primal, closure, params);
+            let mut results = rb.inline(&linear.primal, &[], closure, params)?;
             let residuals = results.split_off(eqn.outputs().len());
             let mut slots = Vec::new();
             for (other, branch) in branches.iter().enumerate() {
@@ -314,7 +320,8 @@ fn jvp_branches(
             let mut inputs = all_residuals[start..start + linear.residuals.len()].to_vec();
             inputs.extend(own_captures);
             inputs.extend(operand_tangents);
-            Ok::<_, TransformError>(rb.inline(&linear.tangent, &[], &inputs))
+            rb.inline(&linear.tangent, &[], &[], &inputs)
+                .map_err(TransformError::from)
         })?;
         regions.push(region);
     }
@@ -558,11 +565,13 @@ impl JvpRule for WhileOperation {
         let predicate_captures = primals(&captures[0]);
         let predicate_region =
             b.region(&predicate_captures, &carry_infos, |rb, closure, params| {
-                Ok::<_, TransformError>(rb.inline(
+                rb.inline(
                     predicate.expr(),
+                    &predicate.symbol_captures,
                     closure,
                     &params[..params.len() - tangent_count],
-                ))
+                )
+                .map_err(TransformError::from)
             })?;
         let results = b.emit(
             while_op(),
@@ -615,7 +624,8 @@ impl JvpRule for ScanOperation {
         // Primal scan: stacks the residuals of each step as extra outputs.
         let body_inputs: Vec<_> = body.inputs().iter().map(|(_, info)| info.clone()).collect();
         let primal_region = b.region(&primals(captures), &body_inputs, |rb, closure, params| {
-            Ok::<_, TransformError>(rb.inline(&linear.primal, closure, params))
+            rb.inline(&linear.primal, &[], closure, params)
+                .map_err(TransformError::from)
         })?;
         let stacked = linear
             .residuals
@@ -663,7 +673,7 @@ impl JvpRule for ScanOperation {
             inputs.extend(carries);
             inputs.extend(x_tangents);
             let mut results = passthrough.to_vec();
-            results.extend(rb.inline(&linear.tangent, &[], &inputs));
+            results.extend(rb.inline(&linear.tangent, &[], &[], &inputs)?);
             Ok::<_, TransformError>(results)
         })?;
         let infos_out: Vec<_> = capture_tangents

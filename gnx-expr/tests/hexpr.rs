@@ -31,20 +31,20 @@ impl AliasLowering for gnx_expr::HExpr {
             })
             .max()
             .map_or(0, |id| id + 1);
-        let mut bind = |params: &[(gnx_expr::Var, Kind)], ids: &[InputId]| {
+        let mut bind = |params: &[(gnx_expr::Var, Kind, ValueInfo)], ids: &[InputId]| {
             let mut ids = ids.iter();
             params
                 .iter()
                 .map(|param| {
                     let id = match &param.1 {
-                        Kind::Value(_) => {
+                        Kind::Value => {
                             let id = InputId::Input(next);
                             next += 1;
                             id
                         }
-                        Kind::Cell(_) => *ids.next().expect("test cell alias missing"),
+                        Kind::Cell => *ids.next().expect("test cell alias missing"),
                     };
-                    (id, param.1.clone())
+                    (id, param.1, param.2.clone())
                 })
                 .collect()
         };
@@ -76,7 +76,12 @@ impl Dialect for TestDialect {
 }
 impl std::fmt::Display for Neg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
+        write!(
+            f,
+            "{}::{}",
+            Operation::dialect(self).name(),
+            Operation::name(self)
+        )
     }
 }
 
@@ -117,10 +122,11 @@ fn captured_equation_result_keeps_its_kind_at_the_definition() {
     let captured =
         Capture::from_context(guard.context(), &[input.into()], &[result.into()]).unwrap();
     let body = captured.expr();
-    assert_eq!(body.inputs()[0].1, Kind::Value(info()));
-    let (var, kind) = &body.instructions()[0].as_apply().unwrap().outputs()[0];
-    assert_eq!(kind, &Kind::Value(result_info.clone()));
-    assert_eq!(body.kind(var), Some(kind));
+    assert_eq!(body.inputs()[0].1, Kind::Value);
+    let (var, kind, result) = &body.instructions()[0].as_apply().unwrap().outputs()[0];
+    assert_eq!(kind, &Kind::Value);
+    assert_eq!(result, &result_info);
+    assert_eq!(body.kind(var), Some(*kind));
     let lowered = body.lower_with_aliases(&CellAliases::default()).unwrap();
     assert_eq!(lowered.expr.eqns()[0].outputs()[0].1, result_info.clone());
     assert_eq!(lowered.output_infos, vec![result_info]);
@@ -193,12 +199,12 @@ fn concrete_cell_bindings_detect_cloned_handles_across_captures_and_inputs() {
     let a = cell();
     let b = cell();
     let spec = InputSpec::from_args(&[a.clone().into()], &[b.into(), a.into()]);
-    assert_eq!(spec.closure, vec![(InputId::Input(1), Kind::Cell(info()))]);
+    assert_eq!(spec.closure, vec![(InputId::Input(1), Kind::Cell, info())]);
     assert_eq!(
         spec.inputs,
         vec![
-            (InputId::Input(0), Kind::Cell(info())),
-            (InputId::Input(1), Kind::Cell(info())),
+            (InputId::Input(0), Kind::Cell, info()),
+            (InputId::Input(1), Kind::Cell, info()),
         ]
     );
 }

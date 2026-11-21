@@ -27,7 +27,10 @@ impl Pass for StaticRegions {
             };
             if let Some(i) = region {
                 let r = &e.subexprs()[i];
-                return Ok(Some(b.inline(r.expr(), r.closure(), e.inputs())));
+                return Ok(Some(
+                    b.inline(r.expr(), &r.symbol_captures, r.closure(), e.inputs())
+                        .map_err(io::Error::other)?,
+                ));
             }
             let Some(scan) = e.op().downcast_ref::<ScanOperation>() else {
                 return Ok(None);
@@ -53,7 +56,9 @@ impl Pass for StaticRegions {
             let mut stacked = vec![Vec::new(); ys.len()];
             for i in 0..p.length {
                 carry.extend(xs.iter().map(|v| v[i]));
-                let mut next = b.inline(r.expr(), r.closure(), &carry);
+                let mut next = b
+                    .inline(r.expr(), &r.symbol_captures, r.closure(), &carry)
+                    .map_err(io::Error::other)?;
                 for (list, y) in stacked.iter_mut().zip(next.drain(n..)) {
                     list.push(y)
                 }

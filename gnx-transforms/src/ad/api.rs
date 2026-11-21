@@ -38,7 +38,7 @@ impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
     fn new<A, E>(
         wrt: &Dag<bool>,
         input: &A,
-        trace: impl FnOnce(TracerBuilder<I>, Vec<Kind>) -> Result<Arc<TraceEntry<O>>, E>,
+        trace: impl FnOnce(TracerBuilder<I>, Vec<(Kind, ValueInfo)>) -> Result<Arc<TraceEntry<O>>, E>,
     ) -> Result<Self, ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -304,7 +304,10 @@ where
     fn apply<A, T, E>(
         &self,
         (primals, tangents): (A, T),
-        trace: impl FnOnce(TracerBuilder<I>, Vec<Kind>) -> Result<Arc<TraceEntry<F::Output>>, E>,
+        trace: impl FnOnce(
+            TracerBuilder<I>,
+            Vec<(Kind, ValueInfo)>,
+        ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<(F::Output, F::Output), ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -356,7 +359,10 @@ where
     fn apply<A, C, E>(
         &self,
         (primals, cotangents): (A, C),
-        trace: impl FnOnce(TracerBuilder<I>, Vec<Kind>) -> Result<Arc<TraceEntry<F::Output>>, E>,
+        trace: impl FnOnce(
+            TracerBuilder<I>,
+            Vec<(Kind, ValueInfo)>,
+        ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<(F::Output, I::Owned), ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -437,7 +443,10 @@ where
     fn apply<A, E>(
         &self,
         primals: A,
-        trace: impl FnOnce(TracerBuilder<I>, Vec<Kind>) -> Result<Arc<TraceEntry<F::Output>>, E>,
+        trace: impl FnOnce(
+            TracerBuilder<I>,
+            Vec<(Kind, ValueInfo)>,
+        ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<I::Owned, ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -473,7 +482,10 @@ where
     fn apply<A, E>(
         &self,
         primals: A,
-        trace: impl FnOnce(TracerBuilder<I>, Vec<Kind>) -> Result<Arc<TraceEntry<F::Output>>, E>,
+        trace: impl FnOnce(
+            TracerBuilder<I>,
+            Vec<(Kind, ValueInfo)>,
+        ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<(F::Output, I::Owned), ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -525,7 +537,10 @@ where
     fn apply<A, E>(
         &self,
         primals: A,
-        trace: impl FnOnce(TracerBuilder<I>, Vec<Kind>) -> Result<Arc<TraceEntry<F::Output>>, E>,
+        trace: impl FnOnce(
+            TracerBuilder<I>,
+            Vec<(Kind, ValueInfo)>,
+        ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<Array, ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,

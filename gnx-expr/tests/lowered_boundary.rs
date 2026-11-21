@@ -4,11 +4,11 @@ use gnx_expr::{
 };
 
 fn distinct_parameters(expr: &HExpr) -> InputSpec {
-    let bind = |params: &[(gnx_expr::Var, Kind)], source: fn(usize) -> InputId| {
+    let bind = |params: &[(gnx_expr::Var, Kind, ValueInfo)], source: fn(usize) -> InputId| {
         params
             .iter()
             .enumerate()
-            .map(|(index, param)| (source(index), param.1.clone()))
+            .map(|(index, param)| (source(index), param.1, param.2.clone()))
             .collect()
     };
     InputSpec {
@@ -27,7 +27,12 @@ impl Dialect for TestDialect {
 }
 impl std::fmt::Display for Compute {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
+        write!(
+            f,
+            "{}::{}",
+            Operation::dialect(self).name(),
+            Operation::name(self)
+        )
     }
 }
 
@@ -79,9 +84,9 @@ fn boundary_results_reconstruct_values_and_both_kinds_of_cells() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId::Input(10), Kind::Value(info())),
-            (InputId::Input(20), Kind::Value(info())),
-            (InputId::Input(30), Kind::Cell(info())),
+            (InputId::Input(10), Kind::Value, info()),
+            (InputId::Input(20), Kind::Value, info()),
+            (InputId::Input(30), Kind::Cell, info()),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
@@ -129,8 +134,8 @@ fn cell_updates_index_immutable_results() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId::Input(7), Kind::Cell(info())),
-            (InputId::Input(91), Kind::Value(info())),
+            (InputId::Input(7), Kind::Cell, info()),
+            (InputId::Input(91), Kind::Value, info()),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
@@ -150,8 +155,8 @@ fn update_only_sources_are_not_exposed_as_user_results() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId::Input(7), Kind::Cell(info())),
-            (InputId::Input(9), Kind::Value(info())),
+            (InputId::Input(7), Kind::Cell, info()),
+            (InputId::Input(9), Kind::Value, info()),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
@@ -175,8 +180,8 @@ fn new_input_cell_uses_the_original_input_state_snapshot() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId::Input(7), Kind::Cell(info())),
-            (InputId::Input(9), Kind::Value(info())),
+            (InputId::Input(7), Kind::Cell, info()),
+            (InputId::Input(9), Kind::Value, info()),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
@@ -234,8 +239,8 @@ fn one_id_cannot_identify_both_a_value_and_a_cell() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId::Input(0), Kind::Value(info())),
-            (InputId::Input(0), Kind::Cell(info())),
+            (InputId::Input(0), Kind::Value, info()),
+            (InputId::Input(0), Kind::Cell, info()),
         ],
     };
     assert!(matches!(
@@ -256,8 +261,8 @@ fn cell_state_and_user_result_share_one_computation() {
     let spec = InputSpec {
         closure: vec![],
         inputs: vec![
-            (InputId::Input(0), Kind::Cell(info())),
-            (InputId::Input(1), Kind::Value(info())),
+            (InputId::Input(0), Kind::Cell, info()),
+            (InputId::Input(1), Kind::Value, info()),
         ],
     };
     let lowered = captured.expr().lower(&spec).unwrap();
@@ -292,10 +297,10 @@ fn input_spec_validates_kinds_metadata_and_arity() {
     let guard = TraceContext::enter();
     let x = value();
     let captured = Capture::from_context(guard.context(), &[x.into()], &[]).unwrap();
-    for kind in [Kind::Cell(info()), Kind::Value(ValueInfo::new(1usize))] {
+    for (kind, metadata) in [(Kind::Cell, info()), (Kind::Value, ValueInfo::new(1usize))] {
         let spec = InputSpec {
             closure: vec![],
-            inputs: vec![(InputId::Input(0), kind)],
+            inputs: vec![(InputId::Input(0), kind, metadata)],
         };
         assert_eq!(
             captured.expr().lower(&spec).unwrap_err(),
@@ -319,7 +324,7 @@ fn input_spec_validates_capture_kinds_and_arity() {
     let out = compute(vec![x]);
     let captured = Capture::from_context(inner.context(), &[], &[out.into()]).unwrap();
     let spec = InputSpec {
-        closure: vec![(InputId::Input(0), Kind::Cell(info()))],
+        closure: vec![(InputId::Input(0), Kind::Cell, info())],
         inputs: vec![],
     };
     assert_eq!(
@@ -347,15 +352,15 @@ fn input_spec_from_args_shares_value_and_cell_identities_across_both_lists() {
     assert_eq!(
         spec.closure,
         vec![
-            (InputId::Input(1), Kind::Value(info())),
-            (InputId::Input(0), Kind::Cell(info())),
+            (InputId::Input(1), Kind::Value, info()),
+            (InputId::Input(0), Kind::Cell, info()),
         ]
     );
     assert_eq!(
         spec.inputs,
         vec![
-            (InputId::Input(0), Kind::Cell(info())),
-            (InputId::Input(1), Kind::Value(info())),
+            (InputId::Input(0), Kind::Cell, info()),
+            (InputId::Input(1), Kind::Value, info()),
         ]
     );
 }

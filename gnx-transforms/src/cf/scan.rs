@@ -111,7 +111,10 @@ pub fn scan(
         argument_infos.push(item);
     }
     let length = length.ok_or_else(|| signature("scan without inputs requires a length"))?;
-    expect_inputs(body.expr(), argument_infos.into_iter().map(Kind::Value))?;
+    expect_inputs(
+        body.expr(),
+        argument_infos.into_iter().map(|info| (Kind::Value, info)),
+    )?;
     let outputs = value_results(body.expr())?;
     let Some((body_carry, ys)) = outputs.split_at_checked(carry.len()) else {
         return Err(signature("scan carry result arity"));

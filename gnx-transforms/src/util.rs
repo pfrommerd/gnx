@@ -134,7 +134,10 @@ pub fn copy_eqn(b: &mut Builder, eqn: &Eqn, inputs: &[Var], captures: &[Vec<Var>
         .subexprs()
         .iter()
         .zip(captures)
-        .map(|(sub, captures)| SubExpr::new(sub.expr().clone(), captures.clone()))
+        .map(|(sub, captures)| {
+            SubExpr::new(sub.expr().clone(), captures.clone())
+                .with_symbol_captures(sub.symbol_captures.clone())
+        })
         .collect();
     b.emit(
         eqn.op().clone(),

@@ -1,8 +1,8 @@
+use gnx_common::{ArrayInfo, DType, Shape};
 use gnx_expr::{
     Capture, CellTrace, HExpr, InputSpec, Kind, LoweringError, ObjectTracer, Trace, TraceContext,
     ValueInfo, hexpr,
 };
-use gnx_common::{ArrayInfo, DType, Shape};
 use gnx_transforms::cf::{ScanParameters, cond, scan, scan_op, switch, while_loop};
 use gnx_transforms::ops;
 
@@ -28,13 +28,13 @@ fn region(
 
 fn value_only_spec(expr: &HExpr) -> InputSpec {
     use gnx_expr::InputId;
-    let spec = |params: &[(gnx_expr::Var, Kind)], id: fn(usize) -> InputId| {
+    let spec = |params: &[(gnx_expr::Var, Kind, ValueInfo)], id: fn(usize) -> InputId| {
         params
             .iter()
             .enumerate()
-            .map(|(index, (_, kind))| {
-                assert!(matches!(kind, Kind::Value(_)));
-                (id(index), kind.clone())
+            .map(|(index, (_, kind, info))| {
+                assert!(matches!(kind, Kind::Value));
+                (id(index), *kind, info.clone())
             })
             .collect()
     };

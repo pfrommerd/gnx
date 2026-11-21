@@ -22,7 +22,9 @@ mod while_loop;
 
 pub(crate) use branch::branch_op;
 pub use branch::{CondOperation, SwitchOperation, cond, cond_op, switch, switch_op};
-pub use call::{CallOperation, call, call_immutable, call_lowered, call_op, defer_call};
+pub use call::{
+    CallOperation, call, call_immutable, call_lowered, call_op, defer_call, defer_call_with_symbols,
+};
 pub use scan::{ScanOperation, ScanParameters, scan, scan_op};
 pub use while_loop::{WhileOperation, while_loop, while_op};
 
@@ -75,8 +77,8 @@ fn scalar(dtype: DType) -> ValueInfo {
 pub(crate) fn value_results(body: &HExpr) -> RegionResult<Vec<ValueInfo>> {
     body.outputs()
         .iter()
-        .map(|var| match body.kind(var) {
-            Some(Kind::Value(info)) => Ok(info.clone()),
+        .map(|var| match body.definition(var) {
+            Some((Kind::Value, info)) => Ok(info.clone()),
             _ => Err(signature(
                 "control flow must return values, not cell handles",
             )),
@@ -86,12 +88,12 @@ pub(crate) fn value_results(body: &HExpr) -> RegionResult<Vec<ValueInfo>> {
 
 pub(crate) fn expect_inputs(
     body: &HExpr,
-    expected: impl IntoIterator<Item = Kind>,
+    expected: impl IntoIterator<Item = (Kind, ValueInfo)>,
 ) -> RegionResult<()> {
     if body
         .inputs()
         .iter()
-        .map(|(_, kind)| kind.clone())
+        .map(|(_, kind, info)| (*kind, info.clone()))
         .eq(expected)
     {
         Ok(())
@@ -100,10 +102,10 @@ pub(crate) fn expect_inputs(
     }
 }
 
-fn object_kind(object: &ObjectTracer) -> Kind {
+fn object_kind(object: &ObjectTracer) -> (Kind, ValueInfo) {
     match object {
-        ObjectTracer::Ref(trace) => Kind::Value(trace.info().clone()),
-        ObjectTracer::Cell(cell) => Kind::Cell(cell.type_info().clone()),
+        ObjectTracer::Ref(trace) => (Kind::Value, trace.info().clone()),
+        ObjectTracer::Cell(cell) => (Kind::Cell, cell.type_info().clone()),
     }
 }
 
@@ -124,7 +126,7 @@ pub(crate) fn defer_regions(
     for bound in &regions {
         let capture = bound.capture;
         let body = capture.expr();
-        for ((var, _), object) in body
+        for ((var, ..), object) in body
             .closure()
             .iter()
             .zip(capture.closure())
@@ -156,13 +158,20 @@ pub(crate) fn defer_regions(
             regions: regions
                 .into_iter()
                 .map(|region| DeferredRegion {
+                    symbol_captures: region
+                        .capture
+                        .expr()
+                        .symbol_closure()
+                        .iter()
+                        .map(|(s, _)| *s)
+                        .collect(),
                     body: Arc::new(region.capture.expr().clone()),
                     captures: region.capture.closure().to_vec(),
                 })
                 .collect(),
             inputs,
             projections: (0..infos.len()).map(DeferredProjection::Value).collect(),
-            outputs: infos.into_iter().map(Kind::Value).collect(),
+            outputs: infos.into_iter().map(|info| (Kind::Value, info)).collect(),
             locals: locals.into_values().collect(),
             external_access,
         },
@@ -173,12 +182,12 @@ pub(crate) fn defer_regions(
 // Lowering helpers
 // ---------------------------------------------------------------------------
 
-fn value_infos(outputs: &[(Var, Kind)]) -> RegionResult<Vec<ValueInfo>> {
+fn value_infos(outputs: &[(Var, Kind, ValueInfo)]) -> RegionResult<Vec<ValueInfo>> {
     outputs
         .iter()
-        .map(|(var, kind)| match kind {
-            Kind::Value(info) => Ok(info.clone()),
-            Kind::Cell(_) => Err(LoweringError::ExpectedValue(*var)),
+        .map(|(var, kind, info)| match kind {
+            Kind::Value => Ok(info.clone()),
+            Kind::Cell => Err(LoweringError::ExpectedValue(*var)),
         })
         .collect()
 }

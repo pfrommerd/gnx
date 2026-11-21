@@ -46,7 +46,7 @@ impl<I: Graph> Leaves<I> {
         }
     }
 
-    pub fn kinds(&self) -> Vec<Kind> {
+    pub fn kinds(&self) -> Vec<(Kind, ValueInfo)> {
         self.objects.iter().map(kind).collect()
     }
 
