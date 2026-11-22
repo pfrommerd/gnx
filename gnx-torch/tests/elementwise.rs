@@ -1,4 +1,4 @@
-use gnx_expr::{Eqn, Expr, Op, ValueInfo, VarScope};
+use gnx_expr::{Eqn, Expr, Op, VarInfo, VarScope};
 use gnx_math::{
     ArrayInfo, DType, Shape,
     ops::{elementwise as ew, select_op},
@@ -6,10 +6,10 @@ use gnx_math::{
 use gnx_torch::{TorchDevice, TorchExecutable};
 use tch::{CModule, Kind, Tensor};
 
-fn info(k: DType, shape: &[usize]) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed(shape.iter().copied()), k))
+fn info(k: DType, shape: &[usize]) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed(shape.iter().copied()), k))
 }
-fn compile(op: Op, inputs: &[ValueInfo], output: ValueInfo) -> std::io::Result<TorchExecutable> {
+fn compile(op: Op, inputs: &[VarInfo], output: VarInfo) -> std::io::Result<TorchExecutable> {
     let mut vars = VarScope::new();
     let args: Vec<_> = inputs
         .iter()

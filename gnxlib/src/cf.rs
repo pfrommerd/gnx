@@ -7,7 +7,7 @@
 
 use gnx::array::{Array, ArrayInfo, DType, Dim, Shape};
 use gnx::buffer::{DataHandle, HostBuffer};
-use gnx::expr::{Capture, CellTrace, ObjectTracer, Trace, TraceContext, ValueInfo};
+use gnx::expr::{Capture, CellTrace, ObjectTracer, Trace, TraceContext, VarInfo};
 use gnx::graph::util::{GraphExt, IterSource};
 use gnx::graph::{Builder, Graph, GraphContext, GraphEq, GraphEqContext, Of, SourceError};
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -246,13 +246,13 @@ pub fn while_loop<'py>(
 }
 
 /// The metadata of one slice along the leading axis.
-fn slice_info(trace: &Trace) -> PyResult<ValueInfo> {
+fn slice_info(trace: &Trace) -> PyResult<VarInfo> {
     let error = || PyTypeError::new_err("scan xs must be arrays with a fixed leading axis");
     let array = trace.info().downcast::<ArrayInfo>().map_err(|_| error())?;
     let [Dim::Fixed(_), tail @ ..] = array.shape().dims() else {
         return Err(error());
     };
-    Ok(ValueInfo::new(ArrayInfo::new(
+    Ok(VarInfo::new(ArrayInfo::new(
         tail.iter().copied().collect(),
         array.dtype(),
     )))

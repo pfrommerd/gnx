@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
-use crate::{Generic, Invocation, ValueInfo};
+use crate::{Generic, Invocation, VarInfo};
 
 use super::context::{ContextID, TraceContext};
 use super::{Trace, Traceable, Tracer};
@@ -21,7 +21,7 @@ impl CellKey {
 /// Mutable traced slot (JAX-style ref). [`Trace`] values are immutable.
 pub struct TraceCell {
     context_id: ContextID,
-    type_info: ValueInfo,
+    type_info: VarInfo,
     /// The current "home" trace value, held under its own lock. Input cells
     /// (`is_input`) initialize this to a placeholder trace.
     home: RwLock<Trace>,
@@ -46,7 +46,7 @@ impl CellTrace {
         }))
     }
 
-    pub fn placeholder(info: ValueInfo) -> Self {
+    pub fn placeholder(info: VarInfo) -> Self {
         CellTrace(Arc::new(TraceCell {
             context_id: TraceContext::current_id(),
             type_info: info.clone(),
@@ -59,7 +59,7 @@ impl CellTrace {
         &self.0.context_id
     }
 
-    pub fn type_info(&self) -> &ValueInfo {
+    pub fn type_info(&self) -> &VarInfo {
         &self.0.type_info
     }
 
@@ -161,7 +161,7 @@ impl<T: Traceable> CellTracer<T> {
         }
     }
 
-    pub fn placeholder(info: ValueInfo) -> Self {
+    pub fn placeholder(info: VarInfo) -> Self {
         CellTracer {
             shared: CellTrace::placeholder(info),
             _phantom: PhantomData,

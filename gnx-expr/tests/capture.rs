@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use gnx_expr::trace::{
-    CellTrace, Generic, Invocation, ObjectTracer, TraceContext, Tracer, ValueInfo,
+    CellTrace, Generic, Invocation, ObjectTracer, TraceContext, Tracer, VarInfo,
 };
 use gnx_expr::{Dialect, Operation};
 use gnx_expr::{HInstr, Op, Capture};
@@ -42,8 +42,10 @@ impl Display for InfoType {
     }
 }
 
-fn sample_info() -> ValueInfo {
-    ValueInfo::new(InfoType)
+impl gnx_expr::Info for InfoType {}
+
+fn sample_info() -> VarInfo {
+    VarInfo::new(InfoType)
 }
 
 fn op(name: &'static str) -> Op {

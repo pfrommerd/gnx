@@ -9,7 +9,7 @@ use gnx_expr::lower::{LoweringContext, RegionArgument};
 use gnx_expr::{
     Capture, CellAccess, CellKey, DeferredApplyPlan, DeferredLocal, DeferredProjection,
     DeferredRegion, Eqn, Expr, HEqn, HExpr, Invocation, Kind, LoweringError, ObjectTracer, Op,
-    Trace, ValueInfo, Var,
+    Trace, VarInfo, Var,
 };
 
 use crate::cf::value_results;
@@ -50,8 +50,8 @@ pub(crate) fn strictly_increasing(indices: &[usize], bound: usize) -> Result<(),
 
 /// Value metadata of a body's inputs and results.
 pub struct BodySignature {
-    pub inputs: Vec<ValueInfo>,
-    pub outputs: Vec<ValueInfo>,
+    pub inputs: Vec<VarInfo>,
+    pub outputs: Vec<VarInfo>,
 }
 
 impl BodySignature {
@@ -85,7 +85,7 @@ impl BodySignature {
     }
 }
 
-fn value_infos(outputs: &[(Var, Kind, ValueInfo)]) -> Result<Vec<ValueInfo>, LoweringError> {
+fn value_infos(outputs: &[(Var, Kind, VarInfo)]) -> Result<Vec<VarInfo>, LoweringError> {
     outputs
         .iter()
         .map(|(var, kind, info)| match kind {
@@ -101,7 +101,7 @@ fn value_infos(outputs: &[(Var, Kind, ValueInfo)]) -> Result<Vec<ValueInfo>, Low
 pub(crate) fn lower_transform(
     eqn: &HEqn,
     ctx: &mut LoweringContext<'_>,
-    check: impl FnOnce(&BodySignature, &[ValueInfo], &[ValueInfo]) -> Result<(), LoweringError>,
+    check: impl FnOnce(&BodySignature, &[VarInfo], &[VarInfo]) -> Result<(), LoweringError>,
 ) -> Result<(), LoweringError> {
     let [sub] = eqn.subexprs() else {
         return Err(signature("transformations take exactly one body"));
@@ -136,7 +136,7 @@ pub(crate) fn lower_transform(
 /// `Operation::check_expr` for a transformation with one body.
 pub(crate) fn check_expr_with(
     eqn: &Eqn,
-    check: impl FnOnce(&BodySignature, usize, &[ValueInfo]) -> Result<(), LoweringError>,
+    check: impl FnOnce(&BodySignature, usize, &[VarInfo]) -> Result<(), LoweringError>,
 ) -> Result<(), LoweringError> {
     let [sub] = eqn.subexprs() else {
         return Err(signature("transformations take exactly one body"));
@@ -166,7 +166,7 @@ pub(crate) fn reject_cell_writes(body: &Body) -> Result<(), LoweringError> {
 
 /// Record a transformation of a read-only body with value operands. Captured
 /// cells are read at the call (`reject_cell_writes` must hold).
-pub(crate) fn record(op: Op, body: &Body, inputs: &[Trace], outputs: Vec<ValueInfo>) -> Vec<Trace> {
+pub(crate) fn record(op: Op, body: &Body, inputs: &[Trace], outputs: Vec<VarInfo>) -> Vec<Trace> {
     let mut locals = BTreeMap::<CellKey, DeferredLocal>::new();
     let mut external_access = CellAccess::Unused;
     for ((var, ..), object) in body.expr.closure().iter().zip(&body.captures) {
@@ -188,7 +188,7 @@ pub(crate) fn record(op: Op, body: &Body, inputs: &[Trace], outputs: Vec<ValueIn
         op,
         DeferredApplyPlan {
             regions: vec![DeferredRegion {
-                symbol_captures: body.expr.symbol_closure().iter().map(|(s, _)| *s).collect(),
+                symbol_captures: body.expr.symbol_closure().to_vec(),
                 body: body.expr.clone(),
                 captures: body.captures.clone(),
             }],
@@ -201,6 +201,6 @@ pub(crate) fn record(op: Op, body: &Body, inputs: &[Trace], outputs: Vec<ValueIn
     )
 }
 
-pub(crate) fn trace_infos(traces: &[Trace]) -> Vec<ValueInfo> {
+pub(crate) fn trace_infos(traces: &[Trace]) -> Vec<VarInfo> {
     traces.iter().map(|trace| trace.info().clone()).collect()
 }

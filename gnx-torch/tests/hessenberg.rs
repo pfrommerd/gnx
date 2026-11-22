@@ -1,12 +1,12 @@
 mod support;
-use gnx_expr::{ValueInfo, pass::Builder};
+use gnx_expr::{VarInfo, pass::Builder};
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::hessenberg};
 use gnx_torch::TorchDevice;
 use tch::{CModule, Kind, Tensor};
 
 fn compile(shape: &[usize], dtype: DType) -> Vec<CModule> {
     let ty =
-        |dims: &[usize]| ValueInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), dtype));
+        |dims: &[usize]| VarInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), dtype));
     let n = shape[shape.len() - 1];
     let mut tau_shape = shape[..shape.len() - 1].to_vec();
     *tau_shape.last_mut().unwrap() = n.saturating_sub(1);

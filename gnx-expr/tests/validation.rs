@@ -36,14 +36,14 @@ mod ops {
 #[test]
 fn check_rejects_undefined_operands() {
     let expr =
-        expr!(gnx_expr::ValueInfo::new(0usize); { lambda: out = validation::op missing; in (out) });
+        expr!(gnx_expr::VarInfo::new(0usize); { lambda: out = validation::op missing; in (out) });
     let missing = expr.eqns()[0].inputs()[0];
     assert_eq!(expr.check(), Err(LoweringError::UndefinedVariable(missing)));
 }
 
 #[test]
 fn check_rejects_duplicate_and_hole_definitions() {
-    let expr = expr!(gnx_expr::ValueInfo::new(0usize); {
+    let expr = expr!(gnx_expr::VarInfo::new(0usize); {
         lambda:
         out = validation::op;
         out = validation::op;
@@ -53,7 +53,7 @@ fn check_rejects_duplicate_and_hole_definitions() {
     assert_eq!(expr.check(), Err(LoweringError::DuplicateDefinition(out)));
     let expr = Expr::new(
         vec![],
-        vec![(Var::hole(), gnx_expr::ValueInfo::new(0usize))],
+        vec![(Var::hole(), gnx_expr::VarInfo::new(0usize))],
         vec![],
         vec![],
     );
@@ -63,8 +63,8 @@ fn check_rejects_duplicate_and_hole_definitions() {
 #[test]
 fn check_validates_subexpression_capture_arity_and_bindings() {
     let inner =
-        Arc::new(expr!(gnx_expr::ValueInfo::new(0usize); { lambda captured;: in (captured) }));
-    let expr = expr!(gnx_expr::ValueInfo::new(0usize); { lambda outer;: out = validation::op[inner.clone() => ()]; in (out) });
+        Arc::new(expr!(gnx_expr::VarInfo::new(0usize); { lambda captured;: in (captured) }));
+    let expr = expr!(gnx_expr::VarInfo::new(0usize); { lambda outer;: out = validation::op[inner.clone() => ()]; in (out) });
     assert_eq!(
         expr.check(),
         Err(LoweringError::CaptureArity {
@@ -72,16 +72,16 @@ fn check_validates_subexpression_capture_arity_and_bindings() {
             actual: 0
         })
     );
-    let expr = expr!(gnx_expr::ValueInfo::new(0usize); { lambda outer;: out = validation::op[inner.clone() => (missing)]; in (out) });
+    let expr = expr!(gnx_expr::VarInfo::new(0usize); { lambda outer;: out = validation::op[inner.clone() => (missing)]; in (out) });
     let missing = expr.eqns()[0].subexprs()[0].captures[0];
     assert_eq!(expr.check(), Err(LoweringError::UndefinedVariable(missing)));
-    let expr = expr!(gnx_expr::ValueInfo::new(0usize); { lambda outer;: out = validation::op[inner => (outer)]; in (out) });
+    let expr = expr!(gnx_expr::VarInfo::new(0usize); { lambda outer;: out = validation::op[inner => (outer)]; in (out) });
     expr.check().unwrap();
 }
 
 #[test]
 fn check_accepts_returning_parameters_and_reusing_values() {
-    let expr = expr!(gnx_expr::ValueInfo::new(0usize); {
+    let expr = expr!(gnx_expr::VarInfo::new(0usize); {
         lambda captured; x:
         out = validation::op x x;
         in (x, captured, out, out)
@@ -100,7 +100,7 @@ fn check_accepts_returning_parameters_and_reusing_values() {
 
 #[test]
 fn check_rejects_undefined_results() {
-    let expr = expr!(gnx_expr::ValueInfo::new(0usize); { lambda: in (missing) });
+    let expr = expr!(gnx_expr::VarInfo::new(0usize); { lambda: in (missing) });
     assert_eq!(
         expr.check(),
         Err(LoweringError::UndefinedVariable(expr.outputs()[0]))

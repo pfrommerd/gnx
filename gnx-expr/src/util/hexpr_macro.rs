@@ -1,19 +1,19 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, Op, ValueInfo, Var, VarScope};
+use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, Op, Var, VarInfo, VarScope};
 
 #[doc(hidden)]
 pub struct HExprBuilder<'a> {
     expr: HExpr,
     scope: VarScope,
     vars: BTreeMap<&'static str, Var>,
-    info: Option<ValueInfo>,
-    outer: Option<&'a mut dyn FnMut(&'static str) -> Option<(Kind, ValueInfo)>>,
+    info: Option<VarInfo>,
+    outer: Option<&'a mut dyn FnMut(&'static str) -> Option<(Kind, VarInfo)>>,
 }
 
 impl HExprBuilder<'_> {
-    pub fn new(info: Option<ValueInfo>) -> Self {
+    pub fn new(info: Option<VarInfo>) -> Self {
         Self {
             expr: HExpr {
                 symbol_inputs: vec![],
@@ -38,7 +38,7 @@ impl HExprBuilder<'_> {
         var
     }
 
-    fn resolve(&mut self, name: &'static str) -> Option<(Var, Kind, ValueInfo)> {
+    fn resolve(&mut self, name: &'static str) -> Option<(Var, Kind, VarInfo)> {
         if let Some(&var) = self.vars.get(name) {
             return self
                 .expr
@@ -51,7 +51,7 @@ impl HExprBuilder<'_> {
         Some((var, kind, info))
     }
 
-    fn lookup(&mut self, name: &'static str, cell: bool) -> (Var, ValueInfo) {
+    fn lookup(&mut self, name: &'static str, cell: bool) -> (Var, VarInfo) {
         let (var, kind, info) = self
             .resolve(name)
             .unwrap_or_else(|| panic!("undefined variable `{name}`"));
@@ -68,11 +68,11 @@ impl HExprBuilder<'_> {
         closure: bool,
         name: &'static str,
         cell: bool,
-        info: Option<ValueInfo>,
+        info: Option<VarInfo>,
     ) {
         let info = info
             .or_else(|| self.info.clone())
-            .expect("missing ValueInfo annotation");
+            .expect("missing VarInfo annotation");
         let kind = if cell { Kind::Cell } else { Kind::Value };
         let var = self.define(name);
         let params = if closure {
@@ -134,14 +134,11 @@ impl HExprBuilder<'_> {
         HSubExpr::new(Arc::new(build(child)), captures)
     }
 
-    pub fn output(&mut self, name: &'static str) -> (Var, Kind, ValueInfo) {
-        self.typed_output(
-            name,
-            self.info.clone().expect("missing ValueInfo annotation"),
-        )
+    pub fn output(&mut self, name: &'static str) -> (Var, Kind, VarInfo) {
+        self.typed_output(name, self.info.clone().expect("missing VarInfo annotation"))
     }
 
-    pub fn typed_output(&mut self, name: &'static str, info: ValueInfo) -> (Var, Kind, ValueInfo) {
+    pub fn typed_output(&mut self, name: &'static str, info: VarInfo) -> (Var, Kind, VarInfo) {
         // Even an unused equation result needs a fresh SSA variable.
         let var = if name == "_" {
             self.scope.create_var()
@@ -153,7 +150,7 @@ impl HExprBuilder<'_> {
 
     pub fn eqn(
         &mut self,
-        outputs: Vec<(Var, Kind, ValueInfo)>,
+        outputs: Vec<(Var, Kind, VarInfo)>,
         op: Op,
         inputs: Vec<Var>,
         subexprs: Vec<HSubExpr>,
@@ -176,7 +173,7 @@ impl HExprBuilder<'_> {
 /// Build a mutation-aware `HExpr` without tracing a function.
 ///
 /// Annotate parameters and equation results with Rust expressions yielding
-/// `ValueInfo`: a value moves in, and `&info` clones it. The older
+/// `VarInfo`: a value moves in, and `&info` clones it. The older
 /// `hexpr!(info; { ... })` form supplies default metadata. Cell reads and
 /// creation inherit metadata.
 /// Operations resolve through the caller's `ops` module, just as in
@@ -191,8 +188,8 @@ impl HExprBuilder<'_> {
 /// can be just the result tuple.
 ///
 /// ```
-/// use gnx_expr::{HInstr, ValueInfo, hexpr};
-/// let info = ValueInfo::new(0usize);
+/// use gnx_expr::{HInstr, VarInfo, hexpr};
+/// let info = VarInfo::new(0usize);
 /// let body = hexpr!(|captured[:]: &info; value: info| => {
 ///     local[:] = value;
 ///     captured[:] <- value;
@@ -211,17 +208,17 @@ impl HExprBuilder<'_> {
 /// ));
 /// ```
 /// ```compile_fail
-/// let info = gnx_expr::ValueInfo::new(0usize);
+/// let info = gnx_expr::VarInfo::new(0usize);
 /// let _ = gnx_expr::hexpr!({ lambda cell[:]: info => in cell[:] }); // missing parentheses
 /// ```
 /// ```compile_fail
-/// use gnx_expr::{ValueInfo, expr, hexpr};
+/// use gnx_expr::{VarInfo, expr, hexpr};
 /// mod ops {
 ///     pub mod test {
 ///         pub fn region() -> gnx_expr::Op { unreachable!() }
 ///     }
 /// }
-/// let info = ValueInfo::new(0usize);
+/// let info = VarInfo::new(0usize);
 /// let low = expr!({ lambda x: &info => in (x) });
 /// let _ = hexpr!({ lambda x: &info => y: &info = test::region[low => ()] x; in (y) });
 /// ```
@@ -231,7 +228,7 @@ impl HExprBuilder<'_> {
 ///         pub fn op() -> gnx_expr::Op { unreachable!() }
 ///     }
 /// }
-/// let info = gnx_expr::ValueInfo::new(0usize);
+/// let info = gnx_expr::VarInfo::new(0usize);
 /// let _ = gnx_expr::hexpr!(&info; |x| => { y = test::op (x); in (y) });
 /// ```
 #[macro_export]
@@ -254,14 +251,14 @@ macro_rules! hexpr {
         $crate::__expr_named!(hexpr, []; $name = $($tail)*)
     };
     ($info:expr; $name:ident = $($tail:tt)*) => {{
-        let __default = $crate::ValueInfo::from($info);
+        let __default = $crate::VarInfo::from($info);
         $crate::__expr_named!(hexpr, [&__default;]; $name = $($tail)*)
     }};
     ($info:expr; || $($body:tt)*) => { $crate::hexpr!($info; | | $($body)*) };
     ($info:expr; { || $($body:tt)* }) => { $crate::hexpr!($info; || $($body)*) };
     ($info:expr; { | $($body:tt)* }) => { $crate::hexpr!($info; | $($body)*) };
     ($info:expr; | $($body:tt)*) => {{
-        let mut __builder = $crate::util::hexpr_macro::HExprBuilder::new(Some($crate::ValueInfo::from($info)));
+        let mut __builder = $crate::util::hexpr_macro::HExprBuilder::new(Some($crate::VarInfo::from($info)));
         $crate::__typed_lambda!(__builder, __hexpr_typed_params, __hexpr_body; [|] first [] $($body)*)
     }};
     ($info:expr; lambda $($body:tt)*) => {
@@ -306,7 +303,7 @@ macro_rules! hexpr {
         $($input:ident $([$icell:tt])? $(($iinfo:expr))?),* $(,)? :
         $($body:tt)*
     }) => {{
-        let mut __builder = $crate::util::hexpr_macro::HExprBuilder::new(Some($crate::ValueInfo::from($info)));
+        let mut __builder = $crate::util::hexpr_macro::HExprBuilder::new(Some($crate::VarInfo::from($info)));
         $(__builder.parameter(true, stringify!($capture), $crate::__hexpr_cell!($($ccell)?),
             $crate::__hexpr_info!($($cinfo)?));)*
         $(__builder.parameter(false, stringify!($input), $crate::__hexpr_cell!($($icell)?),
@@ -333,7 +330,7 @@ macro_rules! __hexpr_info {
         None
     };
     ($info:expr) => {
-        Some($crate::ValueInfo::from($info))
+        Some($crate::VarInfo::from($info))
     };
 }
 
@@ -344,7 +341,7 @@ macro_rules! __hexpr_typed_params {
     ($builder:ident, $closure:expr; ,) => {};
     ($builder:ident, $closure:expr; $name:ident $([$cell:tt])? : $info:expr, $($rest:tt)*) => {{
         $builder.parameter($closure, stringify!($name), $crate::__hexpr_cell!($($cell)?),
-            Some($crate::ValueInfo::from($info)));
+            Some($crate::VarInfo::from($info)));
         $crate::__hexpr_typed_params!($builder, $closure; $($rest)*);
     }};
     ($builder:ident, $closure:expr; $name:ident $([$cell:tt])?, $($rest:tt)*) => {{

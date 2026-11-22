@@ -35,7 +35,7 @@ use std::fmt;
 use gnx_expr::lower::LoweringContext;
 use gnx_expr::pass::Builder;
 use gnx_expr::{
-    Dialect, Eqn, HEqn, LoweringError, Op, Operation, ValueInfo, Var, register_op_interface,
+    Dialect, Eqn, HEqn, LoweringError, Op, Operation, Var, VarInfo, register_op_interface,
 };
 
 use crate::body::{BodySignature, check_expr_with, lower_transform, signature};
@@ -85,11 +85,7 @@ impl MapParameters {
     }
 
     /// Metadata with `size` inserted at each axis.
-    pub fn mapped(
-        &self,
-        infos: &[ValueInfo],
-        axes: &[usize],
-    ) -> Result<Vec<ValueInfo>, LoweringError> {
+    pub fn mapped(&self, infos: &[VarInfo], axes: &[usize]) -> Result<Vec<VarInfo>, LoweringError> {
         infos
             .iter()
             .zip(axes)
@@ -104,9 +100,9 @@ impl MapParameters {
     pub fn check(
         &self,
         body: &BodySignature,
-        operands: Option<&[ValueInfo]>,
+        operands: Option<&[VarInfo]>,
         operand_count: usize,
-        outputs: &[ValueInfo],
+        outputs: &[VarInfo],
     ) -> Result<(), LoweringError> {
         if self.in_axes.len() != body.inputs.len()
             || operand_count != body.inputs.len()

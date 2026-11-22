@@ -1,7 +1,7 @@
 //! Scope and substitution tests using only opaque metadata, not array types.
 use gnx_expr::{
-    Capture, Dialect, Generic, InputSpec, Invocation, Kind, Op, Operation, Symbol, SymbolInfo,
-    TraceContext, Tracer, ValueInfo, VarScope,
+    Capture, Dialect, Generic, Info, InputSpec, Invocation, Kind, Op, Operation, Symbol,
+    TraceContext, Tracer, VarInfo, VarScope,
     pass::{Builder, dce, rewrite},
 };
 use std::{fmt, sync::Arc};
@@ -27,36 +27,46 @@ impl Operation for Pair {
         &Test
     }
 }
-fn sort() -> SymbolInfo {
-    SymbolInfo::new("index")
+/// Metadata that is nothing but its ordered symbol slots.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct Formal(Vec<Symbol>);
+impl fmt::Display for Formal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "formal{:?}", self.0)
+    }
 }
-fn info(symbols: &[Symbol]) -> ValueInfo {
-    ValueInfo::new("formal").with_symbols(symbols.iter().copied())
+impl Info for Formal {
+    fn symbols(&self) -> &[Symbol] {
+        &self.0
+    }
+    fn remap_symbols(&self, f: &mut dyn FnMut(Symbol) -> Symbol) -> Option<VarInfo> {
+        Some(VarInfo::new(Formal(self.0.iter().map(|s| f(*s)).collect())))
+    }
+}
+fn info(symbols: &[Symbol]) -> VarInfo {
+    VarInfo::new(Formal(symbols.to_vec()))
 }
 
 #[test]
 fn inline_substitutes_local_symbols_and_nested_attachments() {
     let mut nested = Builder::new();
-    let cap = nested.symbol_closure(sort());
+    let cap = nested.symbol_closure();
     let v = nested.emit1(Op::new(Pair), &[], info(&[cap]));
     let nested = Arc::new(nested.finish(vec![v]));
     let mut child = Builder::new();
-    let a = child.symbol_closure(sort());
-    let b = child.symbol_closure(sort());
-    let c = child.symbol_input(sort());
+    let a = child.symbol_closure();
+    let b = child.symbol_closure();
+    let c = child.symbol_input();
     let x = child.input(info(&[c, c]));
     let region = gnx_expr::SubExpr::new(nested, vec![]).with_symbol_captures(vec![b]);
     let result = child.emit(Op::new(Pair), &[x], [info(&[a, b, c, a])], vec![region]);
     let child = child.finish(result);
     let mut parent = Builder::new();
-    let first = parent.symbol_input(sort());
-    let second = parent.symbol_input(sort());
-    let wrong = parent.symbol_input(SymbolInfo::new("ring"));
+    let first = parent.symbol_input();
+    let second = parent.symbol_input();
     let x = parent.input(info(&[first, first]));
     let y = parent.input(info(&[first, second]));
-    parent.input(info(&[wrong]));
     assert!(parent.inline(&child, &[second], &[], &[x]).is_err());
-    assert!(parent.inline(&child, &[wrong, first], &[], &[x]).is_err());
     assert!(parent.inline(&child, &[second, first], &[], &[y]).is_err());
     let results = parent.inline(&child, &[second, first], &[], &[x]).unwrap();
     let parent = parent.finish(results);
@@ -74,8 +84,8 @@ fn inline_substitutes_local_symbols_and_nested_attachments() {
 #[test]
 fn trace_captures_a_symbol_without_a_value_capture_and_lowers_call() {
     let outer = TraceContext::enter();
-    let a = outer.context().create_symbol(sort());
-    let b = outer.context().create_symbol(sort());
+    let a = outer.context().create_symbol();
+    let b = outer.context().create_symbol();
     let x = Tracer::<Generic>::placeholder(info(&[a, b]));
     // The child's two symbols are captures solely through its output metadata.
     let child = TraceContext::enter();
@@ -90,7 +100,7 @@ fn trace_captures_a_symbol_without_a_value_capture_and_lowers_call() {
     let cap = Capture::from_context(child.context(), &[], &[v.into()]).unwrap();
     drop(child);
     assert!(cap.expr().closure().is_empty());
-    assert_eq!(cap.expr().symbol_closure(), &[(a, sort()), (b, sort())]);
+    assert_eq!(cap.expr().symbol_closure(), &[a, b]);
     let result = Invocation::invoke_scoped(
         gnx_transforms::cf::call_op(),
         vec![(Arc::new(cap.expr().clone()), vec![], vec![b, a])],
@@ -101,7 +111,7 @@ fn trace_captures_a_symbol_without_a_value_capture_and_lowers_call() {
     .unwrap();
     let cap = Capture::from_context(outer.context(), &[x.into()], &[result.into()]).unwrap();
     assert_eq!(cap.expr().inputs()[0].1, Kind::Value);
-    assert_eq!(cap.expr().symbol_inputs(), &[(a, sort()), (b, sort())]);
+    assert_eq!(cap.expr().symbol_inputs(), &[a, b]);
     let lowered = cap
         .expr()
         .lower(&InputSpec::from_args(cap.closure(), cap.inputs()))
@@ -121,20 +131,15 @@ fn symbol_inputs_require_binding_occurrences_and_declarations_are_disjoint() {
     let s = scope.create_symbol();
     let x = scope.create_var();
     let e = gnx_expr::Expr::new(vec![], vec![(x, info(&[]))], vec![], vec![x]);
-    assert!(e.with_symbols(vec![], vec![(s, sort())]).check().is_err());
+    assert!(e.with_symbols(vec![], vec![s]).check().is_err());
     let e = gnx_expr::Expr::new(vec![], vec![(x, info(&[s]))], vec![], vec![x]);
     assert!(e.check().is_err());
-    assert!(
-        e.clone()
-            .with_symbols(vec![(s, sort())], vec![(s, sort())])
-            .check()
-            .is_err()
-    );
-    e.with_symbols(vec![], vec![(s, sort())]).check().unwrap();
+    assert!(e.clone().with_symbols(vec![s], vec![s]).check().is_err());
+    e.with_symbols(vec![], vec![s]).check().unwrap();
 }
 
 #[test]
-fn jit_cache_keys_use_sorts_and_sharing_not_caller_symbol_numbers() {
+fn jit_cache_keys_use_sharing_not_caller_symbol_numbers() {
     use gnx_expr::ObjectTracer;
     use gnx_transforms::{Callable, jit};
     let traces = std::cell::Cell::new(0);
@@ -149,10 +154,9 @@ fn jit_cache_keys_use_sorts_and_sharing_not_caller_symbol_numbers() {
         )
     });
     let ctx = TraceContext::enter();
-    let a = ctx.context().create_symbol(sort());
-    let b = ctx.context().create_symbol(sort());
-    let ring = ctx.context().create_symbol(SymbolInfo::new("ring"));
-    for (slots, expected_traces) in [([a, a], 1), ([b, b], 1), ([a, b], 2), ([ring, ring], 3)] {
+    let a = ctx.context().create_symbol();
+    let b = ctx.context().create_symbol();
+    for (slots, expected_traces) in [([a, a], 1), ([b, b], 1), ([a, b], 2)] {
         let x = ObjectTracer::from(Tracer::<Generic>::placeholder(info(&slots)));
         let y = fun.invoke((x.clone(),));
         let ObjectTracer::Ref(v) = &y else { panic!() };

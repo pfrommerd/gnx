@@ -1,11 +1,11 @@
-use gnx_expr::{CellAccess, HInstr, InputId, InputSpec, Kind, ValueInfo, expr, hexpr};
+use gnx_expr::{CellAccess, HInstr, InputId, InputSpec, Kind, VarInfo, expr, hexpr};
 use gnx_transforms::ops;
 use std::sync::Arc;
 
 #[test]
 fn cell_syntax_preserves_metadata_and_lowers_without_dialect_cell_ops() {
-    let default = ValueInfo::new(0usize);
-    let cell_info = ValueInfo::new(42usize);
+    let default = VarInfo::new(0usize);
+    let cell_info = VarInfo::new(42usize);
     let body = hexpr!({
         lambda captured[:]: &cell_info; input: &default =>
         old <- captured[:];
@@ -55,7 +55,7 @@ fn cell_syntax_preserves_metadata_and_lowers_without_dialect_cell_ops() {
 
 #[test]
 fn hexpr_prints_nested_bodies_inline() {
-    let info = ValueInfo::new(0usize);
+    let info = VarInfo::new(0usize);
     let inner = Arc::new(hexpr! {
         passthrough = |value: &info| => (value)
         in |x: &info| => {
@@ -94,7 +94,7 @@ fn hexpr_prints_nested_bodies_inline() {
 
 #[test]
 fn inline_hexpr_captures_cells_and_values_across_regions() {
-    let info = ValueInfo::new(0usize);
+    let info = VarInfo::new(0usize);
     let body = hexpr!(&info; |state[:], replacement| => {
         result = cf::call [|| => {
             old = cf::call [|| => {
@@ -150,7 +150,7 @@ fn inline_hexpr_captures_cells_and_values_across_regions() {
 
 #[test]
 fn hexpr_hoists_shared_bodies_with_positional_cell_captures() {
-    let info = ValueInfo::new(0usize);
+    let info = VarInfo::new(0usize);
     let body = hexpr!(&info;
         step = |state[:]; replacement| => {
             old <- state[:];
@@ -178,7 +178,7 @@ fn hexpr_hoists_shared_bodies_with_positional_cell_captures() {
 
 #[test]
 fn closureless_headers_accept_cell_inputs_and_zero_parameters() {
-    let info = ValueInfo::new(0usize);
+    let info = VarInfo::new(0usize);
     let body = hexpr!(|cell[:]: &info, x: info| => (cell[:], x));
     assert!(body.closure().is_empty());
     assert_eq!(body.inputs().len(), 2);
@@ -193,10 +193,10 @@ fn closureless_headers_accept_cell_inputs_and_zero_parameters() {
 #[test]
 fn arrow_headers_accept_field_access_and_default_metadata_forms() {
     struct Config {
-        info: ValueInfo,
+        info: VarInfo,
     }
     let config = Config {
-        info: ValueInfo::new(7usize),
+        info: VarInfo::new(7usize),
     };
     let low = expr!({ lambda x: &config.info => in (x) });
     let high = hexpr!({ lambda x: &config.info => in (x) });
@@ -216,7 +216,7 @@ fn arrow_headers_accept_field_access_and_default_metadata_forms() {
 fn hexpr_passes_constructor_arguments_before_regions_and_operands() {
     use gnx_transforms::cf::{ScanOperation, scan_op};
 
-    let info = ValueInfo::new(0usize);
+    let info = VarInfo::new(0usize);
     let body = hexpr!(&info; |x| => {
         y = cf::scan<1, (2usize.max(3))> [|carry: &info| => (carry)] x;
         in (y)

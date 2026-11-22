@@ -8,7 +8,7 @@ use gnx_expr::lower::LoweringContext;
 use gnx_expr::{
     CallError, Capture, CellAccess, CellKey, CellTrace, DeferredApplyPlan, DeferredLocal,
     DeferredProjection, DeferredRegion, Dialect, Eqn, HEqn, HExpr, Invocation, Kind, LoweredExpr,
-    LoweringError, ObjectTracer, Op, Operation, Trace, TraceInput, ValueInfo, Var,
+    LoweringError, ObjectTracer, Op, Operation, Trace, TraceInput, Var, VarInfo,
 };
 
 use super::CONTROL_FLOW;
@@ -91,7 +91,7 @@ pub fn call_immutable<C, I>(
     body: Arc<HExpr>,
     captures: C,
     inputs: I,
-    outputs: Vec<ValueInfo>,
+    outputs: Vec<VarInfo>,
 ) -> Vec<Trace>
 where
     C: IntoIterator,
@@ -144,7 +144,7 @@ pub fn defer_call(
     captures: &[ObjectTracer],
     inputs: &[ObjectTracer],
 ) -> Vec<ObjectTracer> {
-    let symbol_captures = body.symbol_closure().iter().map(|v| v.0).collect();
+    let symbol_captures = body.symbol_closure().to_vec();
     defer_call_with_symbols(body, symbol_captures, captures, inputs)
 }
 /// Record a call binding the child’s symbol closure explicitly in caller order.
@@ -164,7 +164,7 @@ pub fn defer_call_with_symbols(
     };
     let symbols = body
         .bind_symbols(&symbol_captures, &metas(captures), &metas(inputs), |s| {
-            gnx_expr::TraceContext::current()?.symbol_info(s)
+            gnx_expr::TraceContext::current().is_some_and(|c| c.has_symbol(s))
         })
         .expect("invalid call symbol bindings");
     assert_eq!(captures.len(), body.closure().len());

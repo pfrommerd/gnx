@@ -94,13 +94,13 @@ fn pretty_expr_uses_alphabetic_names() {
     let expr = Expr::new(
         vec![],
         vec![
-            (x, gnx_expr::ValueInfo::new(0usize)),
-            (y, gnx_expr::ValueInfo::new(0usize)),
+            (x, gnx_expr::VarInfo::new(0usize)),
+            (y, gnx_expr::VarInfo::new(0usize)),
         ],
         vec![Eqn::new(
             Op::new(ADD.clone()),
             vec![x, y],
-            vec![(z, gnx_expr::ValueInfo::new(0usize))],
+            vec![(z, gnx_expr::VarInfo::new(0usize))],
         )],
         vec![z],
     );
@@ -113,8 +113,8 @@ fn pretty_expr_uses_alphabetic_names() {
 
 #[test]
 fn nested_expr_closure_names_match_outer_names() {
-    let inner = expr!(gnx_expr::ValueInfo::new(0usize); { lambda captured; a: c = test::add captured a; in (c) });
-    let outer = expr!(gnx_expr::ValueInfo::new(0usize); { lambda a; b: c = test::call[inner => (a)] b; in (c) });
+    let inner = expr!(gnx_expr::VarInfo::new(0usize); { lambda captured; a: c = test::add captured a; in (c) });
+    let outer = expr!(gnx_expr::VarInfo::new(0usize); { lambda a; b: c = test::call[inner => (a)] b; in (c) });
     outer.check().unwrap();
     assert_eq!(
         outer.to_string(),
@@ -124,7 +124,7 @@ fn nested_expr_closure_names_match_outer_names() {
 
 #[test]
 fn inline_expr_captures_values_in_first_use_order() {
-    let info = gnx_expr::ValueInfo::new(0usize);
+    let info = gnx_expr::VarInfo::new(0usize);
     let outer = expr!(|x: &info, y: &info| => {
         local: &info = test::sin x;
         result: &info = test::call [|x: &info| => {
@@ -156,7 +156,7 @@ fn inline_expr_captures_values_in_first_use_order() {
 
 #[test]
 fn expr_without_equations_can_return_repeated_values_directly() {
-    let info = gnx_expr::ValueInfo::new(0usize);
+    let info = gnx_expr::VarInfo::new(0usize);
     let body = expr!(|arg: info| => (arg, arg));
     body.check().unwrap();
     assert!(body.eqns().is_empty());
@@ -166,7 +166,7 @@ fn expr_without_equations_can_return_repeated_values_directly() {
 
 #[test]
 fn inline_expr_passes_captures_through_intermediate_regions() {
-    let outer = expr!(gnx_expr::ValueInfo::new(0usize); {
+    let outer = expr!(gnx_expr::VarInfo::new(0usize); {
         lambda bias, input =>
         result = test::call { lambda x =>
             y = test::call { lambda => z = test::add bias x; in (z) };
@@ -194,8 +194,8 @@ fn inline_expr_passes_captures_through_intermediate_regions() {
 
 #[test]
 fn nested_captures_bind_in_declaration_order() {
-    let inner = expr!(gnx_expr::ValueInfo::new(0usize); { lambda borrowed, owned;: in (owned) });
-    let outer = expr!(gnx_expr::ValueInfo::new(0usize); {
+    let inner = expr!(gnx_expr::VarInfo::new(0usize); { lambda borrowed, owned;: in (owned) });
+    let outer = expr!(gnx_expr::VarInfo::new(0usize); {
         lambda x, y:
         result = test::call[inner => (x, y)];
         in (result)
@@ -207,7 +207,7 @@ fn nested_captures_bind_in_declaration_order() {
 
 #[test]
 fn expr_macro_and_printer_preserve_operand_order() {
-    let body = expr!(gnx_expr::ValueInfo::new(0usize); {
+    let body = expr!(gnx_expr::VarInfo::new(0usize); {
         lambda x, y:
         z = test::add x y;
         in (z)
@@ -224,7 +224,7 @@ fn expr_macro_and_printer_preserve_operand_order() {
 #[test]
 fn expr_macro_passes_operation_arguments_as_rust_expressions() {
     let mut evaluated = Vec::new();
-    let body = expr!(gnx_expr::ValueInfo::new(0usize); {
+    let body = expr!(gnx_expr::VarInfo::new(0usize); {
         lambda x:
         y = test::parameterized<{ evaluated.push(1); 2 },
             { evaluated.push(2); 3 > 2 }, &["one", "two"],> x;
@@ -242,7 +242,7 @@ fn expr_macro_passes_operation_arguments_as_rust_expressions() {
 
 #[test]
 fn expr_macro_builds_printed_structure() {
-    let info = gnx_expr::ValueInfo::new(0usize);
+    let info = gnx_expr::VarInfo::new(0usize);
     let expr = expr!({
         lambda x: &info, y: &info =>
         z: info = test::add x y;
@@ -257,17 +257,17 @@ fn expr_macro_builds_printed_structure() {
 #[test]
 fn typed_expr_annotations_evaluate_rust_expressions_and_clone_only_on_borrow() {
     struct Config {
-        info: gnx_expr::ValueInfo,
+        info: gnx_expr::VarInfo,
     }
     let config = Config {
-        info: gnx_expr::ValueInfo::new(5usize),
+        info: gnx_expr::VarInfo::new(5usize),
     };
-    let owned = gnx_expr::ValueInfo::new(6usize);
+    let owned = gnx_expr::VarInfo::new(6usize);
     let owned_ptr = owned.downcast::<usize>().unwrap() as *const usize;
     let mut evaluated = 0;
     let expr = expr!({
         lambda bias: &config.info; x: owned =>
-        z: { let n = 7; evaluated += 1; gnx_expr::ValueInfo::new(n) } = test::add bias x;
+        z: { let n = 7; evaluated += 1; gnx_expr::VarInfo::new(n) } = test::add bias x;
         in (z)
     });
     assert_eq!(evaluated, 1);
@@ -281,7 +281,7 @@ fn typed_expr_annotations_evaluate_rust_expressions_and_clone_only_on_borrow() {
     ));
     assert_eq!(
         expr.value_info(&expr.outputs()[0]),
-        Some(&gnx_expr::ValueInfo::new(7i32))
+        Some(&gnx_expr::VarInfo::new(7i32))
     );
     assert_eq!(
         expr.to_string(),
@@ -299,13 +299,13 @@ fn hinted_var_names_are_disambiguated() {
     let expr = Expr::new(
         vec![],
         vec![
-            (x1, gnx_expr::ValueInfo::new(0usize)),
-            (x2, gnx_expr::ValueInfo::new(0usize)),
+            (x1, gnx_expr::VarInfo::new(0usize)),
+            (x2, gnx_expr::VarInfo::new(0usize)),
         ],
         vec![Eqn::new(
             Op::new(ADD.clone()),
             vec![(x1), (x2)],
-            vec![(x3, gnx_expr::ValueInfo::new(0usize))],
+            vec![(x3, gnx_expr::VarInfo::new(0usize))],
         )],
         vec![x3],
     );
@@ -318,9 +318,9 @@ fn hinted_var_names_are_disambiguated() {
 
 #[test]
 fn large_subexprs_can_be_deferred_with_hinted_names() {
-    let inner = expr!(gnx_expr::ValueInfo::new(0usize); { lambda b: c = test::sin b; in (c) })
+    let inner = expr!(gnx_expr::VarInfo::new(0usize); { lambda b: c = test::sin b; in (c) })
         .with_name_hint("foo");
-    let outer = expr!(gnx_expr::ValueInfo::new(0usize); { lambda b: c = test::call[inner => ()] b; in (c) });
+    let outer = expr!(gnx_expr::VarInfo::new(0usize); { lambda b: c = test::call[inner => ()] b; in (c) });
 
     assert_eq!(
         outer.pretty().max_inline_eqns(0).to_string(),
@@ -330,8 +330,8 @@ fn large_subexprs_can_be_deferred_with_hinted_names() {
 
 #[test]
 fn inline_subexpr_indentation_is_configurable() {
-    let inner = expr!(gnx_expr::ValueInfo::new(0usize); { lambda b: c = test::sin b; in (c) });
-    let outer = expr!(gnx_expr::ValueInfo::new(0usize); { lambda b: c = test::call[inner => ()] b; in (c) });
+    let inner = expr!(gnx_expr::VarInfo::new(0usize); { lambda b: c = test::sin b; in (c) });
+    let outer = expr!(gnx_expr::VarInfo::new(0usize); { lambda b: c = test::call[inner => ()] b; in (c) });
 
     assert_eq!(
         outer.pretty().indent_width(4).to_string(),
@@ -342,10 +342,10 @@ fn inline_subexpr_indentation_is_configurable() {
 #[test]
 fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
     let inner = Arc::new(
-        expr!(gnx_expr::ValueInfo::new(0usize); { lambda b: c = test::sin b; in (c) })
+        expr!(gnx_expr::VarInfo::new(0usize); { lambda b: c = test::sin b; in (c) })
             .with_name_hint("foo"),
     );
-    let outer = expr!(gnx_expr::ValueInfo::new(0usize); {
+    let outer = expr!(gnx_expr::VarInfo::new(0usize); {
         lambda b:
         c = test::call[Arc::clone(&inner) => ()] b;
         d = test::call[inner => ()] b;
@@ -360,7 +360,7 @@ fn deferred_subexprs_are_deduplicated_by_arc_pointer() {
 
 #[test]
 fn deferred_subexprs_share_a_definition_across_capture_bindings() {
-    let info = gnx_expr::ValueInfo::new(0usize);
+    let info = gnx_expr::VarInfo::new(0usize);
     let outer = expr! {
         foo = |c: &info;| => { out: &info = test::sin c; in (out) }
         in |x: &info, y: &info| => {
@@ -390,7 +390,7 @@ fn deferred_subexprs_share_a_definition_across_capture_bindings() {
 
 #[test]
 fn named_exprs_can_reference_earlier_definitions() {
-    let outer = expr!(gnx_expr::ValueInfo::new(0usize);
+    let outer = expr!(gnx_expr::VarInfo::new(0usize);
         first = || => { y = test::sin; in (y) }
         second = || => { y = test::call [@first]; in (y) }
         in || => { y = test::call [@second]; in (y) }

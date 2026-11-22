@@ -1,5 +1,5 @@
 use gnx_expr::{
-    Capture, CellKey, HInstr, Invocation, ObjectTracer, TraceContext, Tracer, TracerKey, ValueInfo,
+    Capture, CellKey, HInstr, Invocation, ObjectTracer, TraceContext, Tracer, TracerKey, VarInfo,
 };
 use gnx_common::{Array, ArrayInfo, ArrayRef, DType, Shape};
 use gnx_transforms::{Callable, TryCallable, jit};
@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 
 fn array() -> Array {
-    Tracer::<Array>::placeholder(ValueInfo::new(ArrayInfo::new(
+    Tracer::<Array>::placeholder(VarInfo::new(ArrayInfo::new(
         Shape::fixed([4]),
         DType::F32,
     )))
@@ -209,7 +209,7 @@ fn fresh_returned_cells_keep_aliases_but_are_fresh_per_call() {
 #[test]
 fn nested_jit_records_a_high_level_call_in_the_enclosing_capture() {
     let outer = TraceContext::enter();
-    let target = ArrayRef::from(gnx_expr::CellTracer::<Array>::placeholder(ValueInfo::new(
+    let target = ArrayRef::from(gnx_expr::CellTracer::<Array>::placeholder(VarInfo::new(
         ArrayInfo::new(Shape::fixed([4]), DType::F32),
     )));
     let replacement = array();
@@ -461,7 +461,7 @@ fn nested_jit_threads_local_cell_state_and_retains_update_only_calls() {
 #[test]
 fn trace_cache_distinguishes_static_fields_and_ordered_leaf_metadata() {
     fn sized(n: usize) -> Array {
-        Tracer::<Array>::placeholder(ValueInfo::new(ArrayInfo::new(
+        Tracer::<Array>::placeholder(VarInfo::new(ArrayInfo::new(
             Shape::fixed([n]),
             DType::F32,
         )))

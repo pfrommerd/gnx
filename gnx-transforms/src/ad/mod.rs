@@ -117,9 +117,9 @@ impl DiffParameters {
     pub fn check(
         &self,
         body: &BodySignature,
-        operands: Option<&[gnx_expr::ValueInfo]>,
+        operands: Option<&[gnx_expr::VarInfo]>,
         operand_count: usize,
-        outputs: &[gnx_expr::ValueInfo],
+        outputs: &[gnx_expr::VarInfo],
         forward: bool,
     ) -> Result<(), LoweringError> {
         strictly_increasing(&self.wrt, body.inputs.len())?;

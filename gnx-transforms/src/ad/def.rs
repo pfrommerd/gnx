@@ -37,7 +37,7 @@ use std::cell::{Cell, RefCell};
 use std::ops;
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Op, Operation, ValueInfo, Var};
+use gnx_expr::{Eqn, Op, Operation, VarInfo, Var};
 
 use super::jvp::{Dual, Tangent, accumulate, instantiate};
 use super::transpose::Operand;
@@ -65,7 +65,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// Metadata of the (single) result.
-    pub fn out(&self) -> &'a ValueInfo {
+    pub fn out(&self) -> &'a VarInfo {
         &self.eqn.outputs()[0].1
     }
 
@@ -84,7 +84,7 @@ impl<'a> Ctx<'a> {
             .ok_or_else(|| TransformError::invalid("unexpected operation in differentiation rule"))
     }
 
-    pub fn zeros(&'a self, info: &ValueInfo) -> Val<'a> {
+    pub fn zeros(&'a self, info: &VarInfo) -> Val<'a> {
         let var = util::zeros(&mut self.b.borrow_mut(), info);
         self.val(var)
     }
@@ -101,7 +101,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// Emit an arbitrary single-result operation.
-    pub fn emit(&'a self, op: Op, inputs: &[Val<'a>], info: ValueInfo) -> Val<'a> {
+    pub fn emit(&'a self, op: Op, inputs: &[Val<'a>], info: VarInfo) -> Val<'a> {
         let inputs: Vec<_> = inputs.iter().map(|value| value.var).collect();
         let var = self.b.borrow_mut().emit1(op, &inputs, info);
         self.val(var)
@@ -116,7 +116,7 @@ impl<'a> Ctx<'a> {
         Val { cx: self, var }
     }
 
-    fn info(&self, var: Var) -> ValueInfo {
+    fn info(&self, var: Var) -> VarInfo {
         self.b.borrow().info(var).clone()
     }
 }
@@ -145,7 +145,7 @@ impl<'a> Val<'a> {
         self.var
     }
 
-    pub fn info(self) -> ValueInfo {
+    pub fn info(self) -> VarInfo {
         self.cx.info(self.var)
     }
 
@@ -180,7 +180,7 @@ impl<'a> Val<'a> {
         self.map(|b, x| Ok(util::rev(b, x, axes)))
     }
 
-    pub fn reshape(self, info: ValueInfo) -> Self {
+    pub fn reshape(self, info: VarInfo) -> Self {
         self.cx.emit(gnx_common::ops::reshape_op(), &[self], info)
     }
 }
@@ -207,7 +207,7 @@ pub enum Arg<'a> {
     /// A value computed by the primal program.
     Residual(Val<'a>),
     /// An operand the equation is linear in; only its metadata is known.
-    Linear(&'a ValueInfo),
+    Linear(&'a VarInfo),
 }
 
 impl<'a> Arg<'a> {
@@ -225,7 +225,7 @@ impl<'a> Arg<'a> {
         }
     }
 
-    pub fn info(self) -> ValueInfo {
+    pub fn info(self) -> VarInfo {
         match self {
             Arg::Residual(value) => value.info(),
             Arg::Linear(info) => info.clone(),
@@ -266,7 +266,7 @@ fn operation(eqn: &Eqn) -> String {
     format!("{}.{}", eqn.op().dialect().name(), eqn.op().name())
 }
 
-fn single_result(eqn: &Eqn) -> TransformResult<&ValueInfo> {
+fn single_result(eqn: &Eqn) -> TransformResult<&VarInfo> {
     match eqn.outputs() {
         [(_, info)] => Ok(info),
         _ => Err(TransformError::invalid(format!(
@@ -286,7 +286,7 @@ fn operands<'s, T, const N: usize>(eqn: &Eqn, values: &'s [T]) -> TransformResul
     })
 }
 
-fn check(eqn: &Eqn, what: &str, value: Val<'_>, expected: &ValueInfo) -> TransformResult<Var> {
+fn check(eqn: &Eqn, what: &str, value: Val<'_>, expected: &VarInfo) -> TransformResult<Var> {
     let info = value.info();
     if &info != expected {
         return Err(TransformError::invalid(format!(

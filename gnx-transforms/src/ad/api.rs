@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gnx_common::Array;
 use gnx_common::ops::{eye_op, reshape_op};
-use gnx_expr::{Kind, ObjectTracer, Trace, ValueInfo};
+use gnx_expr::{Kind, ObjectTracer, Trace, VarInfo};
 use gnx_graph::util::Dag;
 use gnx_graph::{Graph, GraphEq, GraphHash, Leaf, OwnedGraph};
 
@@ -31,14 +31,14 @@ struct Prepared<I: Graph, O: Graph> {
     entry: Arc<TraceEntry<O>>,
     body: Body,
     primals: Vec<Trace>,
-    outputs: Vec<ValueInfo>,
+    outputs: Vec<VarInfo>,
 }
 
 impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
     fn new<A, E>(
         wrt: &Dag<bool>,
         input: &A,
-        trace: impl FnOnce(TracerBuilder<I>, Vec<(Kind, ValueInfo)>) -> Result<Arc<TraceEntry<O>>, E>,
+        trace: impl FnOnce(TracerBuilder<I>, Vec<(Kind, VarInfo)>) -> Result<Arc<TraceEntry<O>>, E>,
     ) -> Result<Self, ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -306,7 +306,7 @@ where
         (primals, tangents): (A, T),
         trace: impl FnOnce(
             TracerBuilder<I>,
-            Vec<(Kind, ValueInfo)>,
+            Vec<(Kind, VarInfo)>,
         ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<(F::Output, F::Output), ApplyError<E>>
     where
@@ -361,7 +361,7 @@ where
         (primals, cotangents): (A, C),
         trace: impl FnOnce(
             TracerBuilder<I>,
-            Vec<(Kind, ValueInfo)>,
+            Vec<(Kind, VarInfo)>,
         ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<(F::Output, I::Owned), ApplyError<E>>
     where
@@ -445,7 +445,7 @@ where
         primals: A,
         trace: impl FnOnce(
             TracerBuilder<I>,
-            Vec<(Kind, ValueInfo)>,
+            Vec<(Kind, VarInfo)>,
         ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<I::Owned, ApplyError<E>>
     where
@@ -484,7 +484,7 @@ where
         primals: A,
         trace: impl FnOnce(
             TracerBuilder<I>,
-            Vec<(Kind, ValueInfo)>,
+            Vec<(Kind, VarInfo)>,
         ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<(F::Output, I::Owned), ApplyError<E>>
     where
@@ -539,7 +539,7 @@ where
         primals: A,
         trace: impl FnOnce(
             TracerBuilder<I>,
-            Vec<(Kind, ValueInfo)>,
+            Vec<(Kind, VarInfo)>,
         ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<Array, ApplyError<E>>
     where
@@ -588,7 +588,7 @@ where
     }
 }
 
-fn reshape(value: &Trace, info: ValueInfo) -> Trace {
+fn reshape(value: &Trace, info: VarInfo) -> Trace {
     gnx_expr::Invocation::invoke(reshape_op(), vec![], vec![value.clone()], vec![info])
         .pop()
         .expect("one result")

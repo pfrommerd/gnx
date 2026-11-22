@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use gnx_expr::{HExpr, Kind, ObjectTracer, ValueInfo};
+use gnx_expr::{HExpr, Kind, ObjectTracer, VarInfo};
 use gnx_graph::{Graph, GraphEq, GraphHash};
 
 use crate::cache::{TraceCache, TraceEntry, TracerBuilder};
@@ -161,7 +161,7 @@ where
     pub(crate) fn traced(
         &self,
         builder: TracerBuilder<I>,
-        kinds: Vec<(Kind, ValueInfo)>,
+        kinds: Vec<(Kind, VarInfo)>,
     ) -> Arc<TraceEntry<F::Output>>
     where
         F: Jitable<I>,
@@ -177,7 +177,7 @@ where
     pub(crate) fn try_traced(
         &self,
         builder: TracerBuilder<I>,
-        kinds: Vec<(Kind, ValueInfo)>,
+        kinds: Vec<(Kind, VarInfo)>,
     ) -> Result<Arc<TraceEntry<F::Output>>, F::Error>
     where
         F: TryJitable<I>,

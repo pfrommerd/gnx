@@ -11,11 +11,11 @@ pub use gnx_math::{array, buffer, device, shard};
 ///
 /// ```
 /// use gnx::array::{ArrayInfo, DType, Shape};
-/// use gnx::expr::{ValueInfo, expr};
+/// use gnx::expr::{VarInfo, expr};
 /// use gnx::ops;
 ///
-/// let input = ValueInfo::new(ArrayInfo::new(Shape::fixed([2, 3]), DType::F32));
-/// let output = ValueInfo::new(ArrayInfo::new(Shape::fixed([3, 2]), DType::F32));
+/// let input = VarInfo::new(ArrayInfo::new(Shape::fixed([2, 3]), DType::F32));
+/// let output = VarInfo::new(ArrayInfo::new(Shape::fixed([3, 2]), DType::F32));
 /// let body = expr!(|x: input| => {
 ///     y: output = array::transpose<&[1, 0]> x;
 ///     in (y)

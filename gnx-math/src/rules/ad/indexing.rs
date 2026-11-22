@@ -144,7 +144,7 @@ fn gather_updates(
     b: &mut Builder,
     value: Var,
     index: Var,
-    metadata: &gnx_expr::ValueInfo,
+    metadata: &gnx_expr::VarInfo,
     p: &ScatterParameters,
 ) -> TransformResult<Var> {
     let d = &p.dimensions;

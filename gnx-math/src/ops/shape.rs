@@ -62,7 +62,7 @@ pub fn pad(padding: &[(i64, i64, usize)]) -> Op {
 
 use gnx_common::{ArrayInfo, DType, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
-use gnx_expr::{ValueInfo, Var};
+use gnx_expr::{Var, VarInfo};
 
 fn metadata(b: &Builder, operand: Var) -> Result<(Vec<usize>, DType)> {
     let info = b
@@ -75,8 +75,8 @@ fn metadata(b: &Builder, operand: Var) -> Result<(Vec<usize>, DType)> {
     ))
 }
 
-fn info(dimensions: &[usize], dtype: DType) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(
+fn info(dimensions: &[usize], dtype: DType) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(
         Shape::fixed(dimensions.iter().copied()),
         dtype,
     ))

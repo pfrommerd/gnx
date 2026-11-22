@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{Eqn, Expr, Op, SubExpr, ValueInfo, Var, VarScope};
+use crate::{Eqn, Expr, Op, SubExpr, Var, VarInfo, VarScope};
 
 /// Incrementally constructs one closed [`Expr`] in its own variable namespace.
 ///
@@ -11,13 +11,13 @@ use crate::{Eqn, Expr, Op, SubExpr, ValueInfo, Var, VarScope};
 /// [`Builder::region`]).
 #[derive(Default)]
 pub struct Builder {
-    symbol_closure: Vec<(crate::Symbol, crate::SymbolInfo)>,
-    symbol_inputs: Vec<(crate::Symbol, crate::SymbolInfo)>,
+    symbol_closure: Vec<crate::Symbol>,
+    symbol_inputs: Vec<crate::Symbol>,
     scope: VarScope,
-    closure: Vec<(Var, ValueInfo)>,
-    inputs: Vec<(Var, ValueInfo)>,
+    closure: Vec<(Var, VarInfo)>,
+    inputs: Vec<(Var, VarInfo)>,
     eqns: Vec<Eqn>,
-    infos: HashMap<Var, ValueInfo>,
+    infos: HashMap<Var, VarInfo>,
     name_hint: Option<Cow<'static, str>>,
 }
 
@@ -33,7 +33,7 @@ impl Builder {
             .symbol_closure
             .iter()
             .chain(&self.symbol_inputs)
-            .map(|(s, _)| s.0 + 1)
+            .map(|s| s.0 + 1)
             .max()
             .unwrap_or(0);
     }
@@ -42,7 +42,7 @@ impl Builder {
     }
 
     /// Allocate a variable bound to `info`, reusing the name hint of `like`.
-    pub(crate) fn fresh_like(&mut self, like: Option<Var>, info: ValueInfo) -> Var {
+    pub(crate) fn fresh_like(&mut self, like: Option<Var>, info: VarInfo) -> Var {
         let var = match like.and_then(|var| var.name_hint) {
             Some(hint) => self.scope.create_var_with_hint(hint),
             None => self.scope.create_var(),
@@ -52,45 +52,42 @@ impl Builder {
     }
 
     /// Allocate an equation result variable for use with [`Builder::push`].
-    pub fn fresh(&mut self, info: ValueInfo) -> Var {
+    pub fn fresh(&mut self, info: VarInfo) -> Var {
         self.fresh_like(None, info)
     }
 
-    pub fn symbol_closure(&mut self, sort: crate::SymbolInfo) -> crate::Symbol {
+    pub fn symbol_closure(&mut self) -> crate::Symbol {
         let s = self.scope.create_symbol();
-        self.symbol_closure.push((s, sort));
+        self.symbol_closure.push(s);
         s
     }
-    pub fn symbol_input(&mut self, sort: crate::SymbolInfo) -> crate::Symbol {
+    pub fn symbol_input(&mut self) -> crate::Symbol {
         let s = self.scope.create_symbol();
-        self.symbol_inputs.push((s, sort));
+        self.symbol_inputs.push(s);
         s
     }
-    fn symbol_info(&self, s: crate::Symbol) -> Option<&crate::SymbolInfo> {
-        self.symbol_closure
-            .iter()
-            .chain(&self.symbol_inputs)
-            .find_map(|(id, sort)| (*id == s).then_some(sort))
+    fn declares_symbol(&self, s: crate::Symbol) -> bool {
+        self.symbol_closure.contains(&s) || self.symbol_inputs.contains(&s)
     }
-    pub fn closure(&mut self, info: ValueInfo) -> Var {
+    pub fn closure(&mut self, info: VarInfo) -> Var {
         let var = self.fresh(info.clone());
         self.closure.push((var, info));
         var
     }
 
-    pub fn input(&mut self, info: ValueInfo) -> Var {
+    pub fn input(&mut self, info: VarInfo) -> Var {
         let var = self.fresh(info.clone());
         self.inputs.push((var, info));
         var
     }
 
-    pub(crate) fn closure_like(&mut self, like: Var, info: ValueInfo) -> Var {
+    pub(crate) fn closure_like(&mut self, like: Var, info: VarInfo) -> Var {
         let var = self.fresh_like(Some(like), info.clone());
         self.closure.push((var, info));
         var
     }
 
-    pub(crate) fn input_like(&mut self, like: Var, info: ValueInfo) -> Var {
+    pub(crate) fn input_like(&mut self, like: Var, info: VarInfo) -> Var {
         let var = self.fresh_like(Some(like), info.clone());
         self.inputs.push((var, info));
         var
@@ -100,13 +97,13 @@ impl Builder {
     ///
     /// # Panics
     /// If `var` was not allocated by this builder.
-    pub fn info(&self, var: Var) -> &ValueInfo {
+    pub fn info(&self, var: Var) -> &VarInfo {
         self.infos
             .get(&var)
             .unwrap_or_else(|| panic!("variable {var:?} is not defined in this builder"))
     }
 
-    pub fn infos(&self, vars: &[Var]) -> Vec<ValueInfo> {
+    pub fn infos(&self, vars: &[Var]) -> Vec<VarInfo> {
         vars.iter().map(|&var| self.info(var).clone()).collect()
     }
 
@@ -123,7 +120,7 @@ impl Builder {
         &mut self,
         op: Op,
         inputs: &[Var],
-        outputs: impl IntoIterator<Item = ValueInfo>,
+        outputs: impl IntoIterator<Item = VarInfo>,
         subexprs: Vec<SubExpr>,
     ) -> Vec<Var> {
         let outputs = outputs
@@ -139,7 +136,7 @@ impl Builder {
     }
 
     /// Append a single-result equation without regions.
-    pub fn emit1(&mut self, op: Op, inputs: &[Var], output: ValueInfo) -> Var {
+    pub fn emit1(&mut self, op: Op, inputs: &[Var], output: VarInfo) -> Var {
         self.emit(op, inputs, [output], vec![])[0]
     }
 
@@ -166,7 +163,7 @@ impl Builder {
         captures: &[Var],
         inputs: &[Var],
     ) -> Result<Vec<Var>, crate::LoweringError> {
-        let symbols = crate::symbol::substitution(
+        let symbols = crate::symbol_substitution(
             &expr.symbol_closure,
             symbol_captures,
             &expr.symbol_inputs,
@@ -175,7 +172,7 @@ impl Builder {
                 .chain(&expr.inputs)
                 .map(|v| &v.1)
                 .zip(captures.iter().chain(inputs).map(|v| self.info(*v))),
-            |s| self.symbol_info(s).cloned(),
+            |s| self.declares_symbol(s),
         )?;
         if captures.len() != expr.closure.len() || inputs.len() != expr.inputs.len() {
             return Err(crate::LoweringError::CallArity);
@@ -223,30 +220,22 @@ impl Builder {
     pub fn region<E>(
         &self,
         captures: &[Var],
-        inputs: &[ValueInfo],
+        inputs: &[VarInfo],
         build: impl FnOnce(&mut Builder, &[Var], &[Var]) -> Result<Vec<Var>, E>,
     ) -> Result<SubExpr, E> {
         let mut child = Builder::new();
         let mut symbol_captures = Vec::new();
         let mut bound = std::collections::BTreeSet::new();
-        for &s in inputs.iter().flat_map(ValueInfo::symbols) {
+        for &s in inputs.iter().flat_map(VarInfo::symbols) {
             if bound.insert(s) {
-                child.symbol_inputs.push((
-                    s,
-                    self.symbol_info(s)
-                        .expect("undeclared input symbol")
-                        .clone(),
-                ));
+                assert!(self.declares_symbol(s), "undeclared input symbol");
+                child.symbol_inputs.push(s);
             }
         }
         for &s in captures.iter().flat_map(|v| self.info(*v).symbols()) {
             if bound.insert(s) {
-                child.symbol_closure.push((
-                    s,
-                    self.symbol_info(s)
-                        .expect("undeclared capture symbol")
-                        .clone(),
-                ));
+                assert!(self.declares_symbol(s), "undeclared capture symbol");
+                child.symbol_closure.push(s);
                 symbol_captures.push(s);
             }
         }
@@ -267,19 +256,23 @@ impl Builder {
             expr.symbol_inputs
                 .iter()
                 .chain(&expr.symbol_closure)
-                .map(|v| v.0),
+                .copied(),
         );
-        for &s in expr.eqns.iter().flat_map(|e| {
-            e.outputs
-                .iter()
-                .flat_map(|v| v.1.symbols())
-                .chain(e.subexprs.iter().flat_map(|r| &r.symbol_captures))
-        }) {
+        let free: Vec<_> = expr
+            .eqns
+            .iter()
+            .flat_map(|e| {
+                e.outputs
+                    .iter()
+                    .flat_map(|v| v.1.symbols())
+                    .chain(e.subexprs.iter().flat_map(|r| &r.symbol_captures))
+            })
+            .copied()
+            .collect();
+        for s in free {
             if bound.insert(s) {
-                expr.symbol_closure.push((
-                    s,
-                    self.symbol_info(s).expect("undeclared free symbol").clone(),
-                ));
+                assert!(self.declares_symbol(s), "undeclared free symbol");
+                expr.symbol_closure.push(s);
                 symbol_captures.push(s);
             }
         }

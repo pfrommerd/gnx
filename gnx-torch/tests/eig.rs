@@ -1,12 +1,12 @@
 mod support;
-use gnx_expr::{ValueInfo, pass::Builder};
+use gnx_expr::{VarInfo, pass::Builder};
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::eig};
 use gnx_torch::TorchDevice;
 use tch::{CModule, Kind, Tensor};
 
 fn compiled(shape: &[usize], dtype: DType, left: bool, right: bool) -> Vec<CModule> {
     let ty =
-        |dims: &[usize], k| ValueInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), k));
+        |dims: &[usize], k| VarInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), k));
     let complex = match dtype {
         DType::F32 | DType::C64 => DType::C64,
         _ => DType::C128,

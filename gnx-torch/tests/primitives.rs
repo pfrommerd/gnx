@@ -1,4 +1,4 @@
-use gnx_expr::{Op, ValueInfo, pass::Builder};
+use gnx_expr::{Op, VarInfo, pass::Builder};
 use gnx_math::{
     ArrayInfo, DType, Shape,
     ops::{bitwise, contraction::*, elementwise as ew, fft::*, indexing, shape, special},
@@ -6,10 +6,10 @@ use gnx_math::{
 use gnx_torch::TorchDevice;
 use tch::{Kind, Tensor};
 
-fn ty(k: DType, dims: &[usize]) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), k))
+fn ty(k: DType, dims: &[usize]) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), k))
 }
-fn program(op: Op, args: &[ValueInfo], out: ValueInfo) -> gnx_torch::TorchExecutable {
+fn program(op: Op, args: &[VarInfo], out: VarInfo) -> gnx_torch::TorchExecutable {
     let mut b = Builder::new();
     let args: Vec<_> = args.iter().map(|t| b.input(t.clone())).collect();
     let out = b.emit1(op, &args, out);

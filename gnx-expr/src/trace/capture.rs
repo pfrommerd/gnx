@@ -6,7 +6,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::eval::EVAL_DAG;
-use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, ValueInfo, Var, VarScope};
+use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, Var, VarInfo, VarScope};
 
 use super::{
     CellKey, CellTrace, ContextID, Generic, Invocation, ObjectTracer, ObjectTracerRef, Trace,
@@ -86,11 +86,10 @@ impl Capture {
         let mut seen = BTreeSet::new();
         let mut declare = |s: crate::Symbol, decls: &mut Vec<_>| -> Result<(), CaptureError> {
             if seen.insert(s) {
-                decls.push((
-                    s,
-                    ctx.and_then(|c| c.symbol_info(s))
-                        .ok_or(CaptureError::UndefinedSymbol(s))?,
-                ));
+                if !ctx.is_some_and(|c| c.has_symbol(s)) {
+                    return Err(CaptureError::UndefinedSymbol(s));
+                }
+                decls.push(s);
             }
             Ok(())
         };
@@ -106,7 +105,7 @@ impl Capture {
         e.symbol_closure = free;
         if traced
             && let Some(ctx) = ctx
-            && let Some((s, _)) = e.symbol_closure.iter().find(|(s, _)| ctx.owns_symbol(*s))
+            && let Some(s) = e.symbol_closure.iter().find(|s| ctx.owns_symbol(**s))
         {
             return Err(CaptureError::UnboundSymbolInput(*s));
         }
@@ -235,7 +234,7 @@ impl From<&Trace> for BindingKey {
     }
 }
 
-fn binding(object: ObjectTracerRef<'_>) -> (BindingKey, Kind, ValueInfo) {
+fn binding(object: ObjectTracerRef<'_>) -> (BindingKey, Kind, VarInfo) {
     match object {
         ObjectTracerRef::Ref(value) => (value.into(), Kind::Value, value.info().clone()),
         ObjectTracerRef::Cell(cell) => (
@@ -289,7 +288,7 @@ impl Slice {
     }
 }
 
-type BoundParam = ((Var, Kind, ValueInfo), ObjectTracer);
+type BoundParam = ((Var, Kind, VarInfo), ObjectTracer);
 
 struct Emitter {
     target: ContextID,
@@ -484,7 +483,7 @@ impl Emitter {
             .collect()
     }
 
-    fn define_results(&mut self, inv: &Arc<Invocation>) -> Vec<(Var, Kind, ValueInfo)> {
+    fn define_results(&mut self, inv: &Arc<Invocation>) -> Vec<(Var, Kind, VarInfo)> {
         inv.outputs()
             .iter()
             .enumerate()

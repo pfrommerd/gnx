@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use gnx_expr::{Kind, ObjectTracer, ValueInfo};
+use gnx_expr::{Kind, ObjectTracer, VarInfo};
 use gnx_graph::util::Dag;
 use gnx_graph::{Graph, GraphEq, GraphHash};
 
@@ -77,7 +77,7 @@ where
         input: A,
         trace: impl FnOnce(
             TracerBuilder<I>,
-            Vec<(Kind, ValueInfo)>,
+            Vec<(Kind, VarInfo)>,
         ) -> Result<Arc<TraceEntry<F::Output>>, E>,
     ) -> Result<F::Output, ApplyError<E>>
     where

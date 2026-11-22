@@ -15,7 +15,7 @@
 //! regions implement [`BatchRule`](super::BatchRule) directly.
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Op, ValueInfo};
+use gnx_expr::{Eqn, Op, VarInfo};
 
 use super::batch::{Batched, materialize};
 use crate::util::with_axis;
@@ -35,7 +35,7 @@ pub fn leading(indices: &[usize]) -> Vec<usize> {
     std::iter::once(0).chain(shifted(indices)).collect()
 }
 
-fn single_result(eqn: &Eqn) -> TransformResult<&ValueInfo> {
+fn single_result(eqn: &Eqn) -> TransformResult<&VarInfo> {
     match eqn.outputs() {
         [(_, info)] => Ok(info),
         _ => Err(TransformError::invalid(

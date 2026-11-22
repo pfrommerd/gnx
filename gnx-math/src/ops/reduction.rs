@@ -5,7 +5,7 @@ use std::sync::Arc;
 use gnx_common::ops::reduction::{array, check_region, emit};
 use gnx_common::{ArrayInfo, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
-use gnx_expr::{Expr, ValueInfo, Var};
+use gnx_expr::{Expr, Var, VarInfo};
 
 use super::{Dialect, Eqn, Op, Operation, Result, fmt, signature};
 
@@ -129,13 +129,13 @@ fn arg_extreme(
     if shape.get(axis).is_none_or(|&dim| dim == 0) {
         return Err(signature("arg reduction requires a nonempty axis"));
     }
-    let index_type = ValueInfo::new(ArrayInfo::new(Shape::fixed([]), index_dtype));
-    let value_type = ValueInfo::new(ArrayInfo::new(Shape::fixed([]), x.dtype()));
-    let flag = ValueInfo::new(ArrayInfo::new(Shape::fixed([]), DType::Bool));
+    let index_type = VarInfo::new(ArrayInfo::new(Shape::fixed([]), index_dtype));
+    let value_type = VarInfo::new(ArrayInfo::new(Shape::fixed([]), x.dtype()));
+    let flag = VarInfo::new(ArrayInfo::new(Shape::fixed([]), DType::Bool));
     let index = b.emit1(
         iota(axis),
         &[],
-        ValueInfo::new(ArrayInfo::new(x.shape().clone(), index_dtype)),
+        VarInfo::new(ArrayInfo::new(x.shape().clone(), index_dtype)),
     );
     let value_identity = b.emit1(scalar_bound(max), &[], value_type.clone());
     let index_identity = b.emit1(scalar_bound(false), &[], index_type.clone());

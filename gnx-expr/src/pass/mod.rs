@@ -17,7 +17,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::sync::LazyLock;
 
-use crate::{Expr, ValueInfo};
+use crate::{Expr, VarInfo};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -182,16 +182,16 @@ fn dump_after(pass: &str) -> bool {
 
 #[derive(PartialEq, Eq)]
 struct Signature {
-    symbol_inputs: Vec<(crate::Symbol, crate::SymbolInfo)>,
-    symbol_closure: Vec<(crate::Symbol, crate::SymbolInfo)>,
-    closure: Vec<ValueInfo>,
-    inputs: Vec<ValueInfo>,
-    outputs: Vec<Option<ValueInfo>>,
+    symbol_inputs: Vec<crate::Symbol>,
+    symbol_closure: Vec<crate::Symbol>,
+    closure: Vec<VarInfo>,
+    inputs: Vec<VarInfo>,
+    outputs: Vec<Option<VarInfo>>,
 }
 
 impl Signature {
     fn of(expr: &Expr) -> Self {
-        let params = |params: &[(crate::Var, ValueInfo)]| {
+        let params = |params: &[(crate::Var, VarInfo)]| {
             params.iter().map(|(_, info)| info.clone()).collect()
         };
         Self {

@@ -1,6 +1,6 @@
 use super::{invalid, unsupported};
 use gnx_common::ops::reduction::ReduceAddOperation;
-use gnx_expr::{Eqn, Expr, ValueInfo};
+use gnx_expr::{Eqn, Expr, VarInfo};
 use gnx_math::{
     ArrayInfo, DType, Dim,
     ops::{
@@ -50,7 +50,7 @@ macro_rules! register_torch_lowering {
     };
 }
 
-fn metadata(info: &ValueInfo) -> io::Result<&ArrayInfo> {
+fn metadata(info: &VarInfo) -> io::Result<&ArrayInfo> {
     info.downcast()
         .map_err(|_| unsupported("Torch requires array values"))
 }

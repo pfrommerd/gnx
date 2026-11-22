@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Expr, ValueInfo, Var};
+use gnx_expr::{Eqn, Expr, Var, VarInfo};
 
 use super::DiffParameters;
 use super::jvp::{Dual, Tangent, accumulate, instantiate, jvp_expr};
@@ -15,7 +15,7 @@ use crate::{TransformError, TransformResult};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operand {
     Residual(Var),
-    Linear(ValueInfo),
+    Linear(VarInfo),
 }
 
 impl Operand {

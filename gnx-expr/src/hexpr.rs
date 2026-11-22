@@ -4,12 +4,12 @@
 //! effects on those cells, including effects from nested regions. Lowering requires
 //! explicit alias bindings and produces an immutable [`crate::Expr`].
 
-use crate::{Symbol, SymbolInfo};
+use crate::Symbol;
 use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::{InputSpec, Kind, LoweredExpr, LoweringError, Op, ValueInfo, Var};
+use crate::{InputSpec, Kind, LoweredExpr, LoweringError, Op, Var, VarInfo};
 
 #[derive(Clone, Debug)]
 pub struct HSubExpr {
@@ -50,7 +50,7 @@ impl HSubExpr {
 
     fn bound_cell_access(
         &self,
-        parameters: &[(Var, Kind, ValueInfo)],
+        parameters: &[(Var, Kind, VarInfo)],
         operands: &[Var],
         cell: Var,
     ) -> CellAccess {
@@ -69,14 +69,14 @@ pub struct HEqn {
     op: Op,
     subexprs: Vec<HSubExpr>,
     inputs: Vec<Var>,
-    outputs: Vec<(Var, Kind, ValueInfo)>,
+    outputs: Vec<(Var, Kind, VarInfo)>,
 }
 impl HEqn {
     pub fn new(
         op: Op,
         subexprs: Vec<HSubExpr>,
         inputs: Vec<Var>,
-        outputs: Vec<(Var, Kind, ValueInfo)>,
+        outputs: Vec<(Var, Kind, VarInfo)>,
     ) -> Self {
         Self {
             op,
@@ -94,7 +94,7 @@ impl HEqn {
     pub fn inputs(&self) -> &[Var] {
         &self.inputs
     }
-    pub fn outputs(&self) -> &[(Var, Kind, ValueInfo)] {
+    pub fn outputs(&self) -> &[(Var, Kind, VarInfo)] {
         &self.outputs
     }
 
@@ -135,13 +135,13 @@ pub enum HInstr {
     CreateCell {
         cell: Var,
         initial: Var,
-        info: ValueInfo,
+        info: VarInfo,
     },
     /// Defines `output` with the contents metadata of `cell`.
     ReadCell {
         cell: Var,
         output: Var,
-        info: ValueInfo,
+        info: VarInfo,
     },
     WriteCell {
         cell: Var,
@@ -161,9 +161,9 @@ impl HInstr {
 ///
 /// ```
 /// use gnx_expr::{Capture, Generic, InputId, InputSpec, Kind,
-///                CellTrace, TraceContext, ObjectTracer, Tracer, ValueInfo};
+///                CellTrace, TraceContext, ObjectTracer, Tracer, VarInfo};
 /// let guard = TraceContext::enter();
-/// let info = ValueInfo::new(0usize);
+/// let info = VarInfo::new(0usize);
 /// let x = Tracer::<Generic>::placeholder(info.clone());
 /// let cell = CellTrace::placeholder(info.clone());
 /// cell.set(x.trace_ref().clone());
@@ -185,10 +185,10 @@ impl HInstr {
 /// ```
 #[derive(Clone, Debug)]
 pub struct HExpr {
-    pub(crate) symbol_closure: Vec<(Symbol, SymbolInfo)>,
-    pub(crate) symbol_inputs: Vec<(Symbol, SymbolInfo)>,
-    pub(crate) closure: Vec<(Var, Kind, ValueInfo)>,
-    pub(crate) inputs: Vec<(Var, Kind, ValueInfo)>,
+    pub(crate) symbol_closure: Vec<Symbol>,
+    pub(crate) symbol_inputs: Vec<Symbol>,
+    pub(crate) closure: Vec<(Var, Kind, VarInfo)>,
+    pub(crate) inputs: Vec<(Var, Kind, VarInfo)>,
     pub(crate) instructions: Vec<HInstr>,
     pub(crate) outputs: Vec<Var>,
     pub(crate) name_hint: Option<Cow<'static, str>>,
@@ -197,8 +197,8 @@ impl HExpr {
     /// Build a region in its own variable and symbol namespace. Attach any
     /// symbol declarations with `with_symbols` before checking or lowering.
     pub fn new(
-        closure: Vec<(Var, Kind, ValueInfo)>,
-        inputs: Vec<(Var, Kind, ValueInfo)>,
+        closure: Vec<(Var, Kind, VarInfo)>,
+        inputs: Vec<(Var, Kind, VarInfo)>,
         instructions: Vec<HInstr>,
         outputs: Vec<Var>,
     ) -> Self {
@@ -214,40 +214,34 @@ impl HExpr {
     }
 
     /// Declarations use IDs local to this region, not IDs in a caller.
-    pub fn with_symbols(
-        mut self,
-        closure: Vec<(Symbol, SymbolInfo)>,
-        inputs: Vec<(Symbol, SymbolInfo)>,
-    ) -> Self {
+    pub fn with_symbols(mut self, closure: Vec<Symbol>, inputs: Vec<Symbol>) -> Self {
         self.symbol_closure = closure;
         self.symbol_inputs = inputs;
         self
     }
-    pub fn symbol_closure(&self) -> &[(Symbol, SymbolInfo)] {
+    pub fn symbol_closure(&self) -> &[Symbol] {
         &self.symbol_closure
     }
-    pub fn symbol_inputs(&self) -> &[(Symbol, SymbolInfo)] {
+    pub fn symbol_inputs(&self) -> &[Symbol] {
         &self.symbol_inputs
     }
-    pub fn symbol_info(&self, s: Symbol) -> Option<&SymbolInfo> {
-        self.symbol_closure
-            .iter()
-            .chain(&self.symbol_inputs)
-            .find_map(|(id, sort)| (*id == s).then_some(sort))
+    /// Whether this region declares `s` as a captured or input symbol.
+    pub fn declares_symbol(&self, s: Symbol) -> bool {
+        self.symbol_closure.contains(&s) || self.symbol_inputs.contains(&s)
     }
     /// Match symbolic slots across the whole boundary. Input symbols are
     /// inferred from argument metadata, never passed as separate operands.
     pub fn bind_symbols<'a>(
         &'a self,
         symbol_captures: &[Symbol],
-        actual_closure: &'a [ValueInfo],
-        actual_inputs: &'a [ValueInfo],
-        lookup: impl Fn(Symbol) -> Option<SymbolInfo>,
+        actual_closure: &'a [VarInfo],
+        actual_inputs: &'a [VarInfo],
+        defined: impl Fn(Symbol) -> bool,
     ) -> Result<std::collections::BTreeMap<Symbol, Symbol>, LoweringError> {
         if self.closure.len() != actual_closure.len() || self.inputs.len() != actual_inputs.len() {
             return Err(LoweringError::CallArity);
         }
-        crate::symbol::substitution(
+        crate::symbol_substitution(
             &self.symbol_closure,
             symbol_captures,
             &self.symbol_inputs,
@@ -256,7 +250,7 @@ impl HExpr {
                 .map(|v| &v.2)
                 .zip(actual_inputs)
                 .chain(self.closure.iter().map(|v| &v.2).zip(actual_closure)),
-            lookup,
+            defined,
         )
     }
 
@@ -291,7 +285,7 @@ impl HExpr {
         }
         let mut seen = std::collections::BTreeSet::new();
         for list in [&mut body.symbol_closure, &mut body.symbol_inputs] {
-            list.retain_mut(|(s, _)| {
+            list.retain_mut(|s| {
                 *s = remap(*s);
                 seen.insert(*s)
             });
@@ -319,7 +313,7 @@ impl HExpr {
             .symbol_inputs
             .iter()
             .cloned()
-            .partition(|(s, _)| !inputs.iter().any(|v| v.2.symbols().contains(s)));
+            .partition(|s| !inputs.iter().any(|v| v.2.symbols().contains(s)));
         HExpr {
             symbol_closure: self.symbol_closure.iter().cloned().chain(moved).collect(),
             symbol_inputs: kept,
@@ -344,10 +338,10 @@ impl HExpr {
         crate::util::pretty::PrettyHExpr::new(self)
     }
 
-    pub fn closure(&self) -> &[(Var, Kind, ValueInfo)] {
+    pub fn closure(&self) -> &[(Var, Kind, VarInfo)] {
         &self.closure
     }
-    pub fn inputs(&self) -> &[(Var, Kind, ValueInfo)] {
+    pub fn inputs(&self) -> &[(Var, Kind, VarInfo)] {
         &self.inputs
     }
     pub fn instructions(&self) -> &[HInstr] {
@@ -368,7 +362,7 @@ impl HExpr {
                 };
                 let eqn = i.as_apply();
                 cell.into_iter()
-                    .flat_map(ValueInfo::symbols)
+                    .flat_map(VarInfo::symbols)
                     .chain(
                         eqn.into_iter()
                             .flat_map(HEqn::outputs)
@@ -383,7 +377,7 @@ impl HExpr {
     }
     /// Verify declarations and lexical symbol bindings throughout the tree.
     pub fn check_symbols(&self) -> Result<(), LoweringError> {
-        crate::symbol::check_scope(
+        crate::check_symbol_scope(
             &self.symbol_closure,
             &self.symbol_inputs,
             self.inputs.iter().flat_map(|v| v.2.symbols()),
@@ -395,8 +389,8 @@ impl HExpr {
             .filter_map(HInstr::as_apply)
             .flat_map(HEqn::subexprs)
         {
-            crate::symbol::check_captures(sub.expr.symbol_closure(), &sub.symbol_captures, |s| {
-                self.symbol_info(s)
+            crate::check_symbol_captures(sub.expr.symbol_closure(), &sub.symbol_captures, |s| {
+                self.declares_symbol(s)
             })?;
             sub.expr.check_symbols()?;
         }
@@ -406,7 +400,7 @@ impl HExpr {
     pub fn kind(&self, var: &Var) -> Option<Kind> {
         self.definition(var).map(|(kind, _)| kind)
     }
-    pub fn definition(&self, var: &Var) -> Option<(Kind, &ValueInfo)> {
+    pub fn definition(&self, var: &Var) -> Option<(Kind, &VarInfo)> {
         self.closure
             .iter()
             .chain(&self.inputs)

@@ -1,13 +1,13 @@
 use gnx_common::{ArrayInfo, DType, Shape};
 use gnx_expr::{
     Capture, CellTrace, HExpr, InputSpec, Kind, LoweringError, ObjectTracer, Trace, TraceContext,
-    ValueInfo, hexpr,
+    VarInfo, hexpr,
 };
 use gnx_transforms::cf::{ScanParameters, cond, scan, scan_op, switch, while_loop};
 use gnx_transforms::ops;
 
-fn info(shape: &[usize], dtype: DType) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed(shape.iter().copied()), dtype))
+fn info(shape: &[usize], dtype: DType) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed(shape.iter().copied()), dtype))
 }
 
 fn region(
@@ -28,7 +28,7 @@ fn region(
 
 fn value_only_spec(expr: &HExpr) -> InputSpec {
     use gnx_expr::InputId;
-    let spec = |params: &[(gnx_expr::Var, Kind, ValueInfo)], id: fn(usize) -> InputId| {
+    let spec = |params: &[(gnx_expr::Var, Kind, VarInfo)], id: fn(usize) -> InputId| {
         params
             .iter()
             .enumerate()
@@ -263,7 +263,7 @@ impl std::fmt::Display for TestBool {
     }
 }
 impl gnx_expr::ConcreteValue for TestBool {
-    fn to_info(&self) -> ValueInfo {
+    fn to_info(&self) -> VarInfo {
         info(&[], DType::Bool)
     }
 }

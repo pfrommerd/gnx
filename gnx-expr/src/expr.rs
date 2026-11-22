@@ -4,10 +4,10 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
+use crate::Symbol;
 use crate::lower::LoweringError;
 use crate::util::pretty;
-use crate::{Op, ValueInfo, Var};
-use crate::{Symbol, SymbolInfo};
+use crate::{Op, Var, VarInfo};
 use std::fmt;
 use std::sync::Arc;
 
@@ -15,18 +15,18 @@ use std::sync::Arc;
 pub struct Eqn {
     pub(crate) op: Op,
     pub(crate) inputs: Vec<Var>,
-    pub(crate) outputs: Vec<(Var, ValueInfo)>,
+    pub(crate) outputs: Vec<(Var, VarInfo)>,
     pub(crate) subexprs: Vec<SubExpr>,
 }
 impl Eqn {
-    pub fn new(op: Op, inputs: Vec<Var>, outputs: Vec<(Var, ValueInfo)>) -> Self {
+    pub fn new(op: Op, inputs: Vec<Var>, outputs: Vec<(Var, VarInfo)>) -> Self {
         Self::new_with_subexprs(op, vec![], inputs, outputs)
     }
     pub fn new_with_subexprs(
         op: Op,
         subexprs: Vec<SubExpr>,
         inputs: Vec<Var>,
-        outputs: Vec<(Var, ValueInfo)>,
+        outputs: Vec<(Var, VarInfo)>,
     ) -> Self {
         Self {
             op,
@@ -41,7 +41,7 @@ impl Eqn {
     pub fn inputs(&self) -> &[Var] {
         &self.inputs
     }
-    pub fn outputs(&self) -> &[(Var, ValueInfo)] {
+    pub fn outputs(&self) -> &[(Var, VarInfo)] {
         &self.outputs
     }
     pub fn subexprs(&self) -> &[SubExpr] {
@@ -82,40 +82,34 @@ impl SubExpr {
 /// variable. A value can be used or returned any number of times.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Expr {
-    pub(crate) symbol_closure: Vec<(Symbol, SymbolInfo)>,
-    pub(crate) symbol_inputs: Vec<(Symbol, SymbolInfo)>,
-    pub(crate) closure: Vec<(Var, ValueInfo)>,
-    pub(crate) inputs: Vec<(Var, ValueInfo)>,
+    pub(crate) symbol_closure: Vec<Symbol>,
+    pub(crate) symbol_inputs: Vec<Symbol>,
+    pub(crate) closure: Vec<(Var, VarInfo)>,
+    pub(crate) inputs: Vec<(Var, VarInfo)>,
     pub(crate) eqns: Vec<Eqn>,
     pub(crate) outputs: Vec<Var>,
     pub(crate) name_hint: Option<Cow<'static, str>>,
 }
 impl Expr {
     /// Declarations use IDs local to this region, not IDs in a caller.
-    pub fn with_symbols(
-        mut self,
-        closure: Vec<(Symbol, SymbolInfo)>,
-        inputs: Vec<(Symbol, SymbolInfo)>,
-    ) -> Self {
+    pub fn with_symbols(mut self, closure: Vec<Symbol>, inputs: Vec<Symbol>) -> Self {
         self.symbol_closure = closure;
         self.symbol_inputs = inputs;
         self
     }
-    pub fn symbol_closure(&self) -> &[(Symbol, SymbolInfo)] {
+    pub fn symbol_closure(&self) -> &[Symbol] {
         &self.symbol_closure
     }
-    pub fn symbol_inputs(&self) -> &[(Symbol, SymbolInfo)] {
+    pub fn symbol_inputs(&self) -> &[Symbol] {
         &self.symbol_inputs
     }
-    pub fn symbol_info(&self, s: Symbol) -> Option<&SymbolInfo> {
-        self.symbol_closure
-            .iter()
-            .chain(&self.symbol_inputs)
-            .find_map(|(id, sort)| (*id == s).then_some(sort))
+    /// Whether this region declares `s` as a captured or input symbol.
+    pub fn declares_symbol(&self, s: Symbol) -> bool {
+        self.symbol_closure.contains(&s) || self.symbol_inputs.contains(&s)
     }
     pub fn new(
-        closure: Vec<(Var, ValueInfo)>,
-        inputs: Vec<(Var, ValueInfo)>,
+        closure: Vec<(Var, VarInfo)>,
+        inputs: Vec<(Var, VarInfo)>,
         eqns: Vec<Eqn>,
         outputs: Vec<Var>,
     ) -> Self {
@@ -130,8 +124,8 @@ impl Expr {
         }
     }
     pub fn new_with_hint(
-        closure: Vec<(Var, ValueInfo)>,
-        inputs: Vec<(Var, ValueInfo)>,
+        closure: Vec<(Var, VarInfo)>,
+        inputs: Vec<(Var, VarInfo)>,
         eqns: Vec<Eqn>,
         outputs: Vec<Var>,
         name_hint: impl Into<Cow<'static, str>>,
@@ -149,14 +143,14 @@ impl Expr {
     pub fn pretty(&self) -> pretty::PrettyExpr<'_> {
         pretty::PrettyExpr::new(self)
     }
-    pub fn closure(&self) -> &[(Var, ValueInfo)] {
+    pub fn closure(&self) -> &[(Var, VarInfo)] {
         &self.closure
     }
-    pub fn inputs(&self) -> &[(Var, ValueInfo)] {
+    pub fn inputs(&self) -> &[(Var, VarInfo)] {
         &self.inputs
     }
     /// Find an immutable value's metadata at its definition site.
-    pub fn value_info(&self, var: &Var) -> Option<&ValueInfo> {
+    pub fn value_info(&self, var: &Var) -> Option<&VarInfo> {
         self.closure
             .iter()
             .chain(&self.inputs)
@@ -179,7 +173,7 @@ impl Expr {
 
     /// Verify definition order, nested capture bindings, and result sources.
     pub fn check(&self) -> Result<(), LoweringError> {
-        crate::symbol::check_scope(
+        crate::check_symbol_scope(
             &self.symbol_closure,
             &self.symbol_inputs,
             self.inputs.iter().flat_map(|v| v.1.symbols()),
@@ -211,10 +205,10 @@ impl Expr {
                         actual: sub.captures.len(),
                     });
                 }
-                crate::symbol::check_captures(
+                crate::check_symbol_captures(
                     sub.expr.symbol_closure(),
                     &sub.symbol_captures,
-                    |s| self.symbol_info(s),
+                    |s| self.declares_symbol(s),
                 )?;
                 sub.expr.check()?;
             }

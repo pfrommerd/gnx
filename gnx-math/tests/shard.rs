@@ -1,4 +1,4 @@
-use gnx_expr::{Eqn, Expr, ValueInfo, VarScope};
+use gnx_expr::{Eqn, Expr, VarInfo, VarScope};
 use gnx_math::{
     ArrayInfo, DType, Shape,
     shard::{Sharding, constraint_op, replicate_op},
@@ -6,7 +6,7 @@ use gnx_math::{
 
 #[test]
 fn sharding_is_a_checked_metadata_preserving_ssa_annotation() {
-    let info = ValueInfo::new(ArrayInfo::new(Shape::fixed([8, 4]), DType::F32));
+    let info = VarInfo::new(ArrayInfo::new(Shape::fixed([8, 4]), DType::F32));
     let mut scope = VarScope::new();
     let input = scope.create_var();
     let output = scope.create_var();

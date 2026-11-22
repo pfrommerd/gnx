@@ -1,5 +1,5 @@
 mod support;
-use gnx_expr::{ValueInfo, pass::Builder};
+use gnx_expr::{VarInfo, pass::Builder};
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::tridiagonal};
 use gnx_torch::TorchDevice;
 use tch::{CModule, Kind, Tensor};
@@ -14,7 +14,7 @@ fn compile(dims: &[usize], dtype: DType, lower: bool) -> Vec<CModule> {
     let mut off = vector.to_vec();
     *off.last_mut().unwrap() = dims[dims.len() - 1].saturating_sub(1);
     let ty =
-        |dims: &[usize], k| ValueInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), k));
+        |dims: &[usize], k| VarInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), k));
     let mut b = Builder::new();
     let x = b.input(ty(dims, dtype));
     let out = b.emit(

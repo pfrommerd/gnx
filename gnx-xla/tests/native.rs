@@ -3,7 +3,7 @@ use futures_executor::block_on;
 use gnx::Eval;
 use gnx_expr::{
     Capture, Dialect, Eqn, Expr, Invocation, ObjectTracer, Op, Operation, SubExpr, Trace,
-    TraceContext, Value, ValueInfo, VarScope,
+    TraceContext, Value, VarInfo, VarScope,
 };
 use gnx_math::{
     ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, HostId, LocalAllocations, MemoryLocation,
@@ -60,7 +60,7 @@ fn array_arithmetic_broadcasts_and_evaluates_lazily() {
 fn compile_nested_call_reuse_outputs_and_forward_remote_refs() {
     let device = XlaDevice::cpu().unwrap();
     let array = array_info(&[2], DType::F32);
-    let ty = ValueInfo::new(array.clone());
+    let ty = VarInfo::new(array.clone());
     let mut vars = VarScope::new();
     let [a, b, r, sum] = std::array::from_fn(|_| vars.create_var());
     let child = Expr::new(
@@ -129,7 +129,7 @@ fn compile_nested_call_reuse_outputs_and_forward_remote_refs() {
 }
 
 fn trace(data: DataHandle) -> Trace {
-    let info = ValueInfo::new(data.info());
+    let info = VarInfo::new(data.info());
     Trace::concrete(Value::new(data), info)
 }
 fn scalar(n: f32) -> Trace {
@@ -138,13 +138,13 @@ fn scalar(n: f32) -> Trace {
 fn add(a: &Trace, b: &Trace) -> Trace {
     invoke(add_op(), a, b, a.info().clone())
 }
-fn invoke(op: Op, a: &Trace, b: &Trace, info: ValueInfo) -> Trace {
+fn invoke(op: Op, a: &Trace, b: &Trace, info: VarInfo) -> Trace {
     Invocation::invoke(op, vec![], vec![a.clone(), b.clone()], vec![info])
         .pop()
         .unwrap()
         .into_trace_ref()
 }
-fn region(infos: &[ValueInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Capture {
+fn region(infos: &[VarInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Capture {
     let ctx = TraceContext::enter();
     let args: Vec<_> = infos.iter().cloned().map(Trace::placeholder).collect();
     let outputs = build(&args);
@@ -200,8 +200,8 @@ register_xla_lowering!(LessThan);
 #[test]
 fn runs_structured_regions() {
     let device = XlaDevice::cpu().unwrap();
-    let f32_scalar = ValueInfo::new(array_info(&[], DType::F32));
-    let bool_scalar = ValueInfo::new(array_info(&[], DType::Bool));
+    let f32_scalar = VarInfo::new(array_info(&[], DType::F32));
+    let bool_scalar = VarInfo::new(array_info(&[], DType::Bool));
     let values = |t: &Trace| unpack(&device, t.try_concrete().unwrap());
     let double = region(std::slice::from_ref(&f32_scalar), |a| {
         vec![add(&a[0], &a[0])]
@@ -255,8 +255,8 @@ fn generic_reducers_execute_with_mixed_results_and_windows() {
     };
 
     let device = XlaDevice::cpu().unwrap();
-    let tensor = ValueInfo::new(array_info(&[5], DType::F32));
-    let scalar = ValueInfo::new(array_info(&[], DType::F32));
+    let tensor = VarInfo::new(array_info(&[5], DType::F32));
+    let scalar = VarInfo::new(array_info(&[], DType::F32));
     let mut b = Builder::new();
     let input = b.input(tensor);
     let high = b.emit1(constant(f64::INFINITY), &[], scalar.clone());
@@ -324,9 +324,9 @@ fn differentiates_and_batches_axis_and_window_reductions() {
     };
     use gnx_transforms::ops::{ad, map};
 
-    let vector = ValueInfo::new(array_info(&[3], DType::F32));
-    let pair = ValueInfo::new(array_info(&[2], DType::F32));
-    let scalar = ValueInfo::new(array_info(&[], DType::F32));
+    let vector = VarInfo::new(array_info(&[3], DType::F32));
+    let pair = VarInfo::new(array_info(&[2], DType::F32));
+    let scalar = VarInfo::new(array_info(&[], DType::F32));
     let mut b = Builder::new();
     let x = b.input(vector.clone());
     let combiner = |op| {
@@ -386,8 +386,8 @@ fn differentiates_and_batches_axis_and_window_reductions() {
         vec![body.clone()],
     );
     results.push(reverse[5]);
-    let batch = b.input(ValueInfo::new(array_info(&[2, 3], DType::F32)));
-    let matrix = ValueInfo::new(array_info(&[2, 2], DType::F32));
+    let batch = b.input(VarInfo::new(array_info(&[2, 3], DType::F32)));
+    let matrix = VarInfo::new(array_info(&[2, 2], DType::F32));
     let batched = b.emit(
         map::map(2, &[0], &[0, 0, 0, 0, 0]),
         &[batch],
@@ -443,7 +443,7 @@ fn popcount_uses_the_operand_width() {
     use gnx_expr::pass::Builder;
     use gnx_math::ops::bitwise::population_count;
     let device = XlaDevice::cpu().unwrap();
-    let info = ValueInfo::new(array_info(&[4], DType::I8));
+    let info = VarInfo::new(array_info(&[4], DType::I8));
     let mut builder = Builder::new();
     let x = builder.input(info.clone());
     let y = builder.emit1(population_count(), &[x], info);
@@ -465,9 +465,9 @@ fn lapack_factorizations_execute_on_the_local_device() {
     use gnx_expr::pass::Builder;
     use gnx_math::ops::linalg::{lu, svd};
     let device = XlaDevice::cpu().unwrap();
-    let matrix = ValueInfo::new(array_info(&[2, 2], DType::F32));
-    let pivot = ValueInfo::new(array_info(&[2], DType::I32));
-    let singular = ValueInfo::new(array_info(&[2], DType::F32));
+    let matrix = VarInfo::new(array_info(&[2, 2], DType::F32));
+    let pivot = VarInfo::new(array_info(&[2], DType::I32));
+    let singular = VarInfo::new(array_info(&[2], DType::F32));
     let mut builder = Builder::new();
     let x = builder.input(matrix.clone());
     let mut out = builder.emit(lu(), &[x], [matrix, pivot.clone(), pivot], vec![]);
@@ -499,9 +499,9 @@ fn window_vjp_accumulates_overlapping_winners_and_additive_windows() {
     use gnx_math::ops::{creation::constant, elementwise::max_op, reduction};
 
     let device = XlaDevice::cpu().unwrap();
-    let input_info = ValueInfo::new(array_info(&[3], DType::F32));
-    let output_info = ValueInfo::new(array_info(&[2], DType::F32));
-    let scalar_info = ValueInfo::new(array_info(&[], DType::F32));
+    let input_info = VarInfo::new(array_info(&[3], DType::F32));
+    let output_info = VarInfo::new(array_info(&[2], DType::F32));
+    let scalar_info = VarInfo::new(array_info(&[], DType::F32));
 
     for (op, identity, expected) in [
         (max_op(), f64::NEG_INFINITY, [0., 3., 0.]),
@@ -559,8 +559,8 @@ fn convolution_vjp_uses_the_forward_window_geometry() {
         ConvAxes, ConvKernelAxes, ConvParameters, conv_general_dilated,
     };
     let device = XlaDevice::cpu().unwrap();
-    let input = ValueInfo::new(array_info(&[1, 1, 3], DType::F32));
-    let kernel = ValueInfo::new(array_info(&[1, 1, 2], DType::F32));
+    let input = VarInfo::new(array_info(&[1, 1, 3], DType::F32));
+    let kernel = VarInfo::new(array_info(&[1, 1, 2], DType::F32));
     let output = kernel.clone();
     let axes = ConvAxes {
         batch: 0,
@@ -625,18 +625,18 @@ fn real_fft_and_top_k_return_the_expected_values_and_dtypes() {
     };
     let device = XlaDevice::cpu().unwrap();
     let mut b = Builder::new();
-    let x = b.input(ValueInfo::new(array_info(&[4], DType::F32)));
+    let x = b.input(VarInfo::new(array_info(&[4], DType::F32)));
     let spectrum = b.emit1(
         fft(FftKind::Rfft, &[4]),
         &[x],
-        ValueInfo::new(array_info(&[3], DType::C64)),
+        VarInfo::new(array_info(&[3], DType::C64)),
     );
     let mut out = b.emit(
         top_k(2),
         &[x],
         [
-            ValueInfo::new(array_info(&[2], DType::F32)),
-            ValueInfo::new(array_info(&[2], DType::I32)),
+            VarInfo::new(array_info(&[2], DType::F32)),
+            VarInfo::new(array_info(&[2], DType::I32)),
         ],
         vec![],
     );
@@ -660,8 +660,8 @@ fn sort_treats_signed_zeros_as_ties_and_stably_orders_integer_keys() {
     use gnx_math::ops::ordering::sort;
 
     let device = XlaDevice::cpu().unwrap();
-    let data = ValueInfo::new(array_info(&[4], DType::F32));
-    let indices = ValueInfo::new(array_info(&[4], DType::I32));
+    let data = VarInfo::new(array_info(&[4], DType::F32));
+    let indices = VarInfo::new(array_info(&[4], DType::I32));
     let mut b = Builder::new();
     let x = b.input(data.clone());
     let key = b.input(indices.clone());
@@ -704,7 +704,7 @@ fn qr_and_cholesky_jvps_run_on_cpu() {
     use gnx_expr::pass::Builder;
     use gnx_math::ops::linalg::{cholesky, qr};
     let device = XlaDevice::cpu().unwrap();
-    let meta = ValueInfo::new(array_info(&[2, 2], DType::F32));
+    let meta = VarInfo::new(array_info(&[2, 2], DType::F32));
     let mut b = Builder::new();
     let a = b.input(meta.clone());
     let l = b.emit1(cholesky(true), &[a], meta.clone());

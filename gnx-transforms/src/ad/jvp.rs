@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Expr, ValueInfo, Var};
+use gnx_expr::{Eqn, Expr, Var, VarInfo};
 
 use super::DiffParameters;
 use crate::util::{add, copy_eqn, zeros};
@@ -59,7 +59,7 @@ pub trait JvpRule: Sync {
 }
 
 /// The tangent as a variable, materializing a zero with `info`.
-pub fn instantiate(b: &mut Builder, tangent: Tangent, info: &ValueInfo) -> Var {
+pub fn instantiate(b: &mut Builder, tangent: Tangent, info: &VarInfo) -> Var {
     match tangent {
         Tangent::Var(var) => var,
         Tangent::Zero => zeros(b, info),
@@ -144,7 +144,7 @@ pub struct Linearized {
     /// captures, then the tangents of the flagged inputs. Returns the tangents
     /// of the flagged results (materialized).
     pub tangent: Expr,
-    pub residuals: Vec<ValueInfo>,
+    pub residuals: Vec<VarInfo>,
     pub outputs: Vec<bool>,
 }
 
@@ -170,7 +170,7 @@ pub fn linearize(
         .collect();
     let mut tangent_inputs = Vec::new();
     let mut duals =
-        |params: &[(Var, ValueInfo)], primals: &[Var], flags: &[bool], joint: &mut Builder| {
+        |params: &[(Var, VarInfo)], primals: &[Var], flags: &[bool], joint: &mut Builder| {
             params
                 .iter()
                 .zip(primals)
@@ -237,7 +237,7 @@ pub fn split(
     joint: &Expr,
     tangents: usize,
     primals: usize,
-) -> TransformResult<(Expr, Expr, Vec<ValueInfo>)> {
+) -> TransformResult<(Expr, Expr, Vec<VarInfo>)> {
     let split_at = joint.inputs().len() - tangents;
     let (primal_inputs, tangent_inputs) = joint.inputs().split_at(split_at);
     let mut linear: HashSet<Var> = tangent_inputs.iter().map(|(var, _)| *var).collect();

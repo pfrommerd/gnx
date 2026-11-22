@@ -9,7 +9,7 @@ use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use gnx_expr::{ConcreteValue, ValueInfo};
+use gnx_expr::{ConcreteValue, VarInfo};
 use uuid::Uuid;
 
 use crate::array::{ArrayInfo, DType, Dim};
@@ -581,8 +581,8 @@ impl Display for DataHandle {
 }
 
 impl ConcreteValue for DataHandle {
-    fn to_info(&self) -> ValueInfo {
-        ValueInfo::new(self.info())
+    fn to_info(&self) -> VarInfo {
+        VarInfo::new(self.info())
     }
 }
 

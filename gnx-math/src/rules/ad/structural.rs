@@ -31,7 +31,7 @@ fn unpad<'a>(
     cx: &'a Ctx<'a>,
     ct: Val<'a>,
     shape: &[usize],
-    metadata: gnx_expr::ValueInfo,
+    metadata: gnx_expr::VarInfo,
 ) -> gnx_transforms::TransformResult<Val<'a>> {
     let padded = ct.dims()?;
     let operation = cx.operation::<PadOperation>()?;

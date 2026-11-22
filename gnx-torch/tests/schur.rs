@@ -1,11 +1,11 @@
 mod support;
-use gnx_expr::{ValueInfo, pass::Builder};
+use gnx_expr::{VarInfo, pass::Builder};
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::schur};
 use gnx_torch::TorchDevice;
 use tch::{CModule, Kind, Tensor};
 
 fn compiled(dims: &[usize], dtype: DType, vectors: bool) -> Vec<CModule> {
-    let ty = ValueInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), dtype));
+    let ty = VarInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), dtype));
     let mut b = Builder::new();
     let x = b.input(ty.clone());
     let out = b.emit(

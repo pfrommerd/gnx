@@ -4,7 +4,7 @@
 //! expression is lowered, private cell state is just more carry.
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Expr, SubExpr, ValueInfo, Var, register_op_interface};
+use gnx_expr::{Eqn, Expr, SubExpr, Var, VarInfo, register_op_interface};
 
 use crate::ad::jvp::{Dual, JvpRule, Linearized, Tangent, instantiate, jvp_expr, linearize};
 use crate::ad::transpose::{Operand, TransposeRule, transpose_expr};
@@ -143,7 +143,7 @@ impl TransposeRule for CallOperation {
                 Operand::Linear(_) => None,
             })
             .collect();
-        let linear_infos: Vec<ValueInfo> = operands
+        let linear_infos: Vec<VarInfo> = operands
             .iter()
             .filter_map(|operand| match operand {
                 Operand::Linear(info) => Some(info.clone()),
@@ -239,7 +239,7 @@ fn jvp_branches(
     let operand_flags = nonzero(operands);
     let branches = linearize_branches(eqn, &operand_flags, captures)?;
     let outputs = branches[0].outputs.clone();
-    let residual_infos: Vec<ValueInfo> = branches
+    let residual_infos: Vec<VarInfo> = branches
         .iter()
         .flat_map(|linear| linear.residuals.iter().cloned())
         .collect();
@@ -369,7 +369,7 @@ fn transpose_branches(
             Operand::Linear(_) => None,
         })
         .collect();
-    let linear_infos: Vec<ValueInfo> = operands
+    let linear_infos: Vec<VarInfo> = operands
         .iter()
         .filter_map(|operand| match operand {
             Operand::Linear(info) => Some(info.clone()),

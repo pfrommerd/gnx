@@ -4,7 +4,7 @@ use std::fmt;
 
 use gnx_common::{ArrayInfo, Dim};
 use gnx_expr::lower::{LoweringContext, RegionArgument};
-use gnx_expr::{Capture, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace, ValueInfo};
+use gnx_expr::{Capture, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace, VarInfo};
 
 use super::{
     BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, add_state, check_child, defer_regions,
@@ -64,7 +64,7 @@ impl ScanParameters {
     }
 }
 
-fn slice(info: &ValueInfo) -> RegionResult<(usize, ValueInfo)> {
+fn slice(info: &VarInfo) -> RegionResult<(usize, VarInfo)> {
     let array = info
         .downcast::<ArrayInfo>()
         .map_err(|_| signature("scan inputs and stacked outputs must be arrays"))?;
@@ -73,21 +73,21 @@ fn slice(info: &ValueInfo) -> RegionResult<(usize, ValueInfo)> {
     };
     Ok((
         *length,
-        ValueInfo::new(ArrayInfo::new(
+        VarInfo::new(ArrayInfo::new(
             tail.iter().copied().collect(),
             array.dtype(),
         )),
     ))
 }
 
-fn stack(info: &ValueInfo, length: usize) -> RegionResult<ValueInfo> {
+fn stack(info: &VarInfo, length: usize) -> RegionResult<VarInfo> {
     let array = info
         .downcast::<ArrayInfo>()
         .map_err(|_| signature("scan step outputs must be arrays"))?;
     let shape = std::iter::once(Dim::Fixed(length))
         .chain(array.shape().dims().iter().copied())
         .collect();
-    Ok(ValueInfo::new(ArrayInfo::new(shape, array.dtype())))
+    Ok(VarInfo::new(ArrayInfo::new(shape, array.dtype())))
 }
 
 /// Scan over axis zero of each input array. The body receives `carry` followed
@@ -234,8 +234,8 @@ impl Operation for ScanOperation {
 fn scan_step_infos(
     carry_len: usize,
     length: usize,
-    mut outputs: Vec<ValueInfo>,
-) -> RegionResult<Vec<ValueInfo>> {
+    mut outputs: Vec<VarInfo>,
+) -> RegionResult<Vec<VarInfo>> {
     let Some(ys) = outputs.get_mut(carry_len..) else {
         return Err(signature("scan carry result arity"));
     };

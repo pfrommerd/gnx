@@ -48,7 +48,7 @@ impl FixedRegion {
 }
 
 impl LoweringContext<'_> {
-    pub(super) fn ssa_info(&self, var: Var) -> Result<ValueInfo, LoweringError> {
+    pub(super) fn ssa_info(&self, var: Var) -> Result<VarInfo, LoweringError> {
         self.lowerer
             .bound_inputs
             .values()
@@ -64,12 +64,12 @@ impl LoweringContext<'_> {
             .ok_or(LoweringError::UndefinedVariable(var))
     }
 
-    pub fn value_operand(&self, var: Var) -> Result<(Var, ValueInfo), LoweringError> {
+    pub fn value_operand(&self, var: Var) -> Result<(Var, VarInfo), LoweringError> {
         let var = self.lowerer.value(var)?;
         Ok((var, self.ssa_info(var)?))
     }
 
-    pub fn cell_state(&self, cell: RegionCell) -> Result<(Var, ValueInfo), LoweringError> {
+    pub fn cell_state(&self, cell: RegionCell) -> Result<(Var, VarInfo), LoweringError> {
         let var = self.lowerer.states[&cell.0];
         Ok((var, self.ssa_info(var)?))
     }
@@ -80,7 +80,7 @@ impl LoweringContext<'_> {
         &self,
         sub: &HSubExpr,
         arguments: &[RegionArgument],
-        argument_infos: &[ValueInfo],
+        argument_infos: &[VarInfo],
     ) -> Result<StructuredRegion, LoweringError> {
         let body = sub.expr();
         if sub.closure().len() != body.closure().len() || arguments.len() != body.inputs().len() {
@@ -102,7 +102,7 @@ impl LoweringContext<'_> {
         };
         let mut identities = BTreeMap::new();
         let mut slots = BTreeMap::new();
-        let mut spec_binding = |slot, id, kind: &Kind, info: &ValueInfo| {
+        let mut spec_binding = |slot, id, kind: &Kind, info: &VarInfo| {
             let id = *identities.entry(slot).or_insert(id);
             slots.insert(id, slot);
             (id, *kind, info.clone())
@@ -158,7 +158,7 @@ impl LoweringContext<'_> {
         }
         let program = body.lower(&InputSpec { closure, inputs })?;
         Ok(StructuredRegion {
-            symbol_captures: body.symbol_closure.iter().map(|v| v.0).collect(),
+            symbol_captures: body.symbol_closure.clone(),
             program,
             slots,
             num_arguments,
@@ -169,10 +169,10 @@ impl LoweringContext<'_> {
     /// cell states. State slots are interleaved at `position` in physical results.
     pub fn bind_structured_results(
         &mut self,
-        logical: &[(Var, Kind, ValueInfo)],
+        logical: &[(Var, Kind, VarInfo)],
         cells: &[RegionCell],
         position: usize,
-        physical: &[(Var, ValueInfo)],
+        physical: &[(Var, VarInfo)],
     ) -> Result<(), LoweringError> {
         if position > logical.len() || physical.len() != logical.len() + cells.len() {
             return Err(LoweringError::RegionSignature("structured result arity"));
@@ -213,10 +213,10 @@ impl StructuredRegion {
     pub fn fix(
         &self,
         ctx: &LoweringContext<'_>,
-        states: &[(RegionCell, ValueInfo)],
+        states: &[(RegionCell, VarInfo)],
         input_position: usize,
         output_position: Option<usize>,
-        expected_results: &[ValueInfo],
+        expected_results: &[VarInfo],
     ) -> Result<FixedRegion, LoweringError> {
         let original = &self.program.expr;
         if input_position > self.num_arguments
@@ -341,7 +341,7 @@ impl StructuredRegion {
             results.splice(position..position, state_results);
         }
 
-        let trace_params = |params: &[(Var, ValueInfo)]| {
+        let trace_params = |params: &[(Var, VarInfo)]| {
             params
                 .iter()
                 .map(|(var, info)| (*var, Kind::Value, info.clone()))

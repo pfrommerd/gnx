@@ -1,4 +1,4 @@
-use crate::{Generic, Invocation, Traceable, Value, ValueInfo};
+use crate::{Generic, Invocation, Traceable, Value, VarInfo};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use super::context::{ContextID, TraceContext};
 
 pub struct TraceData {
-    info: ValueInfo,
+    info: VarInfo,
     context_id: ContextID,
     placeholder: bool,
     concrete: OnceLock<Value>,
@@ -115,7 +115,7 @@ impl Trace {
         consumers.keys().any(|&user| !inside(user))
     }
 
-    pub fn concrete(value: Value, info: ValueInfo) -> Self {
+    pub fn concrete(value: Value, info: VarInfo) -> Self {
         Self::external(Arc::new(TraceData {
             info,
             context_id: TraceContext::current_id(),
@@ -128,7 +128,7 @@ impl Trace {
         }))
     }
 
-    pub fn placeholder(info: ValueInfo) -> Self {
+    pub fn placeholder(info: VarInfo) -> Self {
         Self::external(Arc::new(TraceData {
             info,
             context_id: TraceContext::current_id(),
@@ -141,7 +141,7 @@ impl Trace {
         }))
     }
 
-    pub(super) fn returned(invocation: &Arc<Invocation>, ret_idx: usize, info: ValueInfo) -> Self {
+    pub(super) fn returned(invocation: &Arc<Invocation>, ret_idx: usize, info: VarInfo) -> Self {
         Self::external(Arc::new(TraceData {
             info,
             context_id: invocation.context_id().clone(),
@@ -180,7 +180,7 @@ impl Trace {
         self.data.placeholder
     }
 
-    pub fn info(&self) -> &ValueInfo {
+    pub fn info(&self) -> &VarInfo {
         &self.data.info
     }
 
@@ -224,7 +224,7 @@ impl From<Trace> for Tracer<Generic> {
 }
 
 impl<T: Traceable> Tracer<T> {
-    pub fn placeholder(info: ValueInfo) -> Self {
+    pub fn placeholder(info: VarInfo) -> Self {
         unsafe { Tracer::unchecked_new(Trace::placeholder(info)) }
     }
 

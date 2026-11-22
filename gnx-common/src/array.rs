@@ -256,6 +256,8 @@ pub struct ArrayInfo {
     dtype: DType,
 }
 
+impl gnx_expr::Info for ArrayInfo {}
+
 impl ArrayInfo {
     pub fn new(shape: Shape, dtype: DType) -> Self {
         ArrayInfo { shape, dtype }
@@ -350,7 +352,7 @@ impl Array {
             crate::ops::reshape_op(),
             vec![],
             vec![self.tracer().clone()],
-            vec![gnx_expr::ValueInfo::new(info)],
+            vec![gnx_expr::VarInfo::new(info)],
         )
         .remove(0)
         .try_cast::<Array>()

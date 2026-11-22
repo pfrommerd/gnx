@@ -126,7 +126,7 @@ impl JvpRule for SortOperation {
 
 fn cumulative_pair(
     kind: CumulativeKind,
-    metadata: gnx_expr::ValueInfo,
+    metadata: gnx_expr::VarInfo,
 ) -> TransformResult<gnx_expr::Expr> {
     let mut b = Builder::new();
     let lhs = b.input(metadata.clone());
@@ -151,7 +151,7 @@ fn cumulative_pair(
     Ok(b.finish(vec![result]))
 }
 
-fn apply(b: &mut Builder, op: Op, input: Dual, metadata: gnx_expr::ValueInfo) -> Dual {
+fn apply(b: &mut Builder, op: Op, input: Dual, metadata: gnx_expr::VarInfo) -> Dual {
     let primal = b.emit1(op.clone(), &[input.primal], metadata.clone());
     let tangent = match input.tangent {
         Tangent::Zero => Tangent::Zero,

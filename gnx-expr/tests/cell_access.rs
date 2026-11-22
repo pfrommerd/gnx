@@ -1,6 +1,6 @@
 use gnx_expr::{
     Capture, CellAccess, CellTrace, Dialect, Generic, HEqn, Op, Operation, TraceContext, Tracer,
-    ValueInfo, Var, hexpr,
+    Var, VarInfo, hexpr,
 };
 
 #[test]
@@ -23,7 +23,7 @@ fn cell_access_union_covers_all_access_pairs() {
 #[test]
 fn structural_cell_instructions_report_reads_and_writes() {
     let guard = TraceContext::enter();
-    let info = ValueInfo::new(0usize);
+    let info = VarInfo::new(0usize);
     let unused = CellTrace::placeholder(info.clone());
     let read_only = CellTrace::placeholder(info.clone());
     let write_only = CellTrace::placeholder(info.clone());
@@ -175,7 +175,7 @@ mod ops {
 
 #[test]
 fn operation_controls_cell_effects_of_its_regions_and_operands() {
-    let info = ValueInfo::new(0usize);
+    let info = VarInfo::new(0usize);
     let body = hexpr!(&info; |all[:], selected[:], direct[:], aliased[:], x| => {
         test::default_regions [|| => {
             read <- all[:];

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     Capture, ConcreteValue, Expr, InputId, InputSpec, LoweringError, ObjectTracer, Trace, Value,
-    ValueInfo,
+    VarInfo,
 };
 
 // Capture and publication share this gate so a capture sees a consistent
@@ -25,16 +25,16 @@ pub enum EvalPlanError {
     #[error("eval input {input:?} has metadata {actual}, expected {expected}")]
     InputInfo {
         input: InputId,
-        expected: ValueInfo,
-        actual: ValueInfo,
+        expected: VarInfo,
+        actual: VarInfo,
     },
     #[error("device returned {actual} values, expected {expected}")]
     OutputArity { expected: usize, actual: usize },
     #[error("eval output {index} has metadata {actual}, expected {expected}")]
     OutputInfo {
         index: usize,
-        expected: ValueInfo,
-        actual: ValueInfo,
+        expected: VarInfo,
+        actual: VarInfo,
     },
 }
 
@@ -170,7 +170,7 @@ impl Source {
 }
 
 pub struct EvalCommit {
-    expected: Vec<ValueInfo>,
+    expected: Vec<VarInfo>,
     writes: Vec<(Trace, Source)>,
 }
 
@@ -204,7 +204,7 @@ impl EvalCommit {
     }
 }
 
-fn check_info(index: usize, value: &Value, expected: &ValueInfo) -> Result<(), EvalPlanError> {
+fn check_info(index: usize, value: &Value, expected: &VarInfo) -> Result<(), EvalPlanError> {
     let actual = value.to_info();
     if actual != *expected {
         return Err(EvalPlanError::OutputInfo {

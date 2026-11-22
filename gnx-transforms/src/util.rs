@@ -5,30 +5,30 @@ use gnx_common::ops::{
 };
 use gnx_common::{ArrayInfo, DType, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, SubExpr, ValueInfo, Var};
+use gnx_expr::{Eqn, SubExpr, Var, VarInfo};
 
 use crate::{TransformError, TransformResult};
 
-pub fn array(info: &ValueInfo) -> TransformResult<&ArrayInfo> {
+pub fn array(info: &VarInfo) -> TransformResult<&ArrayInfo> {
     info.downcast::<ArrayInfo>().map_err(|_| {
         TransformError::invalid(format!("transformations only support arrays, found {info}"))
     })
 }
 
-pub fn dims(info: &ValueInfo) -> TransformResult<Vec<usize>> {
+pub fn dims(info: &VarInfo) -> TransformResult<Vec<usize>> {
     Ok(fixed_dims(array(info)?)?)
 }
 
-pub fn dtype(info: &ValueInfo) -> TransformResult<DType> {
+pub fn dtype(info: &VarInfo) -> TransformResult<DType> {
     Ok(array(info)?.dtype())
 }
 
-pub fn info(dims: &[usize], dtype: DType) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), dtype))
+pub fn info(dims: &[usize], dtype: DType) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), dtype))
 }
 
 /// Insert an axis of `size` at `axis`.
-pub fn with_axis(value: &ValueInfo, axis: usize, size: usize) -> TransformResult<ValueInfo> {
+pub fn with_axis(value: &VarInfo, axis: usize, size: usize) -> TransformResult<VarInfo> {
     let mut shape = dims(value)?;
     if axis > shape.len() {
         return Err(TransformError::invalid("axis out of range"));
@@ -38,7 +38,7 @@ pub fn with_axis(value: &ValueInfo, axis: usize, size: usize) -> TransformResult
 }
 
 /// Remove `axis`, returning its size and the remaining metadata.
-pub fn without_axis(value: &ValueInfo, axis: usize) -> TransformResult<(usize, ValueInfo)> {
+pub fn without_axis(value: &VarInfo, axis: usize) -> TransformResult<(usize, VarInfo)> {
     let mut shape = dims(value)?;
     if axis >= shape.len() {
         return Err(TransformError::invalid("axis out of range"));
@@ -47,14 +47,14 @@ pub fn without_axis(value: &ValueInfo, axis: usize) -> TransformResult<(usize, V
     Ok((size, info(&shape, dtype(value)?)))
 }
 
-pub fn is_float(value: &ValueInfo) -> bool {
+pub fn is_float(value: &VarInfo) -> bool {
     matches!(
         dtype(value),
         Ok(DType::F16 | DType::BF16 | DType::F32 | DType::F64)
     )
 }
 
-pub fn zeros(b: &mut Builder, value: &ValueInfo) -> Var {
+pub fn zeros(b: &mut Builder, value: &VarInfo) -> Var {
     b.emit1(zeros_op(), &[], value.clone())
 }
 
@@ -147,7 +147,7 @@ pub fn copy_eqn(b: &mut Builder, eqn: &Eqn, inputs: &[Var], captures: &[Vec<Var>
     )
 }
 
-pub fn output_infos(eqn: &Eqn) -> Vec<ValueInfo> {
+pub fn output_infos(eqn: &Eqn) -> Vec<VarInfo> {
     eqn.outputs()
         .iter()
         .map(|(_, value)| value.clone())
@@ -155,7 +155,7 @@ pub fn output_infos(eqn: &Eqn) -> Vec<ValueInfo> {
 }
 
 /// The metadata of variables bound in `b`.
-pub fn infos(b: &Builder, vars: &[Var]) -> Vec<ValueInfo> {
+pub fn infos(b: &Builder, vars: &[Var]) -> Vec<VarInfo> {
     vars.iter().map(|&var| b.info(var).clone()).collect()
 }
 
@@ -173,6 +173,6 @@ pub fn union(lhs: &mut [bool], rhs: &[bool]) -> bool {
     changed
 }
 
-pub fn is_inexact(value: &ValueInfo) -> bool {
+pub fn is_inexact(value: &VarInfo) -> bool {
     is_float(value) || matches!(dtype(value), Ok(DType::C64 | DType::C128))
 }

@@ -1,5 +1,5 @@
 mod support;
-use gnx_expr::{ValueInfo, pass::Builder};
+use gnx_expr::{VarInfo, pass::Builder};
 use gnx_math::{
     ArrayInfo, DType, Shape,
     ops::{add_op, elementwise, linalg::lu_pivots_to_permutation},
@@ -8,8 +8,8 @@ use gnx_torch::TorchDevice;
 use gnx_transforms::cf::{cond_op, switch_op, while_op};
 use tch::Tensor;
 
-fn info(shape: &[usize], k: DType) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed(shape.iter().copied()), k))
+fn info(shape: &[usize], k: DType) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed(shape.iter().copied()), k))
 }
 #[test]
 fn reloaded_cond_executes_only_the_selected_branch() {

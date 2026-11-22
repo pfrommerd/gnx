@@ -8,9 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use crate::{
-    Eqn, Expr, HEqn, HExpr, HInstr, HSubExpr, Kind, Op, SubExpr, ValueInfo, Var, VarScope,
-};
+use crate::{Eqn, Expr, HEqn, HExpr, HInstr, HSubExpr, Kind, Op, SubExpr, Var, VarInfo, VarScope};
 
 /// Canonical source of a supplied value or cell, indexed in the original HExpr
 /// argument lists. Aliases share a source. Explicit inputs take precedence over
@@ -24,8 +22,8 @@ pub enum InputId {
 /// One (identity, kind) entry per HExpr parameter, in declaration order.
 #[derive(Clone, Debug, Default)]
 pub struct InputSpec {
-    pub closure: Vec<(InputId, Kind, ValueInfo)>,
-    pub inputs: Vec<(InputId, Kind, ValueInfo)>,
+    pub closure: Vec<(InputId, Kind, VarInfo)>,
+    pub inputs: Vec<(InputId, Kind, VarInfo)>,
 }
 impl InputSpec {
     /// Derive shared identities and kinds from actual arguments. Equal values
@@ -99,7 +97,7 @@ pub struct LoweredExpr {
     pub expr: Arc<Expr>,
     trace_body: Arc<HExpr>,
     /// Metadata for distinct computed results, in replay-body output order.
-    pub output_infos: Vec<ValueInfo>,
+    pub output_infos: Vec<VarInfo>,
     pub closure: Vec<InputId>,
     pub inputs: Vec<InputId>,
     pub outputs: Vec<Output>,
@@ -162,15 +160,10 @@ impl LoweredExpr {
             Arc<HExpr>,
             Vec<crate::Trace>,
             Vec<crate::Trace>,
-            Vec<ValueInfo>,
+            Vec<VarInfo>,
         ) -> Vec<crate::Trace>,
     ) -> Result<Vec<crate::ObjectTracer>, CallError> {
-        let symbols = self
-            .expr
-            .symbol_closure
-            .iter()
-            .map(|(s, _)| *s)
-            .collect::<Vec<_>>();
+        let symbols = self.expr.symbol_closure.clone();
         self.replay_with_symbols(&symbols, closure, inputs, emit)
     }
     /// Replay with explicit symbols from the enclosing trace.
@@ -183,7 +176,7 @@ impl LoweredExpr {
             Arc<HExpr>,
             Vec<crate::Trace>,
             Vec<crate::Trace>,
-            Vec<ValueInfo>,
+            Vec<VarInfo>,
         ) -> Vec<crate::Trace>,
     ) -> Result<Vec<crate::ObjectTracer>, CallError> {
         use crate::{CellTrace, ObjectTracer, Trace};
@@ -202,7 +195,7 @@ impl LoweredExpr {
             ObjectTracer::Ref(v) => v.info(),
             ObjectTracer::Cell(c) => c.type_info(),
         });
-        let symbols = crate::symbol::substitution(
+        let symbols = crate::symbol_substitution(
             &self.expr.symbol_closure,
             symbol_captures,
             &self.expr.symbol_inputs,
@@ -211,7 +204,7 @@ impl LoweredExpr {
                 .chain(&spec.inputs)
                 .map(|v| &v.2)
                 .zip(actuals),
-            |s| crate::TraceContext::current()?.symbol_info(s),
+            |s| crate::TraceContext::current().is_some_and(|c| c.has_symbol(s)),
         )
         .map_err(CallError::InvalidExpr)?;
         for ((id, kind, info), object) in spec
@@ -381,7 +374,7 @@ enum NestedBinding {
 
 /// A recursively lowered region with bindings resolved in its parent scope.
 pub struct LoweredRegion {
-    output_infos: Vec<ValueInfo>,
+    output_infos: Vec<VarInfo>,
     symbol_captures: Vec<crate::Symbol>,
     program: LoweredExpr,
     bindings: BTreeMap<InputId, NestedBinding>,
@@ -390,7 +383,7 @@ pub struct LoweredRegion {
 
 impl LoweredRegion {
     /// Computed result metadata in the caller’s symbol namespace.
-    pub fn output_infos(&self) -> &[ValueInfo] {
+    pub fn output_infos(&self) -> &[VarInfo] {
         &self.output_infos
     }
     pub fn program(&self) -> &LoweredExpr {
@@ -419,7 +412,7 @@ impl LoweredRegion {
         }
     }
 
-    fn source(&self, result_idx: usize, physical: &[(Var, ValueInfo)]) -> Var {
+    fn source(&self, result_idx: usize, physical: &[(Var, VarInfo)]) -> Var {
         match self
             .program
             .result_source(result_idx)
@@ -445,17 +438,17 @@ pub struct LoweringContext<'a> {
 }
 
 struct Lowerer {
-    symbol_sorts: BTreeMap<crate::Symbol, crate::SymbolInfo>,
+    symbols: BTreeSet<crate::Symbol>,
     spec: InputSpec,
     scope: VarScope,
     values: BTreeMap<Var, Var>,
     cells: BTreeMap<Var, CellBinding>,
     states: BTreeMap<CellBinding, Var>,
-    bound_inputs: BTreeMap<InputId, (Kind, Var, ValueInfo)>,
+    bound_inputs: BTreeMap<InputId, (Kind, Var, VarInfo)>,
     written: BTreeSet<CellBinding>,
-    closure: Vec<(Var, ValueInfo)>,
+    closure: Vec<(Var, VarInfo)>,
     closure_sources: Vec<InputId>,
-    inputs: Vec<(Var, ValueInfo)>,
+    inputs: Vec<(Var, VarInfo)>,
     input_sources: Vec<InputId>,
     eqns: Vec<Eqn>,
     trace_eqns: Vec<HInstr>,
@@ -465,11 +458,11 @@ impl Lowerer {
     fn new(expr: &HExpr, spec: &InputSpec) -> Result<Self, LoweringError> {
         expr.check_symbols()?;
         let mut lowerer = Self {
-            symbol_sorts: expr
+            symbols: expr
                 .symbol_closure
                 .iter()
                 .chain(&expr.symbol_inputs)
-                .cloned()
+                .copied()
                 .collect(),
             spec: spec.clone(),
             scope: VarScope::new(),
@@ -650,7 +643,7 @@ impl LoweringContext<'_> {
         Ok(())
     }
 
-    fn object_info(&self, var: Var, kind: Kind) -> Result<ValueInfo, LoweringError> {
+    fn object_info(&self, var: Var, kind: Kind) -> Result<VarInfo, LoweringError> {
         match kind {
             Kind::Value => Ok(self.value_operand(var)?.1),
             Kind::Cell => Ok(self.cell_state(RegionCell(self.lowerer.cell(var)?))?.1),
@@ -659,7 +652,7 @@ impl LoweringContext<'_> {
     fn child_bindings(
         &self,
         sub: &HSubExpr,
-        actual_inputs: &[ValueInfo],
+        actual_inputs: &[VarInfo],
     ) -> Result<BTreeMap<crate::Symbol, crate::Symbol>, LoweringError> {
         let body = sub.expr().as_ref();
         if body.symbol_inputs.is_empty() && body.symbol_closure.is_empty() {
@@ -672,7 +665,7 @@ impl LoweringContext<'_> {
             .map(|(v, (_, k, _))| self.object_info(*v, *k))
             .collect::<Result<Vec<_>, _>>()?;
         body.bind_symbols(&sub.symbol_captures, &captures, actual_inputs, |s| {
-            self.lowerer.symbol_sorts.get(&s).cloned()
+            self.lowerer.symbols.contains(&s)
         })
     }
     /// Lower a region whose explicit arguments are bound to parent variables.
@@ -706,7 +699,7 @@ impl LoweringContext<'_> {
         let mut identities = BTreeMap::new();
         let mut bindings = BTreeMap::new();
         let mut bind =
-            |operands: &[Var], params: &[(Var, Kind, ValueInfo)], id: fn(usize) -> InputId| {
+            |operands: &[Var], params: &[(Var, Kind, VarInfo)], id: fn(usize) -> InputId| {
                 operands
                     .iter()
                     .zip(params)
@@ -750,7 +743,7 @@ impl LoweringContext<'_> {
         })
     }
 
-    pub fn allocate_results(&mut self, infos: &[ValueInfo]) -> Vec<(Var, ValueInfo)> {
+    pub fn allocate_results(&mut self, infos: &[VarInfo]) -> Vec<(Var, VarInfo)> {
         infos
             .iter()
             .map(|info| (self.lowerer.scope.create_var(), info.clone()))
@@ -760,9 +753,9 @@ impl LoweringContext<'_> {
     /// Bind the high-level results of one region known to have executed.
     pub fn bind_region_results(
         &mut self,
-        outputs: &[(Var, Kind, ValueInfo)],
+        outputs: &[(Var, Kind, VarInfo)],
         region: &LoweredRegion,
-        physical: &[(Var, ValueInfo)],
+        physical: &[(Var, VarInfo)],
     ) -> Result<(), LoweringError> {
         if physical.len() != region.program.output_infos.len()
             || outputs.len() != region.program.results().len()
@@ -813,7 +806,7 @@ impl LoweringContext<'_> {
     pub fn apply_region_updates(
         &mut self,
         region: &LoweredRegion,
-        physical: &[(Var, ValueInfo)],
+        physical: &[(Var, VarInfo)],
     ) -> Result<(), LoweringError> {
         if physical.len() != region.program.output_infos.len() {
             return Err(LoweringError::InvalidComputation);
@@ -836,7 +829,7 @@ impl LoweringContext<'_> {
         &mut self,
         op: Op,
         inputs: Vec<Var>,
-        outputs: Vec<(Var, ValueInfo)>,
+        outputs: Vec<(Var, VarInfo)>,
         regions: Vec<RegionUse>,
     ) {
         let high = regions
@@ -957,7 +950,7 @@ impl Lowerer {
                     .ok_or(LoweringError::UndefinedVariable(*var))
             })
             .collect::<Result<_, _>>()?;
-        let trace_params = |params: &[(Var, ValueInfo)]| {
+        let trace_params = |params: &[(Var, VarInfo)]| {
             params
                 .iter()
                 .map(|(var, info)| (*var, Kind::Value, info.clone()))

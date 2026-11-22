@@ -1,4 +1,4 @@
-use crate::{Eqn, Expr, Op, SubExpr, ValueInfo, Var, VarScope};
+use crate::{Eqn, Expr, Op, SubExpr, Var, VarInfo, VarScope};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -6,15 +6,15 @@ use std::sync::Arc;
 pub struct ExprBuilder<'a> {
     var_scope: VarScope,
     vars: BTreeMap<&'static str, Var>,
-    closure: Vec<(Var, ValueInfo)>,
-    inputs: Vec<(Var, ValueInfo)>,
+    closure: Vec<(Var, VarInfo)>,
+    inputs: Vec<(Var, VarInfo)>,
     eqns: Vec<Eqn>,
-    info: Option<ValueInfo>,
-    outer: Option<&'a mut dyn FnMut(&'static str) -> Option<ValueInfo>>,
+    info: Option<VarInfo>,
+    outer: Option<&'a mut dyn FnMut(&'static str) -> Option<VarInfo>>,
 }
 
 impl ExprBuilder<'_> {
-    pub fn new(info: Option<ValueInfo>) -> Self {
+    pub fn new(info: Option<VarInfo>) -> Self {
         Self {
             var_scope: VarScope::new(),
             vars: BTreeMap::new(),
@@ -42,11 +42,11 @@ impl ExprBuilder<'_> {
             .map_or_else(|| self.var(name), |(var, _)| var)
     }
 
-    fn default_info(&self) -> ValueInfo {
-        self.info.clone().expect("missing ValueInfo annotation")
+    fn default_info(&self) -> VarInfo {
+        self.info.clone().expect("missing VarInfo annotation")
     }
 
-    pub fn parameter(&mut self, closure: bool, name: &'static str, info: ValueInfo) {
+    pub fn parameter(&mut self, closure: bool, name: &'static str, info: VarInfo) {
         let var = self.var(name);
         let params = if closure {
             &mut self.closure
@@ -56,11 +56,11 @@ impl ExprBuilder<'_> {
         params.push((var, info));
     }
 
-    pub fn output(&mut self, name: &'static str) -> (Var, ValueInfo) {
+    pub fn output(&mut self, name: &'static str) -> (Var, VarInfo) {
         self.typed_output(name, self.default_info())
     }
 
-    pub fn typed_output(&mut self, name: &'static str, info: ValueInfo) -> (Var, ValueInfo) {
+    pub fn typed_output(&mut self, name: &'static str, info: VarInfo) -> (Var, VarInfo) {
         let var = if name == "_" {
             Var::hole()
         } else {
@@ -96,7 +96,7 @@ impl ExprBuilder<'_> {
 
     pub fn eqn(
         &mut self,
-        outputs: Vec<(Var, ValueInfo)>,
+        outputs: Vec<(Var, VarInfo)>,
         op: Op,
         inputs: Vec<Var>,
         subexprs: Vec<SubExpr>,
@@ -109,7 +109,7 @@ impl ExprBuilder<'_> {
         Expr::new(self.closure, self.inputs, self.eqns, outputs)
     }
 
-    fn resolve(&mut self, name: &'static str) -> Option<(Var, ValueInfo)> {
+    fn resolve(&mut self, name: &'static str) -> Option<(Var, VarInfo)> {
         if let Some(&var) = self.vars.get(name) {
             let info = self
                 .closure
@@ -142,8 +142,8 @@ pub fn subexpr(body: impl Into<Arc<Expr>>, captures: Vec<Var>) -> SubExpr {
 }
 
 /// Build an immutable computation expression. Cell actions belong to HExpr.
-/// Annotate definitions with Rust expressions yielding `ValueInfo`. An owned
-/// `ValueInfo` is moved in; `&info` clones it. The older `expr!(info; { ... })`
+/// Annotate definitions with Rust expressions yielding `VarInfo`. An owned
+/// `VarInfo` is moved in; `&info` clones it. The older `expr!(info; { ... })`
 /// form supplies default metadata for unannotated definitions.
 /// Use `;` between captures and inputs: `|captured: &info; x: make_info()| => { ... }`.
 /// Return values with `in (x)`, `in (x, y)`, or `in ()`. A body with no
@@ -162,10 +162,10 @@ pub fn subexpr(body: impl Into<Arc<Expr>>, captures: Vec<Var>) -> SubExpr {
 /// `Expr` or `Arc<Expr>`, use `dialect::op[body => (captures)] x y`.
 ///
 /// ```compile_fail
-/// let _ = gnx_expr::expr!(gnx_expr::ValueInfo::new(0usize); { lambda cell[:]: in (cell) });
+/// let _ = gnx_expr::expr!(gnx_expr::VarInfo::new(0usize); { lambda cell[:]: in (cell) });
 /// ```
 /// ```compile_fail
-/// let info = gnx_expr::ValueInfo::new(0usize);
+/// let info = gnx_expr::VarInfo::new(0usize);
 /// let _ = gnx_expr::expr!({ lambda x: info => in x }); // missing parentheses
 /// ```
 /// ```compile_fail
@@ -174,7 +174,7 @@ pub fn subexpr(body: impl Into<Arc<Expr>>, captures: Vec<Var>) -> SubExpr {
 ///         pub fn op(_: usize) -> gnx_expr::Op { unreachable!() }
 ///     }
 /// }
-/// let info = gnx_expr::ValueInfo::new(0usize);
+/// let info = gnx_expr::VarInfo::new(0usize);
 /// let _ = gnx_expr::expr!(&info; |x| => { y = test::op<axis: 1> x; in (y) });
 /// ```
 #[macro_export]
@@ -197,21 +197,21 @@ macro_rules! expr {
         $crate::__expr_named!(expr, []; $name = $($tail)*)
     };
     ($info:expr; $name:ident = $($tail:tt)*) => {{
-        let __default = $crate::ValueInfo::from($info);
+        let __default = $crate::VarInfo::from($info);
         $crate::__expr_named!(expr, [&__default;]; $name = $($tail)*)
     }};
     ($info:expr; || $($body:tt)*) => { $crate::expr!($info; | | $($body)*) };
     ($info:expr; { || $($body:tt)* }) => { $crate::expr!($info; || $($body)*) };
     ($info:expr; { | $($body:tt)* }) => { $crate::expr!($info; | $($body)*) };
     ($info:expr; | $($body:tt)*) => {{
-        let mut __builder = $crate::expr_macro::ExprBuilder::new(Some($crate::ValueInfo::from($info)));
+        let mut __builder = $crate::expr_macro::ExprBuilder::new(Some($crate::VarInfo::from($info)));
         $crate::__typed_lambda!(__builder, __expr_typed_params, __expr_eqns; [|] first [] $($body)*)
     }};
     ($info:expr; lambda $($body:tt)*) => {
         $crate::expr!($info; { lambda $($body)* })
     };
     ($info:expr; { lambda $($body:tt)* }) => {{
-        let mut __builder = $crate::expr_macro::ExprBuilder::new(Some($crate::ValueInfo::from($info)));
+        let mut __builder = $crate::expr_macro::ExprBuilder::new(Some($crate::VarInfo::from($info)));
         $crate::__expr_params!(__builder; closure [] $($body)*)
     }};
 }
@@ -289,7 +289,7 @@ macro_rules! __expr_typed_params {
     ($builder:ident, $closure:expr;) => {};
     ($builder:ident, $closure:expr; ,) => {};
     ($builder:ident, $closure:expr; $name:ident : $info:expr, $($rest:tt)*) => {{
-        $builder.parameter($closure, stringify!($name), $crate::ValueInfo::from($info));
+        $builder.parameter($closure, stringify!($name), $crate::VarInfo::from($info));
         $crate::__expr_typed_params!($builder, $closure; $($rest)*);
     }};
     ($builder:ident, $closure:expr; $name:ident, $($rest:tt)*) => {{
@@ -319,7 +319,7 @@ macro_rules! __expr_typed_outputs {
     ($builder:ident; [$($outputs:expr,)*] $(,)?) => { vec![$($outputs,)*] };
     ($builder:ident; [$($outputs:expr,)*] $name:tt : $info:expr, $($rest:tt)*) => {
         $crate::__expr_typed_outputs!($builder;
-            [$($outputs,)* $builder.typed_output(stringify!($name), $crate::ValueInfo::from($info)),]
+            [$($outputs,)* $builder.typed_output(stringify!($name), $crate::VarInfo::from($info)),]
             $($rest)*)
     };
 }

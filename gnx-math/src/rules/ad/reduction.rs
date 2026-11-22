@@ -258,7 +258,7 @@ impl JvpRule for ReduceWindowOperation {
         }
         let mut region = Builder::new();
         let (lhs, rhs) = body.inputs().split_at(count);
-        let mut parameters = |slots: &[(Var, gnx_expr::ValueInfo)]| {
+        let mut parameters = |slots: &[(Var, gnx_expr::VarInfo)]| {
             let primals: Vec<_> = slots
                 .iter()
                 .map(|(_, ty)| region.input(ty.clone()))

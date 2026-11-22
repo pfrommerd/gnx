@@ -2,7 +2,7 @@ use gnx_common::{ArrayInfo, DType, Shape};
 use gnx_expr::pass::{Builder, Dce, Pipeline};
 use gnx_expr::{
     Capture, CellTrace, Expr, InputSpec, Invocation, LoweringError, ObjectTracer, Op, Operation,
-    Trace, TraceContext, ValueInfo,
+    Trace, TraceContext, VarInfo,
 };
 use gnx_common::ops::reduction::{ReduceAddOperation, reduce_add};
 use gnx_common::ops::{add_op, mul_op};
@@ -21,8 +21,8 @@ fn map(
     gnx_transforms::map::region::map(body, inputs, in_axes, out_axes, None)
 }
 
-fn info(dims: &[usize]) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(
+fn info(dims: &[usize]) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(
         Shape::fixed(dims.iter().copied()),
         DType::F32,
     ))
@@ -38,7 +38,7 @@ fn apply(op: Op, a: &Trace, b: &Trace) -> Trace {
     .unwrap()
     .into_trace_ref()
 }
-fn region(inputs: &[ValueInfo], body: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Capture {
+fn region(inputs: &[VarInfo], body: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Capture {
     let guard = TraceContext::enter();
     let args: Vec<_> = inputs.iter().cloned().map(Trace::placeholder).collect();
     let outputs = body(&args);
@@ -54,7 +54,7 @@ fn region(inputs: &[ValueInfo], body: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Ca
 }
 
 /// Capture `build` over placeholders and lower it to an Expr.
-fn lowered(inputs: &[ValueInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Expr {
+fn lowered(inputs: &[VarInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Expr {
     let guard = TraceContext::enter();
     let args: Vec<ObjectTracer> = inputs
         .iter()
@@ -210,7 +210,7 @@ fn transformations_reject_invalid_signatures() {
     // Indices must be in range.
     assert!(vjp(&body, &[x.clone()], &[x.clone()], &[1], &[0]).is_err());
     // Integer inputs are not differentiable.
-    let int = ValueInfo::new(ArrayInfo::new(Shape::fixed([3]), DType::I32));
+    let int = VarInfo::new(ArrayInfo::new(Shape::fixed([3]), DType::I32));
     let int_body = region(std::slice::from_ref(&int), |a| a.to_vec());
     let n = Trace::placeholder(int);
     assert!(jvp(&int_body, &[n.clone()], &[n], &[0], &[0]).is_err());

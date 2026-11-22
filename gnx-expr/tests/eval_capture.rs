@@ -2,7 +2,7 @@ use std::fmt;
 
 use gnx_expr::{
     Capture, CaptureError, CellTrace, ConcreteValue, Dialect, EvalPlanError, Invocation, Op,
-    Operation, Trace, TraceContext, TracerKey, Value, ValueInfo,
+    Operation, Trace, TraceContext, TracerKey, Value, VarInfo,
 };
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -37,7 +37,7 @@ impl fmt::Display for Number {
     }
 }
 impl ConcreteValue for Number {
-    fn to_info(&self) -> ValueInfo {
+    fn to_info(&self) -> VarInfo {
         info()
     }
 }
@@ -50,13 +50,13 @@ impl fmt::Display for WrongType {
     }
 }
 impl ConcreteValue for WrongType {
-    fn to_info(&self) -> ValueInfo {
-        ValueInfo::new("wrong")
+    fn to_info(&self) -> VarInfo {
+        VarInfo::new("wrong")
     }
 }
 
-fn info() -> ValueInfo {
-    ValueInfo::new("number")
+fn info() -> VarInfo {
+    VarInfo::new("number")
 }
 fn value(n: i64) -> Value {
     Value::new(Number(n))

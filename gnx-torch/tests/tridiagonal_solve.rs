@@ -1,11 +1,11 @@
 mod support;
-use gnx_expr::{ValueInfo, pass::Builder};
+use gnx_expr::{VarInfo, pass::Builder};
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::tridiagonal_solve};
 use gnx_torch::TorchDevice;
 use tch::{CModule, Kind, Tensor};
 
 fn compile(dims: &[usize], cols: usize, k: DType, perturb: bool) -> CModule {
-    let ty = |dims: &[usize]| ValueInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), k));
+    let ty = |dims: &[usize]| VarInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), k));
     let rhs = ty(&[dims, &[cols]].concat());
     let mut b = Builder::new();
     let d = std::array::from_fn::<_, 3, _>(|_| b.input(ty(dims)));

@@ -1,6 +1,6 @@
 use gnx::array::{Array, ArrayInfo, ArrayRef, DType, Dim, Shape};
 use gnx::buffer::{DataHandle, HostBuffer};
-use gnx::expr::{CellTracer, Invocation, ObjectTracer, TraceContext, Tracer, ValueInfo};
+use gnx::expr::{CellTracer, Invocation, ObjectTracer, TraceContext, Tracer, VarInfo};
 use numpy::npyffi::{NpyTypes, NPY_ARRAY_CARRAY, NPY_TYPES, PY_ARRAY_API};
 use numpy::{PyArrayDescr, PyArrayDescrMethods, PyUntypedArray, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
@@ -111,7 +111,7 @@ pub fn placeholder(shape: Vec<usize>, dtype: &str) -> PyResult<PyArray> {
         ));
     }
     let dtype = parse_dtype(dtype)?;
-    let info = ValueInfo::new(ArrayInfo::new(Shape::fixed(shape), dtype));
+    let info = VarInfo::new(ArrayInfo::new(Shape::fixed(shape), dtype));
     Ok(PyArray(Tracer::<Array>::placeholder(info).into()))
 }
 

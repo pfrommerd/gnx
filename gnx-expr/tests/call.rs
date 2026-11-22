@@ -1,10 +1,10 @@
 use gnx_expr::{
     CallError, Capture, CellKey, CellTrace, Generic, HExpr, InputSpec, ObjectTracer, TraceContext,
-    Tracer, TracerKey, ValueInfo, hexpr,
+    Tracer, TracerKey, VarInfo, hexpr,
 };
 use gnx_transforms::cf::call_lowered;
-fn info() -> ValueInfo {
-    ValueInfo::new(0usize)
+fn info() -> VarInfo {
+    VarInfo::new(0usize)
 }
 fn value() -> gnx_expr::Trace {
     Tracer::<Generic>::placeholder(info()).into_trace_ref()
@@ -131,7 +131,7 @@ fn boundary_validates_variants_and_metadata_before_updates() {
         call_lowered(&lowered, &[], &[x.clone().into(), a.clone().into()]),
         Err(CallError::ArgumentType(_))
     ));
-    let wrong = gnx_expr::Trace::placeholder(ValueInfo::new(1usize));
+    let wrong = gnx_expr::Trace::placeholder(VarInfo::new(1usize));
     assert!(matches!(
         call_lowered(&lowered, &[], &[a.into(), wrong.into()]),
         Err(CallError::ArgumentType(_))

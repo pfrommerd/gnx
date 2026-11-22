@@ -43,7 +43,7 @@ struct TraceContextState {
     // at which this context was created.
     thread_id: ThreadId,
     symbol_scope: Rc<RefCell<crate::VarScope>>,
-    symbol_sorts: RefCell<std::collections::BTreeMap<crate::Symbol, crate::SymbolInfo>>,
+    symbols: RefCell<std::collections::BTreeSet<crate::Symbol>>,
     parent: Option<TraceContext>,
     // Counter within the thread for this context.
     // ThreadID and local_id together uniquely identify a context
@@ -66,24 +66,20 @@ pub struct TraceContext {
 }
 
 impl TraceContext {
-    /// Allocate a typed symbol in this tracing region. Active nested traces
+    /// Allocate a symbol in this tracing region. Active nested traces
     /// share an allocator to distinguish local and inherited symbols; there
     /// is no process-global symbol namespace.
-    pub fn create_symbol(&self, sort: crate::SymbolInfo) -> crate::Symbol {
+    pub fn create_symbol(&self) -> crate::Symbol {
         let s = self.state.symbol_scope.borrow_mut().create_symbol();
-        self.state.symbol_sorts.borrow_mut().insert(s, sort);
+        self.state.symbols.borrow_mut().insert(s);
         s
     }
     pub(super) fn owns_symbol(&self, s: crate::Symbol) -> bool {
-        self.state.symbol_sorts.borrow().contains_key(&s)
+        self.state.symbols.borrow().contains(&s)
     }
-    pub fn symbol_info(&self, s: crate::Symbol) -> Option<crate::SymbolInfo> {
-        self.state
-            .symbol_sorts
-            .borrow()
-            .get(&s)
-            .cloned()
-            .or_else(|| self.state.parent.as_ref()?.symbol_info(s))
+    /// Whether `s` was allocated in this region or an enclosing one.
+    pub fn has_symbol(&self, s: crate::Symbol) -> bool {
+        self.owns_symbol(s) || self.state.parent.as_ref().is_some_and(|p| p.has_symbol(s))
     }
     pub fn id(&self) -> ContextID {
         ContextID::from(self)
@@ -103,7 +99,7 @@ impl TraceContext {
                         .last()
                         .map(|p| p.state.symbol_scope.clone())
                         .unwrap_or_default(),
-                    symbol_sorts: Default::default(),
+                    symbols: Default::default(),
                     parent: stack.last().cloned(),
                     local_id,
                     stack_offset,

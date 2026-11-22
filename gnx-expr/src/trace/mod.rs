@@ -17,7 +17,7 @@ use std::sync::{Arc, OnceLock, Weak};
 
 use crate::{HExpr, Op};
 
-pub use super::value::{ConcreteValue, Generic, Traceable, Value, ValueInfo};
+pub use super::value::{ConcreteValue, Generic, Info, Traceable, Value, VarInfo};
 
 /// A traced immutable value or shared mutable cell handle.
 #[derive(Clone, Debug)]
@@ -86,14 +86,14 @@ impl From<CellTrace> for ObjectTracer {
 /// passing its value to a computation; writes always use the cell API.
 ///
 /// ```compile_fail
-/// use gnx_expr::{CellTrace, TraceInput, ValueInfo};
-/// let cell = CellTrace::placeholder(ValueInfo::new(0usize));
+/// use gnx_expr::{CellTrace, TraceInput, VarInfo};
+/// let cell = CellTrace::placeholder(VarInfo::new(0usize));
 /// let argument: TraceInput = cell.into(); // No implicit read or access annotation.
 /// ```
 ///
 /// ```compile_fail
-/// use gnx_expr::{Generic, TraceInput, ObjectTracer, Tracer, ValueInfo};
-/// let value = Tracer::<Generic>::placeholder(ValueInfo::new(0usize));
+/// use gnx_expr::{Generic, TraceInput, ObjectTracer, Tracer, VarInfo};
+/// let value = Tracer::<Generic>::placeholder(VarInfo::new(0usize));
 /// let object = ObjectTracer::from(value);
 /// let argument: TraceInput = object.into(); // Match the object explicitly first.
 /// ```
@@ -116,7 +116,7 @@ impl<T: Traceable> From<Tracer<T>> for TraceInput {
 }
 
 pub enum TraceOutput {
-    Ref(ValueInfo),
+    Ref(VarInfo),
 }
 
 /// A node in the trace DAG. Nested bodies are always high-level expressions.
@@ -128,7 +128,7 @@ pub enum Invocation {
         op: Op,
         subexprs: Vec<(Arc<HExpr>, Vec<Trace>, Vec<crate::Symbol>)>,
         inputs: Vec<Trace>,
-        outputs: Vec<ValueInfo>,
+        outputs: Vec<VarInfo>,
         result_slots: OnceLock<Box<[Weak<TraceData>]>>,
     },
     ReadCell {
@@ -239,7 +239,7 @@ impl Invocation {
             Self::DeferredApply(apply) => &apply.aliasing_parents,
         }
     }
-    pub fn outputs(&self) -> &[ValueInfo] {
+    pub fn outputs(&self) -> &[VarInfo] {
         match self {
             Self::Apply { outputs, .. } => outputs,
             Self::ReadCell { cell, .. } => std::slice::from_ref(cell.type_info()),
@@ -252,7 +252,7 @@ impl Invocation {
         op: Op,
         subexprs: Vec<(Arc<HExpr>, Vec<TraceInput>)>,
         inputs: Vec<I>,
-        outputs: Vec<ValueInfo>,
+        outputs: Vec<VarInfo>,
     ) -> Vec<Tracer<Generic>>
     where
         I: Into<TraceInput>,
@@ -262,7 +262,7 @@ impl Invocation {
             subexprs
                 .into_iter()
                 .map(|(expr, closure)| {
-                    let captures = expr.symbol_closure().iter().map(|(s, _)| *s).collect();
+                    let captures = expr.symbol_closure().to_vec();
                     (expr, closure, captures)
                 })
                 .collect(),
@@ -276,7 +276,7 @@ impl Invocation {
         op: Op,
         subexprs: Vec<(Arc<HExpr>, Vec<TraceInput>, Vec<crate::Symbol>)>,
         inputs: Vec<I>,
-        outputs: Vec<ValueInfo>,
+        outputs: Vec<VarInfo>,
     ) -> Vec<Tracer<Generic>> {
         for (expr, closure, symbols) in &subexprs {
             assert_eq!(

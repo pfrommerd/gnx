@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use futures_executor::block_on;
 use gnx::graph::util::dag;
 use gnx::{Array, Callable, Eval, Graph, TryCallable, jit};
-use gnx_expr::{Invocation, Op, ValueInfo, hexpr};
+use gnx_expr::{Invocation, Op, VarInfo, hexpr};
 use gnx_math::ops::{self, add_op, mul_op, reduction::reduce_op, zeros_op};
 use gnx_math::{ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, Shape, TransferPolicy};
 use gnx_transforms::{grad, hessian, jvp, map, value_and_grad, vjp};
@@ -33,7 +33,7 @@ fn apply(op: Op, inputs: &[&Array], info: ArrayInfo) -> Array {
         op,
         vec![],
         inputs.iter().map(|a| a.tracer().clone()).collect(),
-        vec![ValueInfo::new(info)],
+        vec![VarInfo::new(info)],
     )
     .pop()
     .unwrap()
@@ -58,7 +58,7 @@ fn mul(a: &Array, b: &Array) -> Array {
 fn sum(a: &Array) -> Array {
     let axes: Vec<_> = (0..a.shape().dims().len()).collect();
     let scalar = ArrayInfo::new(Shape::fixed([]), a.dtype());
-    let metadata = ValueInfo::new(scalar.clone());
+    let metadata = VarInfo::new(scalar.clone());
     let reducer = hexpr! {
         |x: &metadata, y: &metadata| => {
             result: &metadata = array::add x, y;

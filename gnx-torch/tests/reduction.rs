@@ -1,4 +1,4 @@
-use gnx_expr::{ValueInfo, pass::Builder};
+use gnx_expr::{VarInfo, pass::Builder};
 use gnx_math::{
     ArrayInfo, DType, Shape,
     ops::{
@@ -10,8 +10,8 @@ use gnx_math::{
 use gnx_torch::{TorchDevice, TorchExecutable};
 use tch::{Kind, Tensor};
 
-fn info(shape: &[usize], dtype: DType) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed(shape.iter().copied()), dtype))
+fn info(shape: &[usize], dtype: DType) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed(shape.iter().copied()), dtype))
 }
 
 // A left-biased maximum that carries the integer payload from the winning

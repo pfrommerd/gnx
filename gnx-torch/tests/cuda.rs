@@ -1,5 +1,5 @@
 mod support;
-use gnx_expr::{Value, ValueInfo, pass::Builder};
+use gnx_expr::{Value, VarInfo, pass::Builder};
 use gnx_math::{
     ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, MemoryLocation, Shape, TransferPolicy,
     ops::{add_op, creation::iota},
@@ -28,7 +28,7 @@ fn cuda_import_compile_replay_and_readback() {
     let same = TorchDevice::cuda(0).unwrap();
     assert_eq!(d.id(), same.id());
     let info = ArrayInfo::new(Shape::fixed([3]), DType::F32);
-    let ty = ValueInfo::new(info.clone());
+    let ty = VarInfo::new(info.clone());
     let mut b = Builder::new();
     let x = b.input(ty.clone());
     let idx = b.emit1(iota(0), &[], ty.clone());

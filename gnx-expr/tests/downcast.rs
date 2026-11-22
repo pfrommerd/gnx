@@ -1,4 +1,4 @@
-use gnx_expr::{ConcreteValue, Value, ValueInfo};
+use gnx_expr::{ConcreteValue, Value, VarInfo};
 use std::fmt::Display;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -10,6 +10,8 @@ impl Display for SampleInfo {
     }
 }
 
+impl gnx_expr::Info for SampleInfo {}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SampleValue;
 
@@ -20,14 +22,14 @@ impl Display for SampleValue {
 }
 
 impl ConcreteValue for SampleValue {
-    fn to_info(&self) -> ValueInfo {
-        ValueInfo::new(SampleInfo)
+    fn to_info(&self) -> VarInfo {
+        VarInfo::new(SampleInfo)
     }
 }
 
 #[test]
 fn value_info_downcast() {
-    let info = ValueInfo::new(SampleInfo);
+    let info = VarInfo::new(SampleInfo);
     assert!(info.downcast::<SampleInfo>().is_ok());
 }
 

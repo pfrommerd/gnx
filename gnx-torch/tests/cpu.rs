@@ -1,6 +1,6 @@
 use futures_executor::block_on;
 use gnx_common::ops::reduction::reduce_add_op;
-use gnx_expr::{Eqn, Expr, Value, ValueInfo, VarScope};
+use gnx_expr::{Eqn, Expr, Value, VarInfo, VarScope};
 use gnx_math::{
     ArrayInfo, DType, DataHandle, Device, ExecOpts, HostBuffer, Shape, TransferPolicy, ops::*,
 };
@@ -9,8 +9,8 @@ use gnx_torch::TorchDevice;
 const COPY: ExecOpts = ExecOpts {
     transfers: TransferPolicy::AllowCopy,
 };
-fn ty(shape: &[usize]) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(
+fn ty(shape: &[usize]) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(
         Shape::fixed(shape.iter().copied()),
         DType::F32,
     ))

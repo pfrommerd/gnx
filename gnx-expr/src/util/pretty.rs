@@ -1,4 +1,4 @@
-use crate::{Eqn, Expr, HExpr, HInstr, Kind, ValueInfo, Var};
+use crate::{Eqn, Expr, HExpr, HInstr, Kind, Var, VarInfo};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -75,14 +75,14 @@ impl PrettyVarScope {
         write!(f, "{}", self.name_for(var))
     }
 
-    fn fmt_param(&self, (var, info): &(Var, ValueInfo), f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt_param(&self, (var, info): &(Var, VarInfo), f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.fmt_var(var, f)?;
         write!(f, ": {info}")
     }
 
     fn fmt_definition(
         &self,
-        (var, kind, info): &(Var, Kind, ValueInfo),
+        (var, kind, info): &(Var, Kind, VarInfo),
         f: &mut fmt::Formatter<'_>,
     ) -> fmt::Result {
         self.fmt_var(var, f)?;
@@ -618,14 +618,12 @@ fn fmt_symbol_args(f: &mut fmt::Formatter<'_>, args: &[crate::Symbol]) -> fmt::R
 }
 fn fmt_symbol_params(
     f: &mut fmt::Formatter<'_>,
-    closure: &[(crate::Symbol, crate::SymbolInfo)],
-    inputs: &[(crate::Symbol, crate::SymbolInfo)],
+    closure: &[crate::Symbol],
+    inputs: &[crate::Symbol],
 ) -> fmt::Result {
     if !closure.is_empty() || !inputs.is_empty() {
         write!(f, "[")?;
-        let decl = |(s, t): &(crate::Symbol, crate::SymbolInfo), f: &mut fmt::Formatter<'_>| {
-            write!(f, "{s}: {t}")
-        };
+        let decl = |s: &crate::Symbol, f: &mut fmt::Formatter<'_>| write!(f, "{s}");
         if !closure.is_empty() {
             fmt_list(f, closure, decl)?;
             write!(f, "; ")?;

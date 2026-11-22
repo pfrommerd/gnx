@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use gnx_expr::{
     Capture, CellAccess, CellTrace, DeferredApplyPlan, DeferredRegion, Dialect, HEqn, Invocation,
-    Op, Operation, Trace, TraceContext, ValueInfo, Var, hexpr,
+    Op, Operation, Trace, TraceContext, Var, VarInfo, hexpr,
 };
 
 struct TestDialect;
@@ -44,7 +44,7 @@ impl Operation for TestOperation {
 
 #[test]
 fn write_only_deferred_apply_preserves_the_operation_and_all_regions() {
-    let info = ValueInfo::new(0usize);
+    let info = VarInfo::new(0usize);
     let write = Arc::new(hexpr!(info.clone(); {
         lambda cell[:], value:
         cell[:] <- value;

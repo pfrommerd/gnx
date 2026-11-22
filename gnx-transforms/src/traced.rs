@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use gnx_common::ops::{ones_op, zeros_op};
 use gnx_expr::{
-    Capture, CellTrace, Invocation, Kind, ObjectTracer, Op, Trace, TraceContext, ValueInfo,
+    Capture, CellTrace, Invocation, Kind, ObjectTracer, Op, Trace, TraceContext, VarInfo,
 };
 use gnx_graph::util::GraphExt;
 use gnx_graph::{Builder, Graph, Key, Of};
@@ -46,7 +46,7 @@ impl<I: Graph> Leaves<I> {
         }
     }
 
-    pub fn kinds(&self) -> Vec<(Kind, ValueInfo)> {
+    pub fn kinds(&self) -> Vec<(Kind, VarInfo)> {
         self.objects.iter().map(kind).collect()
     }
 
@@ -97,18 +97,18 @@ pub(crate) fn value(object: &ObjectTracer, what: &str) -> TransformResult<Trace>
     }
 }
 
-pub(crate) fn constant(op: Op, info: ValueInfo) -> Trace {
+pub(crate) fn constant(op: Op, info: VarInfo) -> Trace {
     Invocation::invoke(op, vec![], Vec::<Trace>::new(), vec![info])
         .pop()
         .expect("one result")
         .into_trace_ref()
 }
 
-pub(crate) fn zeros(info: &ValueInfo) -> Trace {
+pub(crate) fn zeros(info: &VarInfo) -> Trace {
     constant(zeros_op(), info.clone())
 }
 
-pub(crate) fn ones(info: &ValueInfo) -> Trace {
+pub(crate) fn ones(info: &VarInfo) -> Trace {
     constant(ones_op(), info.clone())
 }
 
@@ -150,7 +150,7 @@ pub(crate) fn differentiated(
 
 /// Trace a closure of placeholder values into a region capture.
 pub(crate) fn trace_region(
-    infos: &[ValueInfo],
+    infos: &[VarInfo],
     build: impl FnOnce(&[Trace]) -> TransformResult<Vec<Trace>>,
 ) -> TransformResult<Capture> {
     let guard = TraceContext::enter();

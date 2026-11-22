@@ -5,7 +5,7 @@ use crate::{CellAccess, HExpr, Kind, Op};
 
 use super::{
     CellKey, CellTrace, ContextID, Invocation, ObjectTracer, Trace, TraceContext, TraceData,
-    ValueInfo,
+    VarInfo,
 };
 
 /// A region and its bindings in a deferred application. How explicit operands
@@ -34,7 +34,7 @@ pub struct DeferredLocal {
 pub struct DeferredApplyPlan {
     pub regions: Vec<DeferredRegion>,
     pub inputs: Vec<ObjectTracer>,
-    pub outputs: Vec<(Kind, ValueInfo)>,
+    pub outputs: Vec<(Kind, VarInfo)>,
     pub projections: Vec<DeferredProjection>,
     /// List each caller-local cell used as an input or capture once.
     pub locals: Vec<DeferredLocal>,
@@ -47,11 +47,11 @@ pub struct DeferredApply {
     pub(super) op: Op,
     pub(super) regions: Vec<DeferredRegion>,
     pub(super) inputs: Vec<ObjectTracer>,
-    pub(super) kinds: Vec<(Kind, ValueInfo)>,
+    pub(super) kinds: Vec<(Kind, VarInfo)>,
     pub(super) results: Vec<Projection>,
     pub(super) value_parents: Vec<Trace>,
     pub(super) aliasing_parents: Vec<Arc<Invocation>>,
-    pub(super) outputs: Vec<ValueInfo>,
+    pub(super) outputs: Vec<VarInfo>,
     pub(super) result_slots: OnceLock<Box<[Weak<TraceData>]>>,
 }
 

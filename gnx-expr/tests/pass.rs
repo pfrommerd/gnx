@@ -1,6 +1,6 @@
 use gnx_expr::pass::{Builder, CheckSupported, Dce, FnPass, Pass, Pipeline, dce, rewrite};
 use gnx_expr::{
-    Dialect, Eqn, Expr, Op, Operation, SubExpr, ValueInfo, VarScope, register_op_interface,
+    Dialect, Eqn, Expr, Op, Operation, SubExpr, VarInfo, VarScope, register_op_interface,
 };
 
 struct TestDialect;
@@ -47,8 +47,8 @@ trait Supported: Sync {}
 impl Supported for Neg {}
 register_op_interface!(dyn Supported: Neg);
 
-fn info() -> ValueInfo {
-    ValueInfo::new(0usize)
+fn info() -> VarInfo {
+    VarInfo::new(0usize)
 }
 fn neg() -> Op {
     Op::new(Neg)

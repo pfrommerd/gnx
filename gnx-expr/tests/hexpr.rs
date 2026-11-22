@@ -1,6 +1,6 @@
 use gnx_expr::{
     Capture, CaptureError, CellAccess, CellTrace, Dialect, Generic, HInstr, InputId, InputSpec,
-    Invocation, Kind, LoweringError, Op, Operation, TraceContext, Tracer, TracerKey, ValueInfo,
+    Invocation, Kind, LoweringError, Op, Operation, TraceContext, Tracer, TracerKey, VarInfo,
     lower,
 };
 
@@ -31,7 +31,7 @@ impl AliasLowering for gnx_expr::HExpr {
             })
             .max()
             .map_or(0, |id| id + 1);
-        let mut bind = |params: &[(gnx_expr::Var, Kind, ValueInfo)], ids: &[InputId]| {
+        let mut bind = |params: &[(gnx_expr::Var, Kind, VarInfo)], ids: &[InputId]| {
             let mut ids = ids.iter();
             params
                 .iter()
@@ -55,8 +55,8 @@ impl AliasLowering for gnx_expr::HExpr {
     }
 }
 
-fn info() -> ValueInfo {
-    ValueInfo::new(0usize)
+fn info() -> VarInfo {
+    VarInfo::new(0usize)
 }
 fn value() -> Tracer<Generic> {
     Tracer::placeholder(info())
@@ -110,7 +110,7 @@ fn neg(x: Tracer<Generic>) -> Tracer<Generic> {
 fn captured_equation_result_keeps_its_kind_at_the_definition() {
     let guard = TraceContext::enter();
     let input = value();
-    let result_info = ValueInfo::new(17usize);
+    let result_info = VarInfo::new(17usize);
     let result = Invocation::invoke(
         Op::new(Neg),
         vec![],
@@ -468,7 +468,7 @@ fn local_computation_and_rebinding_do_not_form_an_ownership_cycle() {
 fn alias_bindings_must_have_compatible_cell_types() {
     let guard = TraceContext::enter();
     let a = cell();
-    let b = CellTrace::placeholder(ValueInfo::new(1usize));
+    let b = CellTrace::placeholder(VarInfo::new(1usize));
     let captured = Capture::from_context(guard.context(), &[a.into(), b.into()], &[]).unwrap();
     assert!(matches!(
         captured.expr().lower_with_aliases(&CellAliases {
@@ -481,7 +481,7 @@ fn alias_bindings_must_have_compatible_cell_types() {
 
 #[test]
 fn immutable_calls_preserve_the_boundary_without_duplicating_captures_as_arguments() {
-    let body = gnx_expr::hexpr!(gnx_expr::ValueInfo::new(0usize); {
+    let body = gnx_expr::hexpr!(gnx_expr::VarInfo::new(0usize); {
         lambda capture; argument:
         output = test::neg argument;
         in (output)

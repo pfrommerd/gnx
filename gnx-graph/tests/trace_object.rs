@@ -1,6 +1,6 @@
 use gnx_expr::{
     Capture, CellKey, HInstr, CellTrace, TraceContext, ObjectTracer, ObjectTracerRef, Trace,
-    Tracer, TracerKey, ValueInfo,
+    Tracer, TracerKey, VarInfo,
 };
 use gnx_graph::util::GraphExt;
 use gnx_graph::{
@@ -9,8 +9,8 @@ use gnx_graph::{
 };
 use gnx_common::{Array, ArrayInfo, ArrayRef, DType, Shape};
 
-fn info() -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed([4]), DType::F32))
+fn info() -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed([4]), DType::F32))
 }
 fn trace() -> Trace {
     Tracer::<Array>::placeholder(info()).into_trace_ref()
@@ -22,7 +22,7 @@ fn array() -> Array {
     Array::from(Tracer::<Array>::placeholder(info()))
 }
 fn non_array_trace() -> Trace {
-    Trace::placeholder(ValueInfo::new(0u32))
+    Trace::placeholder(VarInfo::new(0u32))
 }
 fn array_ref() -> ArrayRef {
     <ArrayRef as Leaf>::try_from_value(cell()).unwrap()
@@ -265,7 +265,7 @@ fn typed_conversions_reject_wrong_variants_and_metadata_families() {
     let array_value = ObjectTracer::Ref(trace());
     let array_cell = ObjectTracer::Cell(cell());
     let other_value = ObjectTracer::Ref(non_array_trace());
-    let other_cell = ObjectTracer::Cell(CellTrace::placeholder(ValueInfo::new(0u32)));
+    let other_cell = ObjectTracer::Cell(CellTrace::placeholder(VarInfo::new(0u32)));
     assert_same(
         &array_cell,
         &<Array as Leaf>::try_from_value(array_cell.clone())

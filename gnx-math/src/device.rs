@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::io;
 
-use gnx_expr::{ConcreteValue, Expr, Value, ValueInfo, Var};
+use gnx_expr::{ConcreteValue, Expr, Value, Var, VarInfo};
 
 use crate::buffer::TransferPolicy;
 
@@ -79,7 +79,7 @@ impl ExecutionBoundary {
                 }
             }
             eqns.reverse();
-            let mut pick = |(var, info): &(Var, ValueInfo)| {
+            let mut pick = |(var, info): &(Var, VarInfo)| {
                 (used.contains(var) || !info.symbols().is_empty()).then(|| {
                     argument_indices.push(parameters[var]);
                     (*var, info.clone())

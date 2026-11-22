@@ -3,7 +3,7 @@ use gnx::ops::contraction::{DotDimensions, dot_general};
 use gnx::{
     Array, Shape,
     array::{ArrayInfo, DType, Dim},
-    expr::{Invocation, Op, ValueInfo},
+    expr::{Invocation, Op, VarInfo},
     ops::{self, elementwise as e},
 };
 
@@ -17,8 +17,8 @@ pub fn dims(x: &Array) -> Vec<usize> {
         })
         .collect()
 }
-fn info(s: &[usize], t: DType) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed(s.iter().copied()), t))
+fn info(s: &[usize], t: DType) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed(s.iter().copied()), t))
 }
 pub fn apply(op: Op, xs: &[&Array], s: &[usize], t: DType) -> Array {
     Invocation::invoke(

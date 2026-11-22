@@ -1,7 +1,7 @@
 //! Exercise each load order in a fresh process; both devices stay live in each child.
 #![cfg(all(target_os = "linux", target_arch = "x86_64", feature = "qwen-example"))]
 
-use gnx_expr::{Value, ValueInfo, pass::Builder};
+use gnx_expr::{Value, VarInfo, pass::Builder};
 use gnx_math::{
     ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, Shape, TransferPolicy,
     ops::{
@@ -22,7 +22,7 @@ fn info(shape: [usize; 4]) -> ArrayInfo {
 fn torch_conv(d: &TorchDevice, scale: f32) {
     let ones = |shape| {
         let mut b = Builder::new();
-        let v = b.emit1(ones_op(), &[], ValueInfo::new(info(shape)));
+        let v = b.emit1(ones_op(), &[], VarInfo::new(info(shape)));
         let p = d.compile(&b.finish(vec![v])).unwrap();
         p.modules()
             .next()
@@ -41,8 +41,8 @@ fn torch_conv(d: &TorchDevice, scale: f32) {
 }
 fn xla_conv(d: &XlaDevice, scale: f32) {
     let mut b = Builder::new();
-    let x = b.input(ValueInfo::new(info(X)));
-    let w = b.input(ValueInfo::new(info(W)));
+    let x = b.input(VarInfo::new(info(X)));
+    let w = b.input(VarInfo::new(info(W)));
     let axes = ConvAxes {
         batch: 0,
         feature: 1,
@@ -65,7 +65,7 @@ fn xla_conv(d: &XlaDevice, scale: f32) {
             batch_groups: 1,
         }),
         &[x, w],
-        ValueInfo::new(info(Y)),
+        VarInfo::new(info(Y)),
     );
     let arg = |shape: [usize; 4], v: f32| {
         Value::new(DataHandle::new(

@@ -1,11 +1,11 @@
 use gnx_expr::{
     Capture, CellTrace, Dialect, Generic, InputId, InputSpec, Invocation, ObjectTracer, Op,
-    Operation, Trace, TraceContext, Tracer, TracerKey, ValueInfo,
+    Operation, Trace, TraceContext, Tracer, TracerKey, VarInfo,
 };
 use gnx_transforms::cf::call_lowered;
 
-fn info() -> ValueInfo {
-    ValueInfo::new(0usize)
+fn info() -> VarInfo {
+    VarInfo::new(0usize)
 }
 fn value() -> Trace {
     Trace::placeholder(info())

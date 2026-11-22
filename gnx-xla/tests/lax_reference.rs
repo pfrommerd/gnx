@@ -1,13 +1,13 @@
 // Reference values generated with jax.lax and jax.jvp on CPU (JAX 0.12.0.1).
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Op, Value, ValueInfo};
+use gnx_expr::{Op, Value, VarInfo};
 use gnx_math::ops::{dtype, elementwise, special};
 use gnx_math::{ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, Shape, TransferPolicy};
 use gnx_xla::XlaDevice;
 
-fn info(dtype: DType) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed([3]), dtype))
+fn info(dtype: DType) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed([3]), dtype))
 }
 
 fn input(values: &[f32; 3]) -> Value {

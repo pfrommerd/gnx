@@ -1,11 +1,12 @@
 use super::trace::Tracer;
+use crate::{DynEq, DynHash};
 use std::any::{Any, TypeId};
 use std::fmt::{Debug, Display};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 pub trait ConcreteValue: Any + Send + Sync + Debug + Display {
-    fn to_info(&self) -> ValueInfo;
+    fn to_info(&self) -> VarInfo;
 }
 
 /// An immutable concrete value. Cloning retains its storage, without copying it.
@@ -15,7 +16,7 @@ pub struct Value(Arc<dyn ConcreteValue>);
 unsafe impl castaway::LifetimeFree for Value {}
 
 impl ConcreteValue for Value {
-    fn to_info(&self) -> ValueInfo {
+    fn to_info(&self) -> VarInfo {
         self.0.to_info()
     }
 }
@@ -56,43 +57,39 @@ impl Value {
     }
 }
 
+/// The dialect-defined metadata of a variable: the type of a value or cell.
+/// An owned, cheaply cloned [`Info`] of any concrete type.
 #[derive(Clone)]
-pub struct ValueInfo(Arc<dyn AnyInfo>, Option<Arc<[crate::Symbol]>>);
+pub struct VarInfo(Arc<dyn Info>);
 
-impl From<&ValueInfo> for ValueInfo {
-    fn from(info: &ValueInfo) -> Self {
+impl From<&VarInfo> for VarInfo {
+    fn from(info: &VarInfo) -> Self {
         info.clone()
     }
 }
 
-impl ValueInfo {
-    /// Outer symbols for the dialect payload’s ordered symbol slots.
-    pub fn with_symbols(mut self, symbols: impl IntoIterator<Item = crate::Symbol>) -> Self {
-        let symbols: Vec<_> = symbols.into_iter().collect();
-        self.1 = (!symbols.is_empty()).then(|| symbols.into());
-        self
-    }
+impl VarInfo {
+    /// The symbol in each of the payload's symbol slots. See [`Info::symbols`].
     pub fn symbols(&self) -> &[crate::Symbol] {
-        self.1.as_deref().unwrap_or_default()
+        (*self.0).symbols()
     }
-    pub fn remap_symbols(&self, f: impl FnMut(crate::Symbol) -> crate::Symbol) -> Self {
-        if self.1.is_none() {
-            return self.clone();
-        }
-        self.clone()
-            .with_symbols(self.symbols().iter().copied().map(f))
+    /// Replace the symbol in every slot. See [`Info::remap_symbols`].
+    pub fn remap_symbols(&self, mut f: impl FnMut(crate::Symbol) -> crate::Symbol) -> Self {
+        (*self.0)
+            .remap_symbols(&mut f)
+            .unwrap_or_else(|| self.clone())
     }
-    pub fn new<T: AnyInfo>(value: T) -> Self {
-        // if T is ValueInfo, use it directly
+    pub fn new<T: Info>(value: T) -> Self {
+        // if T is VarInfo, use it directly
         match castaway::cast!(value, Self) {
             Ok(value) => return value,
-            Err(value) => ValueInfo(Arc::new(value), None),
+            Err(value) => VarInfo(Arc::new(value)),
         }
     }
 
     // SAFETY: The caller has checked that the value is of type T.
-    pub unsafe fn downcast_into_unchecked<T: AnyInfo + Clone>(self) -> T {
-        // If T is ValueInfo, use it directly. Otherwise upcast to dyn Any
+    pub unsafe fn downcast_into_unchecked<T: Info + Clone>(self) -> T {
+        // If T is VarInfo, use it directly. Otherwise upcast to dyn Any
         let value: Arc<dyn Any + Send + Sync> = match castaway::cast!(self, T) {
             Ok(value) => return value,
             Err(value) => value.0,
@@ -101,8 +98,8 @@ impl ValueInfo {
         Arc::unwrap_or_clone(value)
     }
 
-    pub fn downcast_into<T: AnyInfo + Clone>(self) -> Result<T, Self> {
-        // If T is ValueInfo, just return self
+    pub fn downcast_into<T: Info + Clone>(self) -> Result<T, Self> {
+        // If T is VarInfo, just return self
         castaway::cast!(self, T).or_else(|_value| {
             let value: &dyn Any = _value.0.as_ref();
             if value.type_id() == TypeId::of::<T>() {
@@ -114,8 +111,8 @@ impl ValueInfo {
             }
         })
     }
-    pub unsafe fn downcast_unchecked<T: AnyInfo>(&self) -> &T {
-        // If T is &ValueInfo, use it directly. Otherwise upcast to dyn Any
+    pub unsafe fn downcast_unchecked<T: Info>(&self) -> &T {
+        // If T is &VarInfo, use it directly. Otherwise upcast to dyn Any
         let value: &dyn Any = match castaway::cast!(self, &T) {
             Ok(value) => return value,
             Err(value) => value.0.as_ref(),
@@ -124,8 +121,8 @@ impl ValueInfo {
         let value: &T = unsafe { value.downcast_ref().unwrap_unchecked() };
         value
     }
-    pub fn downcast<T: AnyInfo>(&self) -> Result<&T, ()> {
-        // If T is &ValueInfo, just return self
+    pub fn downcast<T: Info>(&self) -> Result<&T, ()> {
+        // If T is &VarInfo, just return self
         castaway::cast!(self, &T).or_else(|_value| {
             let value: &dyn Any = _value.0.as_ref();
             value.downcast_ref::<T>().ok_or(())
@@ -133,26 +130,15 @@ impl ValueInfo {
     }
 }
 
-impl Display for ValueInfo {
+impl Display for VarInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(self.0.as_ref(), f)?;
-        if !self.symbols().is_empty() {
-            write!(f, "@[")?;
-            for (i, s) in self.symbols().iter().enumerate() {
-                if i != 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{s}")?;
-            }
-            write!(f, "]")?;
-        }
-        Ok(())
+        Display::fmt(self.0.as_ref(), f)
     }
 }
 
 pub trait Traceable: Into<Tracer<Self>> + From<Tracer<Self>> {
     type Concrete: ConcreteValue;
-    type Info: AnyInfo;
+    type Info: Info;
 }
 
 pub struct Generic(Tracer<Generic>);
@@ -171,67 +157,71 @@ impl From<Tracer<Generic>> for Generic {
 
 impl Traceable for Generic {
     type Concrete = Value;
-    type Info = ValueInfo;
+    type Info = VarInfo;
 }
 
-// Seal the AnyInfo trait to prevent external implementations.
-mod private {
-    pub trait Sealed {}
-}
-
-// Any type which implements Send + Sync + Debug + Display
-// can be used as a ValueInfo.
-pub trait AnyInfo: Any + Send + Sync + Debug + Display + private::Sealed {
-    fn dyn_hash(&self, state: &mut dyn std::hash::Hasher);
-    fn dyn_eq(&self, other: &dyn AnyInfo) -> bool;
-}
-
-// Implement the sealed trait for the same blanket
-// types that AnyInfo is implemented for.
-// This means that any type that implements private::Sealed
-// must also use the below impl for AnyInfo.
-impl<T> private::Sealed for T where T: Any + Send + Sync + Debug + Display + Clone + Hash + Eq {}
-
-impl<T> AnyInfo for T
-where
-    T: Any + Send + Sync,
-    T: Debug + Display + Clone + Hash + Eq,
-{
-    fn dyn_hash(&self, mut state: &mut dyn Hasher) {
-        Hash::hash(self, &mut state);
+/// Dialect-defined metadata of a variable.
+///
+/// Metadata can refer to region-local [`Symbol`](crate::Symbol)s through an
+/// ordered list of symbol slots. The dialect owns the meaning of each slot.
+/// An info without symbols needs only `impl Info for T {}`.
+pub trait Info: Any + Send + Sync + Debug + Display + DynHash + DynEq {
+    /// The symbol in each slot, in slot order. A symbol can fill several slots.
+    fn symbols(&self) -> &[crate::Symbol] {
+        &[]
     }
-    fn dyn_eq(&self, other: &dyn AnyInfo) -> bool {
-        let s: &dyn Any = other;
-        match s.downcast_ref::<Self>() {
-            Some(other) => self == other,
-            None => false,
-        }
+    /// Rebuild this info with `f` applied to the symbol in each slot, in slot
+    /// order. `None` leaves the info unchanged, which is only correct for an
+    /// info without symbols.
+    fn remap_symbols(&self, _f: &mut dyn FnMut(crate::Symbol) -> crate::Symbol) -> Option<VarInfo> {
+        None
     }
 }
 
-impl Debug for ValueInfo {
+impl Info for VarInfo {
+    fn symbols(&self) -> &[crate::Symbol] {
+        (*self.0).symbols()
+    }
+    fn remap_symbols(&self, f: &mut dyn FnMut(crate::Symbol) -> crate::Symbol) -> Option<VarInfo> {
+        (*self.0).remap_symbols(f)
+    }
+}
+
+macro_rules! symbol_free_info {
+    ($($t:ty),* $(,)?) => { $(impl Info for $t {})* };
+}
+symbol_free_info!(
+    bool,
+    char,
+    u8,
+    u16,
+    u32,
+    u64,
+    usize,
+    i8,
+    i16,
+    i32,
+    i64,
+    isize,
+    &'static str,
+    String,
+);
+
+impl Debug for VarInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.symbols().is_empty() {
-            Debug::fmt(self.0.as_ref(), f)
-        } else {
-            f.debug_tuple("ValueInfo")
-                .field(&self.0)
-                .field(&self.symbols())
-                .finish()
-        }
+        Debug::fmt(self.0.as_ref(), f)
     }
 }
 
-impl Hash for ValueInfo {
+impl Hash for VarInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.0.type_id().hash(state);
-        self.symbols().hash(state);
-        self.0.dyn_hash(state);
+        (*self.0).type_id().hash(state);
+        (*self.0).dyn_hash(state);
     }
 }
-impl PartialEq for ValueInfo {
+impl PartialEq for VarInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.symbols() == other.symbols() && self.0.dyn_eq(other.0.as_ref())
+        (*self.0).dyn_eq(other.0.as_ref())
     }
 }
-impl Eq for ValueInfo {}
+impl Eq for VarInfo {}

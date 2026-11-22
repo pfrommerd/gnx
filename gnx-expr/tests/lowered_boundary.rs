@@ -1,10 +1,10 @@
 use gnx_expr::{
     Capture, CellTrace, Dialect, Generic, HExpr, InputId, InputSpec, Invocation, Kind,
-    LoweringError, Op, Operation, TraceContext, Tracer, ValueInfo, lower,
+    LoweringError, Op, Operation, TraceContext, Tracer, VarInfo, lower,
 };
 
 fn distinct_parameters(expr: &HExpr) -> InputSpec {
-    let bind = |params: &[(gnx_expr::Var, Kind, ValueInfo)], source: fn(usize) -> InputId| {
+    let bind = |params: &[(gnx_expr::Var, Kind, VarInfo)], source: fn(usize) -> InputId| {
         params
             .iter()
             .enumerate()
@@ -44,8 +44,8 @@ impl Operation for Compute {
         &DIALECT
     }
 }
-fn info() -> ValueInfo {
-    ValueInfo::new(0usize)
+fn info() -> VarInfo {
+    VarInfo::new(0usize)
 }
 fn value() -> Tracer<Generic> {
     Tracer::placeholder(info())
@@ -297,7 +297,7 @@ fn input_spec_validates_kinds_metadata_and_arity() {
     let guard = TraceContext::enter();
     let x = value();
     let captured = Capture::from_context(guard.context(), &[x.into()], &[]).unwrap();
-    for (kind, metadata) in [(Kind::Cell, info()), (Kind::Value, ValueInfo::new(1usize))] {
+    for (kind, metadata) in [(Kind::Cell, info()), (Kind::Value, VarInfo::new(1usize))] {
         let spec = InputSpec {
             closure: vec![],
             inputs: vec![(InputId::Input(0), kind, metadata)],
@@ -367,7 +367,7 @@ fn input_spec_from_args_shares_value_and_cell_identities_across_both_lists() {
 
 #[test]
 fn a_call_that_only_forwards_an_input_needs_no_equation() {
-    let body = gnx_expr::hexpr!(gnx_expr::ValueInfo::new(0usize); { lambda formal: in (formal) });
+    let body = gnx_expr::hexpr!(gnx_expr::VarInfo::new(0usize); { lambda formal: in (formal) });
     let guard = TraceContext::enter();
     let x = value();
     let result = gnx_transforms::cf::call_immutable(

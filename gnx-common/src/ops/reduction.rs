@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::{ArrayInfo, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
-use gnx_expr::{Expr, SubExpr, ValueInfo, Var};
+use gnx_expr::{Expr, SubExpr, Var, VarInfo};
 
 use super::{
     Dialect, Eqn, Op, Operation, Result, arity, fmt, result_rank, signature, strictly_increasing,
@@ -57,7 +57,7 @@ array_operation!(
 );
 
 #[doc(hidden)]
-pub fn array(info: &ValueInfo) -> Result<&ArrayInfo> {
+pub fn array(info: &VarInfo) -> Result<&ArrayInfo> {
     info.downcast::<ArrayInfo>()
         .map_err(|_| signature("reduction values must be arrays"))
 }
@@ -93,7 +93,7 @@ fn check_reducer(reducer: &Expr, dtypes: &[crate::DType]) -> Result<()> {
         return Err(signature("invalid reducer arity or captures"));
     }
     for (i, &dtype) in dtypes.iter().enumerate() {
-        let scalar = ValueInfo::new(ArrayInfo::new(Shape::fixed([]), dtype));
+        let scalar = VarInfo::new(ArrayInfo::new(Shape::fixed([]), dtype));
         if reducer.inputs()[i].1 != scalar
             || reducer.inputs()[i + count].1 != scalar
             || reducer.value_info(&reducer.outputs()[i]) != Some(&scalar)
@@ -171,10 +171,7 @@ pub fn emit(
             ));
         }
         dtypes.push(operand.dtype());
-        results.push(ValueInfo::new(ArrayInfo::new(
-            shape.clone(),
-            operand.dtype(),
-        )));
+        results.push(VarInfo::new(ArrayInfo::new(shape.clone(), operand.dtype())));
     }
     let inputs: Vec<_> = operands.iter().chain(initial).copied().collect();
     check_reducer(&reducer, &dtypes)?;
@@ -193,6 +190,6 @@ pub fn reduce_add(builder: &mut Builder, operand: Var, axes: &[usize]) -> Result
     let input = array(builder.info(operand))?;
     let dims = fixed_dims(input).map_err(|_| signature("reduction requires fixed dimensions"))?;
     let shape = Shape::fixed(reduced_shape(&dims, axes)?);
-    let result = ValueInfo::new(ArrayInfo::new(shape, input.dtype()));
+    let result = VarInfo::new(ArrayInfo::new(shape, input.dtype()));
     Ok(builder.emit1(reduce_add_op(axes), &[operand], result))
 }

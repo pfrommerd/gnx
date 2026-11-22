@@ -1,6 +1,6 @@
 //! Lazy elementwise arithmetic on owned or borrowed arrays.
 use crate::{Array, ArrayInfo, DType, Dim, Shape, ops};
-use gnx_expr::{Invocation, LoweringError, Op, ValueInfo};
+use gnx_expr::{Invocation, LoweringError, Op, VarInfo};
 use std::ops::{Add, Div, Mul, Rem, Sub};
 
 fn apply(op: Op, inputs: &[&Array], info: &ArrayInfo) -> Array {
@@ -8,7 +8,7 @@ fn apply(op: Op, inputs: &[&Array], info: &ArrayInfo) -> Array {
         op,
         vec![],
         inputs.iter().map(|x| x.tracer().clone()).collect(),
-        vec![ValueInfo::new(info.clone())],
+        vec![VarInfo::new(info.clone())],
     )
     .remove(0)
     .try_cast::<Array>()

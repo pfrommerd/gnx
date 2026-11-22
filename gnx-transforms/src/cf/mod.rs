@@ -12,7 +12,7 @@ use gnx_expr::lower::{FixedRegion, LoweringContext, RegionCell, StructuredRegion
 use gnx_expr::{
     Capture, CellAccess, CellKey, DeferredApplyPlan, DeferredLocal, DeferredProjection,
     DeferredRegion, Dialect, Eqn, Expr, HEqn, HExpr, Invocation, Kind, LoweringError, ObjectTracer,
-    Op, Trace, ValueInfo, Var,
+    Op, Trace, Var, VarInfo,
 };
 
 mod branch;
@@ -70,11 +70,11 @@ fn fmt_control_flow(f: &mut fmt::Formatter<'_>, name: &str, state_len: usize) ->
 // Tracing helpers
 // ---------------------------------------------------------------------------
 
-fn scalar(dtype: DType) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed([]), dtype))
+fn scalar(dtype: DType) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed([]), dtype))
 }
 
-pub(crate) fn value_results(body: &HExpr) -> RegionResult<Vec<ValueInfo>> {
+pub(crate) fn value_results(body: &HExpr) -> RegionResult<Vec<VarInfo>> {
     body.outputs()
         .iter()
         .map(|var| match body.definition(var) {
@@ -88,7 +88,7 @@ pub(crate) fn value_results(body: &HExpr) -> RegionResult<Vec<ValueInfo>> {
 
 pub(crate) fn expect_inputs(
     body: &HExpr,
-    expected: impl IntoIterator<Item = (Kind, ValueInfo)>,
+    expected: impl IntoIterator<Item = (Kind, VarInfo)>,
 ) -> RegionResult<()> {
     if body
         .inputs()
@@ -102,7 +102,7 @@ pub(crate) fn expect_inputs(
     }
 }
 
-fn object_kind(object: &ObjectTracer) -> (Kind, ValueInfo) {
+fn object_kind(object: &ObjectTracer) -> (Kind, VarInfo) {
     match object {
         ObjectTracer::Ref(trace) => (Kind::Value, trace.info().clone()),
         ObjectTracer::Cell(cell) => (Kind::Cell, cell.type_info().clone()),
@@ -119,7 +119,7 @@ pub(crate) fn defer_regions(
     op: Op,
     regions: Vec<BoundRegion<'_>>,
     inputs: Vec<ObjectTracer>,
-    infos: Vec<ValueInfo>,
+    infos: Vec<VarInfo>,
 ) -> RegionResult<Vec<Trace>> {
     let mut locals = BTreeMap::<CellKey, DeferredLocal>::new();
     let mut external_access = CellAccess::Unused;
@@ -158,13 +158,7 @@ pub(crate) fn defer_regions(
             regions: regions
                 .into_iter()
                 .map(|region| DeferredRegion {
-                    symbol_captures: region
-                        .capture
-                        .expr()
-                        .symbol_closure()
-                        .iter()
-                        .map(|(s, _)| *s)
-                        .collect(),
+                    symbol_captures: region.capture.expr().symbol_closure().to_vec(),
                     body: Arc::new(region.capture.expr().clone()),
                     captures: region.capture.closure().to_vec(),
                 })
@@ -182,7 +176,7 @@ pub(crate) fn defer_regions(
 // Lowering helpers
 // ---------------------------------------------------------------------------
 
-fn value_infos(outputs: &[(Var, Kind, ValueInfo)]) -> RegionResult<Vec<ValueInfo>> {
+fn value_infos(outputs: &[(Var, Kind, VarInfo)]) -> RegionResult<Vec<VarInfo>> {
     outputs
         .iter()
         .map(|(var, kind, info)| match kind {
@@ -196,7 +190,7 @@ fn value_infos(outputs: &[(Var, Kind, ValueInfo)]) -> RegionResult<Vec<ValueInfo
 /// carried state slots.
 struct StateLayout {
     cells: Vec<RegionCell>,
-    slots: Vec<(RegionCell, ValueInfo)>,
+    slots: Vec<(RegionCell, VarInfo)>,
     initial: Vec<Var>,
 }
 
@@ -254,14 +248,14 @@ impl StateLayout {
 // Expression checking helpers
 // ---------------------------------------------------------------------------
 
-fn parameters(expr: &Expr) -> impl Iterator<Item = &ValueInfo> {
+fn parameters(expr: &Expr) -> impl Iterator<Item = &VarInfo> {
     expr.inputs().iter().map(|(_, info)| info)
 }
 
 fn check_child(
     expr: &Expr,
-    inputs: impl IntoIterator<Item = ValueInfo>,
-    outputs: &[ValueInfo],
+    inputs: impl IntoIterator<Item = VarInfo>,
+    outputs: &[VarInfo],
 ) -> RegionResult<()> {
     if !parameters(expr).cloned().eq(inputs)
         || !expr
@@ -275,6 +269,6 @@ fn check_child(
     Ok(())
 }
 
-fn expr_output_infos(eqn: &Eqn) -> Vec<ValueInfo> {
+fn expr_output_infos(eqn: &Eqn) -> Vec<VarInfo> {
     eqn.outputs().iter().map(|(_, info)| info.clone()).collect()
 }

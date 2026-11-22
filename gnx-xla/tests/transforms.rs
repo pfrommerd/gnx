@@ -5,7 +5,7 @@ use futures_executor::block_on;
 use gnx::Eval;
 use gnx_expr::pass::Builder;
 use gnx_expr::{
-    Capture, Dialect, Eqn, ObjectTracer, Op, Operation, Trace, TraceContext, Value, ValueInfo,
+    Capture, Dialect, Eqn, ObjectTracer, Op, Operation, Trace, TraceContext, Value, VarInfo,
     register_op_interface,
 };
 use gnx_math::ops::{add_op, mul_op};
@@ -30,8 +30,8 @@ const COPY: ExecOpts = ExecOpts {
     transfers: TransferPolicy::AllowCopy,
 };
 
-fn info(dims: &[usize], dtype: DType) -> ValueInfo {
-    ValueInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), dtype))
+fn info(dims: &[usize], dtype: DType) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), dtype))
 }
 fn constant(dims: &[usize], dtype: DType, bytes: Vec<u8>) -> Trace {
     let data = DataHandle::new(
@@ -41,7 +41,7 @@ fn constant(dims: &[usize], dtype: DType, bytes: Vec<u8>) -> Trace {
         )
         .unwrap(),
     );
-    let info = ValueInfo::new(data.info());
+    let info = VarInfo::new(data.info());
     Trace::concrete(Value::new(data), info)
 }
 fn floats(dims: &[usize], data: &[f32]) -> Trace {
@@ -54,7 +54,7 @@ fn floats(dims: &[usize], data: &[f32]) -> Trace {
 fn bools(dims: &[usize], data: &[bool]) -> Trace {
     constant(dims, DType::Bool, data.iter().map(|&x| x as u8).collect())
 }
-fn apply(op: Op, inputs: &[&Trace], info: ValueInfo) -> Trace {
+fn apply(op: Op, inputs: &[&Trace], info: VarInfo) -> Trace {
     gnx_expr::Invocation::invoke(
         op,
         vec![],
@@ -71,7 +71,7 @@ fn add(a: &Trace, b: &Trace) -> Trace {
 fn mul(a: &Trace, b: &Trace) -> Trace {
     apply(mul_op(), &[a, b], a.info().clone())
 }
-fn region(infos: &[ValueInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Capture {
+fn region(infos: &[VarInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Capture {
     let ctx = TraceContext::enter();
     let args: Vec<_> = infos.iter().cloned().map(Trace::placeholder).collect();
     let outputs = build(&args);

@@ -9,7 +9,7 @@ mod structural;
 use std::collections::HashMap;
 use std::io;
 
-use gnx_expr::{Eqn, Expr, ValueInfo, Var};
+use gnx_expr::{Eqn, Expr, Var, VarInfo};
 use gnx_math::ops::{
     AddOperation, BroadcastInDimOperation, EyeOperation, MulOperation, OnesOperation,
     ReshapeOperation, RevOperation, SelectOperation, TransposeOperation, ZerosOperation,
@@ -67,7 +67,7 @@ impl LoweringContext<'_> {
     }
 }
 
-pub(super) fn metadata(info: &ValueInfo) -> io::Result<&ArrayInfo> {
+pub(super) fn metadata(info: &VarInfo) -> io::Result<&ArrayInfo> {
     info.downcast()
         .map_err(|_| unsupported("XLA only supports array values"))
 }
