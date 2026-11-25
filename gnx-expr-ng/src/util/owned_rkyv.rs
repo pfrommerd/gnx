@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 
 use rkyv::{
-    Archive,
+    Archive, Portable,
     api::{
         access_pos_unchecked,
         high::{HighValidator, access_pos},
@@ -12,18 +12,21 @@ use rkyv::{
     util::AlignedVec,
 };
 
-pub struct OwnedArchive<T> {
+pub struct OwnedArchive<T: Portable> {
     bytes: AlignedVec,
     offset: usize,
     _type: PhantomData<T>,
 }
 
-impl<T: Archive> OwnedArchive<T> {
+#[allow(type_alias_bounds)]
+pub type OwnedArchived<T: Archive> = OwnedArchive<T::Archived>;
+
+impl<T: Portable> OwnedArchive<T> {
     pub fn new(bytes: AlignedVec, offset: usize) -> Result<Self, Error>
     where
-        T::Archived: for<'a> CheckBytes<HighValidator<'a, Error>>,
+        T: for<'a> CheckBytes<HighValidator<'a, Error>>,
     {
-        access_pos::<<T as Archive>::Archived, Error>(&bytes[..], offset)?;
+        access_pos::<T, Error>(&bytes[..], offset)?;
 
         Ok(Self {
             bytes,
@@ -32,15 +35,15 @@ impl<T: Archive> OwnedArchive<T> {
         })
     }
 
-    pub fn get(&self) -> &T::Archived {
+    pub fn get(&self) -> &T {
         // SAFETY: construction validated this location, and the private
         // backing buffer is never exposed for mutation.
-        unsafe { access_pos_unchecked::<T::Archived>(&self.bytes[..], self.offset) }
+        unsafe { access_pos_unchecked::<T>(&self.bytes[..], self.offset) }
     }
 }
 
-impl<T: Archive> Deref for OwnedArchive<T> {
-    type Target = T::Archived;
+impl<T: Portable> Deref for OwnedArchive<T> {
+    type Target = T;
 
     fn deref(&self) -> &Self::Target {
         self.get()

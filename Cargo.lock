@@ -864,6 +864,7 @@ dependencies = [
 name = "gnx-expr-ng"
 version = "0.1.0"
 dependencies = [
+ "inventory",
  "rkyv",
 ]
 

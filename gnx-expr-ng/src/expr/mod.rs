@@ -1,12 +1,8 @@
 use crate::util::Blake3Hash;
-use crate::{op::OpTypeImpls, util::OwnedArchive};
+use crate::{op::OpTypeImpls, util::OwnedArchive, var::InfoTypeImpls};
 
-use rkyv::Archived;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-
-mod data;
-use data::*;
 
 mod builder;
 pub use builder::*;
@@ -22,6 +18,8 @@ pub struct RootExpr {
     hash: Blake3Hash,
     // The associated operation lookup table, resolved
     op_impls: OpTypeImpls,
+    // The associated info lookup table, resolved
+    info_impls: InfoTypeImpls,
     // The external expressions, resolved at load time.
     external_exprs: ExternalExprs,
 }
@@ -59,20 +57,20 @@ impl ExprHandle {
         // internal expressions
         debug_assert!(self.idx.is_internal());
         let idx: usize = self.idx.into();
-        let expr: &Archived<ExprData> = &self.root.data.exprs.0[idx];
-        Expr::new(self.root.as_ref(), expr)
+        let expr: &ExprData = &self.root.data.exprs.internal[idx];
+        unsafe { Expr::new(self.root.as_ref(), expr) }
     }
 }
 
 impl RootExpr {
     pub fn builder() -> RootBuilder {
-        RootBuilder {}
+        RootBuilder::default()
     }
     pub fn view(&self) -> Expr<'_> {
         debug_assert!(self.data.root.is_internal());
         let idx: usize = self.data.root.into();
-        let expr: &Archived<ExprData> = &self.data.exprs.0[idx];
-        Expr::new(self, expr)
+        let expr: &ExprData = &self.data.exprs.internal[idx];
+        unsafe { Expr::new(self, expr) }
     }
     // Get a handle to the root expr in self
     pub fn handle(self: Arc<Self>) -> ExprHandle {

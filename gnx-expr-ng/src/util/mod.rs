@@ -1,9 +1,10 @@
-mod blob;
+mod dyn_rkyv;
 mod owned_rkyv;
 
-pub use blob::*;
+pub use dyn_rkyv::*;
 pub use owned_rkyv::*;
 
+use rkyv::bytecheck::{self, CheckBytes};
 use rkyv::{Archive, Deserialize, Portable, Serialize};
 
 #[derive(
@@ -11,6 +12,7 @@ use rkyv::{Archive, Deserialize, Portable, Serialize};
     Serialize,
     Deserialize,
     Portable,
+    CheckBytes,
     Clone,
     Copy,
     Debug,
@@ -21,5 +23,6 @@ use rkyv::{Archive, Deserialize, Portable, Serialize};
     Hash,
 )]
 #[rkyv(as = Self)]
+#[bytecheck(crate = bytecheck)]
 #[repr(transparent)]
 pub struct Blake3Hash([u8; 32]);
