@@ -1,24 +1,46 @@
 pub use gnx_common::fixed_dims;
 pub use gnx_common::ops::{
-    AddOperation, ArrayDialect, BroadcastInDimOperation, EyeOperation, MulOperation, OnesOperation,
+    AddOperation, BroadcastInDimOperation, EyeOperation, MulOperation, OnesOperation,
     ReshapeOperation, RevOperation, SelectOperation, TransposeOperation, ZerosOperation, add_op,
     array, broadcast_in_dim_op, eye_op, mul_op, ones_op, reshape_op, rev_op, select_op,
     transpose_op, zeros_op,
 };
 
-use std::fmt;
-
 use gnx_common::ops::{arity, result_rank, signature, strictly_increasing};
-use gnx_expr::{Dialect, Eqn, Op, Operation};
+use gnx_expr::{Eqn, Op};
+use rkyv::rancor::{Panic, Strategy};
+use rkyv::rend::u64_le;
+use rkyv::{Archive, Deserialize, de::Pool};
 
 type Result<T> = std::result::Result<T, gnx_expr::LoweringError>;
 
-macro_rules! simple_operations {
-    ($($ty:ident, $ctor:ident, $alias:ident, $arity:literal;)*) => {$(
-        #[derive(Clone, PartialEq, Eq, Hash)]
-        pub struct $ty;
+/// The native form of parameters stored in an operation.
+fn native<T: Archive>(stored: &T::Archived) -> T
+where
+    T::Archived: Deserialize<T, Strategy<Pool, Panic>>,
+{
+    match rkyv::deserialize::<T, Panic>(stored) {
+        Ok(value) => value,
+        Err(never) => match never {},
+    }
+}
 
-        gnx_common::array_operation!($ty, stringify!($alias), |eqn| arity(eqn, $arity));
+/// A count or axis stored in an operation.
+fn count(stored: u64_le) -> usize {
+    usize::try_from(stored.to_native()).expect("operation parameter exceeds usize")
+}
+
+/// Parameter structures are stored with 32-bit sizes: refuse the ones that
+/// would not be stored as they are.
+fn stored_exactly(exact: bool) {
+    assert!(exact, "operation parameter exceeds u32::MAX");
+}
+
+macro_rules! simple_operations {
+    ($($ty:ident, $ctor:ident, $alias:ident, $name:literal, $arity:literal;)*) => {$(
+        gnx_common::unit_operations! { pub struct $ty; }
+
+        gnx_common::array_operation!($ty, $name, |eqn| arity(eqn, $arity));
 
         pub fn $ctor() -> Op {
             Op::new($ty)

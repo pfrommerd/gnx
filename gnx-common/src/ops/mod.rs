@@ -4,70 +4,96 @@
 //! dtypes; there is no implicit broadcasting. Structural operations carry their
 //! index parameters as typed fields and take result metadata from the
 //! equation.
+//!
+//! An operation without parameters is stored as it is. One with parameters
+//! is made from a builder (`BroadcastInDim { .. }`) that is stored as the
+//! operation (`BroadcastInDimOperation`).
 
-use std::fmt;
-
-use gnx_expr::{Dialect, Eqn, LoweringError, Op, Operation};
+use gnx_expr::{Eqn, LoweringError, Op};
+use rkyv::{Archive, Serialize, rend::u32_le, vec::ArchivedVec};
 
 use crate::ArrayInfo;
 
-pub struct ArrayDialect;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct AddOperation;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct MulOperation;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct SubOperation;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct DivOperation;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct RemOperation;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ZerosOperation;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct OnesOperation;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct EyeOperation;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ReshapeOperation;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct BroadcastInDimOperation {
-    dims: Vec<usize>,
+/// Defines operations without parameters.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! unit_operations {
+    ($($(#[$meta:meta])* $vis:vis struct $ty:ident;)*) => {$(
+        $(#[$meta])*
+        #[derive($crate::rkyv::Archive, $crate::rkyv::Serialize, $crate::rkyv::Portable)]
+        #[rkyv(crate = $crate::rkyv, as = Self)]
+        #[repr(C)]
+        $vis struct $ty;
+    )*};
+}
+
+unit_operations! {
+    pub struct AddOperation;
+    pub struct MulOperation;
+    pub struct SubOperation;
+    pub struct DivOperation;
+    pub struct RemOperation;
+    pub struct ZerosOperation;
+    pub struct OnesOperation;
+    pub struct EyeOperation;
+    pub struct ReshapeOperation;
+    pub struct SelectOperation;
+}
+
+/// The indices stored in an operation, such as axes.
+#[doc(hidden)]
+pub fn indices(stored: &ArchivedVec<u32_le>) -> Vec<usize> {
+    stored.iter().map(|i| i.to_native() as usize).collect()
+}
+
+/// Indices in the form they are stored in an operation.
+#[doc(hidden)]
+pub fn stored_indices(indices: &[usize]) -> Vec<u32> {
+    (indices.iter())
+        .map(|&i| u32::try_from(i).expect("index exceeds u32::MAX"))
+        .collect()
+}
+
+#[derive(Archive, Serialize)]
+#[rkyv(archived = BroadcastInDimOperation)]
+pub struct BroadcastInDim {
+    dims: Vec<u32>,
 }
 
 impl BroadcastInDimOperation {
-    pub fn dims(&self) -> &[usize] {
-        &self.dims
+    pub fn dims(&self) -> Vec<usize> {
+        indices(&self.dims)
     }
 }
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct TransposeOperation {
-    perm: Vec<usize>,
+
+#[derive(Archive, Serialize)]
+#[rkyv(archived = TransposeOperation)]
+pub struct Transpose {
+    perm: Vec<u32>,
 }
 
 impl TransposeOperation {
-    pub fn perm(&self) -> &[usize] {
-        &self.perm
+    pub fn perm(&self) -> Vec<usize> {
+        indices(&self.perm)
     }
 }
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct RevOperation {
-    axes: Vec<usize>,
+
+#[derive(Archive, Serialize)]
+#[rkyv(archived = RevOperation)]
+pub struct Rev {
+    axes: Vec<u32>,
 }
 
 impl RevOperation {
-    pub fn axes(&self) -> &[usize] {
-        &self.axes
+    pub fn axes(&self) -> Vec<usize> {
+        indices(&self.axes)
     }
 }
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct SelectOperation;
 
-static ARRAY: ArrayDialect = ArrayDialect;
-
+/// The name of the array dialect.
 #[doc(hidden)]
-pub fn array_dialect() -> &'static dyn Dialect {
-    &ARRAY
+pub fn array_dialect() -> &'static str {
+    "array"
 }
 
 type Result<T> = std::result::Result<T, LoweringError>;
@@ -77,26 +103,19 @@ pub fn signature(message: &'static str) -> LoweringError {
     LoweringError::RegionSignature(message)
 }
 
-impl Dialect for ArrayDialect {
-    fn name(&self) -> &'static str {
-        "array"
-    }
-}
-
 #[doc(hidden)]
-pub fn arity(eqn: &Eqn, inputs: usize) -> Result<()> {
-    if eqn.inputs().len() != inputs || eqn.outputs().len() != 1 || !eqn.subexprs().is_empty() {
+pub fn arity(eqn: Eqn<'_>, inputs: usize) -> Result<()> {
+    if eqn.inputs().len() != inputs || eqn.outputs().len() != 1 || eqn.subexprs().len() != 0 {
         return Err(signature("array operation signature"));
     }
     Ok(())
 }
 
 #[doc(hidden)]
-pub fn result_rank(eqn: &Eqn) -> Result<usize> {
-    let (_, info) = &eqn.outputs()[0];
-    Ok(info
-        .downcast::<ArrayInfo>()
-        .map_err(|_| signature("array operations produce arrays"))?
+pub fn result_rank(eqn: Eqn<'_>) -> Result<usize> {
+    let output = (eqn.outputs().next()).ok_or_else(|| signature("array operation signature"))?;
+    Ok(ArrayInfo::from_info(&output.info_ref().to_owned())
+        .ok_or_else(|| signature("array operations produce arrays"))?
         .shape()
         .dims()
         .len())
@@ -112,36 +131,36 @@ pub fn strictly_increasing(indices: &[usize], bound: usize) -> Result<()> {
     Ok(())
 }
 
+/// Implements `Operation` for a type, as the operation `$name` of the array
+/// dialect. `$field` names an accessor of a parameter to show.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! array_operation {
-    ($ty:ty, $name:expr, |$eqn:ident| $check:expr) => {
+    ($ty:ty, $name:literal, |$eqn:ident| $check:expr) => {
         $crate::array_operation!($ty, $name, |_op, $eqn| $check);
     };
     (
-        $ty:ty, $name:expr, |$operation:ident, $eqn:ident| $check:expr
+        $ty:ty, $name:literal, |$operation:ident, $eqn:ident| $check:expr
         $(, $field:ident)? $(; $($extra:item)*)?
     ) => {
-        impl fmt::Display for $ty {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl $crate::gnx_expr::Operation for $ty {
+            fn display(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 f.write_str(concat!("array::", $name))?;
-                $(write!(f, "<{}: {:?}>", stringify!($field), self.$field)?;)?
+                $(write!(f, "<{}: {:?}>", stringify!($field), self.$field())?;)?
                 Ok(())
             }
-        }
-
-        impl Operation for $ty {
-            fn name(&self) -> &'static str {
-                $name
-            }
-            fn dialect(&self) -> &'static dyn Dialect {
-                $crate::ops::array_dialect()
-            }
-            fn check_expr(&self, $eqn: &Eqn) -> Result<()> {
+            fn check_expr(
+                &self,
+                $eqn: $crate::gnx_expr::Eqn<'_>,
+            ) -> ::std::result::Result<(), $crate::gnx_expr::LoweringError> {
                 let $operation = self;
                 $check
             }
             $($($extra)*)?
+        }
+
+        $crate::gnx_expr::dialect! {
+            dyn $crate::gnx_expr::Operation, "array" => { $name => $ty }
         }
     };
 }
@@ -169,7 +188,7 @@ array_operation!(
     "broadcast_in_dim",
     |op, eqn| {
         arity(eqn, 1)?;
-        strictly_increasing(op.dims(), result_rank(eqn)?)
+        strictly_increasing(&op.dims(), result_rank(eqn)?)
     },
     dims
 );
@@ -178,7 +197,7 @@ array_operation!(
     "transpose",
     |op, eqn| {
         arity(eqn, 1)?;
-        let mut perm = op.perm().to_vec();
+        let mut perm = op.perm();
         perm.sort_unstable();
         if !perm.iter().copied().eq(0..result_rank(eqn)?) {
             return Err(signature(
@@ -194,7 +213,7 @@ array_operation!(
     "rev",
     |op, eqn| {
         arity(eqn, 1)?;
-        strictly_increasing(op.axes(), result_rank(eqn)?)
+        strictly_increasing(&op.axes(), result_rank(eqn)?)
     },
     axes
 );
@@ -248,22 +267,22 @@ pub fn select_op() -> Op {
 /// Broadcast operand axis `i` to result axis `dims[i]`; `dims` is strictly
 /// increasing and each operand axis has size 1 or the result's size.
 pub fn broadcast_in_dim_op(dims: &[usize]) -> Op {
-    Op::new(BroadcastInDimOperation {
-        dims: dims.to_vec(),
+    Op::new(BroadcastInDim {
+        dims: stored_indices(dims),
     })
 }
 
 /// Result axis `i` is operand axis `perm[i]`.
 pub fn transpose_op(perm: &[usize]) -> Op {
-    Op::new(TransposeOperation {
-        perm: perm.to_vec(),
+    Op::new(Transpose {
+        perm: stored_indices(perm),
     })
 }
 
 /// Reverse the element order along strictly increasing `axes`.
 pub fn rev_op(axes: &[usize]) -> Op {
-    Op::new(RevOperation {
-        axes: axes.to_vec(),
+    Op::new(Rev {
+        axes: stored_indices(axes),
     })
 }
 

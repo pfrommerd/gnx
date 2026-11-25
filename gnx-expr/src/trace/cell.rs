@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Arc, RwLock};
 
-use crate::{Generic, Invocation, VarInfo};
+use crate::{Generic, InfoCast, Invocation, VarInfo};
 
 use super::context::{ContextID, TraceContext};
 use super::{Trace, Traceable, Tracer};
@@ -185,19 +185,19 @@ impl<T: Traceable> CellTracer<T> {
     }
 
     pub fn try_cast<U: Traceable>(self) -> Result<CellTracer<U>, ()> {
-        match self.shared.type_info().downcast::<U::Info>() {
-            Ok(_) => Ok(CellTracer {
+        match U::Info::cast(self.shared.type_info()) {
+            Some(_) => Ok(CellTracer {
                 shared: self.shared,
                 _phantom: PhantomData,
             }),
-            Err(_) => Err(()),
+            None => Err(()),
         }
     }
 
     pub fn try_cast_ref<U: Traceable>(&self) -> Result<&CellTracer<U>, &Self> {
-        match self.shared.type_info().downcast::<U::Info>() {
-            Ok(_) => Ok(unsafe { std::mem::transmute(self) }),
-            Err(_) => Err(self),
+        match U::Info::cast(self.shared.type_info()) {
+            Some(_) => Ok(unsafe { std::mem::transmute(self) }),
+            None => Err(self),
         }
     }
 }

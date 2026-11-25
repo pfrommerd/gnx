@@ -41,43 +41,57 @@ pub use transpose::{Operand, TransposeRule};
 
 use std::fmt;
 
+use gnx_common::ops::{indices, stored_indices};
 use gnx_expr::lower::LoweringContext;
 use gnx_expr::pass::Builder;
-use gnx_expr::{Dialect, Eqn, HEqn, LoweringError, Op, Operation, Var, register_op_interface};
-
-use crate::body::{
-    BodySignature, check_expr_with, lower_transform, signature, strictly_increasing,
+use gnx_expr::{
+    Eqn, EqnSource, HEqn, LoweringError, Op, OpRef, Operation, Var, register_op_interface,
 };
+use rkyv::{Archive, Serialize};
+
 use crate::expand::Transform;
 use crate::{TransformResult, util};
+use gnx_common::ops::{signature, strictly_increasing};
 
-pub struct AdDialect;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct JvpOperation {
-    parameters: DiffParameters,
+/// Builds an `ad::jvp`, stored as a [`JvpOperation`].
+#[derive(Archive, Serialize)]
+#[rkyv(archived = JvpOperation)]
+pub struct JvpBuilder {
+    wrt: Vec<u32>,
+    of: Vec<u32>,
+}
+
+/// Builds an `ad::vjp`, stored as a [`VjpOperation`].
+#[derive(Archive, Serialize)]
+#[rkyv(archived = VjpOperation)]
+pub struct VjpBuilder {
+    wrt: Vec<u32>,
+    of: Vec<u32>,
 }
 
 impl JvpOperation {
-    pub fn parameters(&self) -> &DiffParameters {
-        &self.parameters
+    pub fn parameters(&self) -> DiffParameters {
+        DiffParameters {
+            wrt: indices(&self.wrt),
+            of: indices(&self.of),
+        }
     }
-}
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct VjpOperation {
-    parameters: DiffParameters,
 }
 
 impl VjpOperation {
-    pub fn parameters(&self) -> &DiffParameters {
-        &self.parameters
+    pub fn parameters(&self) -> DiffParameters {
+        DiffParameters {
+            wrt: indices(&self.wrt),
+            of: indices(&self.of),
+        }
     }
 }
 
-static AD: AdDialect = AdDialect;
-
-impl Dialect for AdDialect {
-    fn name(&self) -> &'static str {
-        "ad"
+gnx_expr::dialect! {
+    dyn Operation, "ad" => {
+        "jvp" => JvpOperation,
+        "vjp" => VjpOperation,
+        "stop_gradient" => StopGradientOperation,
     }
 }
 
@@ -91,24 +105,35 @@ pub struct DiffParameters {
 
 impl DiffParameters {
     pub fn from_op(op: &Op) -> Result<Self, LoweringError> {
+        Self::from_operation(op.get())
+    }
+
+    /// Like [`DiffParameters::from_op`], for an operation read from an expression.
+    pub fn from_op_ref(op: OpRef<'_>) -> Result<Self, LoweringError> {
+        Self::from_operation(op.get())
+    }
+
+    fn from_operation(op: &dyn Operation) -> Result<Self, LoweringError> {
         if let Some(op) = op.downcast_ref::<JvpOperation>() {
-            Ok(op.parameters().clone())
+            Ok(op.parameters())
         } else if let Some(op) = op.downcast_ref::<VjpOperation>() {
-            Ok(op.parameters().clone())
+            Ok(op.parameters())
         } else {
             Err(signature("expected a differentiation operation"))
         }
     }
 
     pub fn jvp_op(&self) -> Op {
-        Op::new(JvpOperation {
-            parameters: self.clone(),
+        Op::new(JvpBuilder {
+            wrt: stored_indices(&self.wrt),
+            of: stored_indices(&self.of),
         })
     }
 
     pub fn vjp_op(&self) -> Op {
-        Op::new(VjpOperation {
-            parameters: self.clone(),
+        Op::new(VjpBuilder {
+            wrt: stored_indices(&self.wrt),
+            of: stored_indices(&self.of),
         })
     }
 
@@ -116,24 +141,25 @@ impl DiffParameters {
     /// `forward` selects the jvp layout; otherwise the vjp layout.
     pub fn check(
         &self,
-        body: &BodySignature,
+        body_inputs: &[gnx_expr::VarInfo],
+        body_outputs: &[gnx_expr::VarInfo],
         operands: Option<&[gnx_expr::VarInfo]>,
         operand_count: usize,
         outputs: &[gnx_expr::VarInfo],
         forward: bool,
     ) -> Result<(), LoweringError> {
-        strictly_increasing(&self.wrt, body.inputs.len())?;
-        strictly_increasing(&self.of, body.outputs.len())?;
-        let wrt: Vec<_> = self.wrt.iter().map(|&i| body.inputs[i].clone()).collect();
-        let of: Vec<_> = self.of.iter().map(|&i| body.outputs[i].clone()).collect();
+        strictly_increasing(&self.wrt, body_inputs.len())?;
+        strictly_increasing(&self.of, body_outputs.len())?;
+        let wrt: Vec<_> = self.wrt.iter().map(|&i| body_inputs[i].clone()).collect();
+        let of: Vec<_> = self.of.iter().map(|&i| body_outputs[i].clone()).collect();
         if wrt.iter().chain(&of).any(|info| !util::is_inexact(info)) {
             return Err(signature(
                 "differentiated inputs and results must be floating-point arrays",
             ));
         }
         let (extra_inputs, extra_outputs) = if forward { (wrt, of) } else { (of, wrt) };
-        let expected_inputs: Vec<_> = body.inputs.iter().cloned().chain(extra_inputs).collect();
-        let expected_outputs: Vec<_> = body.outputs.iter().cloned().chain(extra_outputs).collect();
+        let expected_inputs: Vec<_> = body_inputs.iter().cloned().chain(extra_inputs).collect();
+        let expected_outputs: Vec<_> = body_outputs.iter().cloned().chain(extra_outputs).collect();
         if operand_count != expected_inputs.len()
             || operands.is_some_and(|operands| operands != expected_inputs)
             || outputs != expected_outputs
@@ -146,43 +172,47 @@ impl DiffParameters {
 
 macro_rules! diff_operation {
     ($ty:ty, $name:literal, $forward:expr, $expand:path) => {
-        impl fmt::Display for $ty {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl Operation for $ty {
+            fn display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let parameters = self.parameters();
                 write!(
                     f,
                     concat!("ad::", $name, "<of: {:?}, wrt: {:?}>"),
-                    self.parameters.of, self.parameters.wrt
+                    parameters.of, parameters.wrt
+                )
+            }
+            fn lower(
+                &self,
+                eqn: HEqn<'_>,
+                ctx: &mut LoweringContext<'_>,
+            ) -> Result<(), LoweringError> {
+                ctx.lower_value_region_apply(eqn, |inputs, results, operands, outputs| {
+                    self.parameters().check(
+                        inputs,
+                        results,
+                        Some(operands),
+                        operands.len(),
+                        outputs,
+                        $forward,
+                    )
+                })
+            }
+            fn check_expr(&self, eqn: Eqn<'_>) -> Result<(), LoweringError> {
+                let (inputs, results) = util::region_signature(eqn)?;
+                self.parameters().check(
+                    &inputs,
+                    &results,
+                    None,
+                    eqn.inputs().len(),
+                    &util::output_infos(eqn),
+                    $forward,
                 )
             }
         }
 
-        impl Operation for $ty {
-            fn name(&self) -> &'static str {
-                $name
-            }
-            fn dialect(&self) -> &'static dyn Dialect {
-                &AD
-            }
-            fn lower(
-                &self,
-                eqn: &HEqn,
-                ctx: &mut LoweringContext<'_>,
-            ) -> Result<(), LoweringError> {
-                lower_transform(eqn, ctx, |body, operands, outputs| {
-                    self.parameters
-                        .check(body, Some(operands), operands.len(), outputs, $forward)
-                })
-            }
-            fn check_expr(&self, eqn: &Eqn) -> Result<(), LoweringError> {
-                check_expr_with(eqn, |body, count, outputs| {
-                    self.parameters.check(body, None, count, outputs, $forward)
-                })
-            }
-        }
-
         impl Transform for $ty {
-            fn expand(&self, b: &mut Builder, eqn: &Eqn) -> TransformResult<Vec<Var>> {
-                $expand(b, eqn, self.parameters())
+            fn expand(&self, b: &mut Builder, eqn: &EqnSource) -> TransformResult<Vec<Var>> {
+                $expand(b, eqn, &self.parameters())
             }
         }
     };

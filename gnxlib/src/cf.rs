@@ -248,7 +248,7 @@ pub fn while_loop<'py>(
 /// The metadata of one slice along the leading axis.
 fn slice_info(trace: &Trace) -> PyResult<VarInfo> {
     let error = || PyTypeError::new_err("scan xs must be arrays with a fixed leading axis");
-    let array = trace.info().downcast::<ArrayInfo>().map_err(|_| error())?;
+    let array = ArrayInfo::from_info(trace.info()).ok_or_else(error)?;
     let [Dim::Fixed(_), tail @ ..] = array.shape().dims() else {
         return Err(error());
     };

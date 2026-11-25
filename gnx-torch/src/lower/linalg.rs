@@ -67,7 +67,7 @@ rule!(TriangularSolveOperation, |op, _eqn, [a, b]| {
 macro_rules! multi {
     ($ty:ty,|$op:ident,$args:ident|$b:block) => {
         impl TorchLowering for $ty {
-            fn lower_torch(&self, _: &Eqn, $args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+            fn lower_torch(&self, _: Eqn<'_>, $args: &[Tensor]) -> io::Result<Vec<Tensor>> {
                 let $op = self;
                 let result: Result<Vec<Tensor>, TchError> = (|| $b)();
                 result.map_err(io::Error::other)
@@ -109,7 +109,7 @@ fn align_left(values: &Tensor, adjoint_values: &Tensor, left: Tensor) -> Result<
 }
 
 impl TorchLowering for EigOperation {
-    fn lower_torch(&self, _: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, _: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [a] = args else {
             return Err(invalid("eig requires one operand"));
         };
@@ -196,7 +196,7 @@ fn hessenberg(a: &Tensor) -> Result<(Tensor, Tensor), TchError> {
     Ok((packed, tau))
 }
 impl TorchLowering for HessenbergOperation {
-    fn lower_torch(&self, _: &Eqn, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, _: Eqn<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [a] = inputs else {
             return Err(invalid("hessenberg expects one operand"));
         };
@@ -213,7 +213,7 @@ impl TorchLowering for HessenbergOperation {
 crate::register_torch_lowering!(HessenbergOperation);
 
 impl TorchLowering for TridiagonalOperation {
-    fn lower_torch(&self, _: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, _: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [a] = args else {
             return Err(invalid("tridiagonal expects one operand"));
         };

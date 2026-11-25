@@ -15,7 +15,7 @@ fn compile(shape: &[usize], dtype: DType) -> Vec<CModule> {
     let outputs = b.emit(hessenberg(), &[a], [ty(shape), ty(&tau_shape)], vec![]);
     TorchDevice::cpu()
         .unwrap()
-        .compile(&b.finish(outputs))
+        .compile(&b.finish(outputs).build().unwrap())
         .unwrap()
         .modules()
         .map(support::reload)

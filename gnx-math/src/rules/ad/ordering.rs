@@ -45,7 +45,12 @@ fn take_along_axis(b: &mut Builder, x: Var, indices: Var, axis: usize) -> Transf
     Ok(b.emit1(gather(parameters), &[x, indices], output))
 }
 
-fn top_k_jvp(b: &mut Builder, eqn: &Eqn, input: Dual, axis: usize) -> TransformResult<Vec<Dual>> {
+fn top_k_jvp(
+    b: &mut Builder,
+    eqn: Eqn<'_>,
+    input: Dual,
+    axis: usize,
+) -> TransformResult<Vec<Dual>> {
     let outputs = copy_eqn(b, eqn, &[input.primal], &[]);
     let [value, indices] = outputs[..] else {
         return Err(TransformError::invalid(
@@ -69,7 +74,7 @@ impl JvpRule for TopKOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -81,7 +86,7 @@ impl JvpRule for ApproxTopKOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -93,7 +98,7 @@ impl JvpRule for SortOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -101,12 +106,8 @@ impl JvpRule for SortOperation {
         let shape = dims(b.info(keys[0]))?;
         let indices = info(&shape, DType::I32);
         keys.push(b.emit1(iota(self.axis()), &[], indices.clone()));
-        let metadata = eqn
-            .outputs()
-            .iter()
-            .map(|(_, i)| i.clone())
-            .chain([indices]);
-        let mut output = b.emit(eqn.op().clone(), &keys, metadata, vec![]);
+        let metadata = (gnx_transforms::util::output_infos(eqn).into_iter()).chain([indices]);
+        let mut output = b.emit(eqn.op().to_owned(), &keys, metadata, vec![]);
         let permutation = output.pop().expect("sort index result");
         output
             .into_iter()
@@ -127,7 +128,7 @@ impl JvpRule for SortOperation {
 fn cumulative_pair(
     kind: CumulativeKind,
     metadata: gnx_expr::VarInfo,
-) -> TransformResult<gnx_expr::Expr> {
+) -> TransformResult<std::sync::Arc<gnx_expr::RootExpr>> {
     let mut b = Builder::new();
     let lhs = b.input(metadata.clone());
     let rhs = b.input(metadata.clone());
@@ -148,7 +149,7 @@ fn cumulative_pair(
             select(&mut b, pred, result, max)
         }
     };
-    Ok(b.finish(vec![result]))
+    Ok(b.finish(vec![result]).build()?)
 }
 
 fn apply(b: &mut Builder, op: Op, input: Dual, metadata: gnx_expr::VarInfo) -> Dual {
@@ -164,7 +165,7 @@ impl JvpRule for CumulativeOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -175,7 +176,7 @@ impl JvpRule for CumulativeOperation {
         let extent = shape[axis];
         let dtype = dtype(&metadata)?;
         if self.kind() == CumulativeKind::Sum {
-            return Ok(vec![apply(b, eqn.op().clone(), original, metadata)]);
+            return Ok(vec![apply(b, eqn.op().to_owned(), original, metadata)]);
         }
         let mut value = if self.reverse() {
             apply(b, rev_op(&[axis]), original, metadata.clone())
@@ -196,7 +197,7 @@ impl JvpRule for CumulativeOperation {
             let next = apply(b, slice(&ranges), value, pair.clone());
             let tail = jvp_expr(
                 b,
-                &cumulative_pair(self.kind(), pair)?,
+                cumulative_pair(self.kind(), pair)?.view(),
                 &[],
                 &[previous, next],
             )?[0];

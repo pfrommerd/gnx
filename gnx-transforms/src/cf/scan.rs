@@ -4,33 +4,43 @@ use std::fmt;
 
 use gnx_common::{ArrayInfo, Dim};
 use gnx_expr::lower::{LoweringContext, RegionArgument};
-use gnx_expr::{Capture, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace, VarInfo};
+use gnx_expr::{
+    Capture, Eqn, HEqn, Invocation, Kind, ObjectTracer, Op, OpRef, Operation, Trace, VarInfo,
+};
+use rkyv::{Archive, Serialize};
 
 use super::{
-    BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, add_state, check_child, defer_regions,
-    expect_inputs, expr_output_infos, parameters, signature, value_infos, value_results,
+    RegionResult, StateLayout, add_state, check_child, count, expect_inputs, expr_output_infos,
+    parameters, signature, stored, value_infos, value_results,
 };
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ScanOperation {
-    parameters: ScanParameters,
+/// Builds a `cf::scan`, stored as a [`ScanOperation`].
+#[derive(Archive, Serialize)]
+#[rkyv(archived = ScanOperation)]
+pub struct Scan {
+    carry_len: u64,
+    state_len: u64,
+    length: u64,
 }
 
 impl ScanOperation {
     pub fn parameters(&self) -> ScanParameters {
-        self.parameters
+        ScanParameters {
+            carry_len: count(self.carry_len),
+            state_len: count(self.state_len),
+            length: count(self.length),
+        }
     }
 }
 
 /// Construct a scan over `length` elements with `carry_len` carry values.
 pub fn scan_op(carry_len: usize, length: usize) -> Op {
-    Op::new(ScanOperation {
-        parameters: ScanParameters {
-            carry_len,
-            state_len: 0,
-            length,
-        },
-    })
+    ScanParameters {
+        carry_len,
+        state_len: 0,
+        length,
+    }
+    .to_op()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -42,7 +52,24 @@ pub struct ScanParameters {
 }
 
 impl ScanParameters {
+    fn to_op(self) -> Op {
+        Op::new(Scan {
+            carry_len: stored(self.carry_len),
+            state_len: stored(self.state_len),
+            length: stored(self.length),
+        })
+    }
+
     pub fn from_op(op: &Op) -> RegionResult<Self> {
+        Self::from_operation(op.get())
+    }
+
+    /// Like [`ScanParameters::from_op`], for an operation read from an expression.
+    pub fn from_op_ref(op: OpRef<'_>) -> RegionResult<Self> {
+        Self::from_operation(op.get())
+    }
+
+    fn from_operation(op: &dyn Operation) -> RegionResult<Self> {
         let parameters = op
             .downcast_ref::<ScanOperation>()
             .ok_or_else(|| signature("expected a scan operation"))?
@@ -58,16 +85,15 @@ impl ScanParameters {
     }
 
     /// `(physical carry length, length)` of a scan equation.
-    pub(crate) fn layout(eqn: &Eqn) -> RegionResult<(usize, usize)> {
-        let parameters = Self::from_op(eqn.op())?;
+    pub(crate) fn layout(eqn: Eqn<'_>) -> RegionResult<(usize, usize)> {
+        let parameters = Self::from_op_ref(eqn.op())?;
         Ok((parameters.physical_carry_len()?, parameters.length))
     }
 }
 
 fn slice(info: &VarInfo) -> RegionResult<(usize, VarInfo)> {
-    let array = info
-        .downcast::<ArrayInfo>()
-        .map_err(|_| signature("scan inputs and stacked outputs must be arrays"))?;
+    let array = ArrayInfo::from_info(info)
+        .ok_or_else(|| signature("scan inputs and stacked outputs must be arrays"))?;
     let [Dim::Fixed(length), tail @ ..] = array.shape().dims() else {
         return Err(signature("scan needs a fixed leading axis"));
     };
@@ -81,9 +107,8 @@ fn slice(info: &VarInfo) -> RegionResult<(usize, VarInfo)> {
 }
 
 fn stack(info: &VarInfo, length: usize) -> RegionResult<VarInfo> {
-    let array = info
-        .downcast::<ArrayInfo>()
-        .map_err(|_| signature("scan step outputs must be arrays"))?;
+    let array =
+        ArrayInfo::from_info(info).ok_or_else(|| signature("scan step outputs must be arrays"))?;
     let shape = std::iter::once(Dim::Fixed(length))
         .chain(array.shape().dims().iter().copied())
         .collect();
@@ -128,13 +153,9 @@ pub fn scan(
             .map(|info| stack(info, length))
             .collect::<RegionResult<Vec<_>>>()?,
     );
-    let mut result = defer_regions(
+    let mut result = Invocation::apply(
         scan_op(carry.len(), length),
-        vec![BoundRegion {
-            capture: body,
-            inputs: &[],
-            read_only: false,
-        }],
+        vec![body.into()],
         carry
             .iter()
             .chain(inputs)
@@ -142,36 +163,28 @@ pub fn scan(
             .map(ObjectTracer::from)
             .collect(),
         infos,
-    )?;
+    );
     let ys = result.split_off(carry.len());
     Ok((result, ys))
 }
 
-impl fmt::Display for ScanOperation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Operation for ScanOperation {
+    fn display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ScanParameters {
             carry_len,
             length,
             state_len,
-        } = self.parameters;
+        } = self.parameters();
         write!(f, "cf::scan<carry: {carry_len}, length: {length}")?;
         if state_len != 0 {
             write!(f, ", state: {state_len}")?;
         }
         write!(f, ">")
     }
-}
 
-impl Operation for ScanOperation {
-    fn name(&self) -> &'static str {
-        "scan"
-    }
-    fn dialect(&self) -> &'static dyn Dialect {
-        &CONTROL_FLOW
-    }
-
-    fn lower(&self, eqn: &HEqn, ctx: &mut LoweringContext<'_>) -> RegionResult<()> {
-        let [body] = eqn.subexprs() else {
+    fn lower(&self, eqn: HEqn<'_>, ctx: &mut LoweringContext<'_>) -> RegionResult<()> {
+        let mut subexprs = eqn.subexprs();
+        let (Some(body), None) = (subexprs.next(), subexprs.next()) else {
             return Err(signature("scan needs one body"));
         };
         let configuration = self.parameters();
@@ -206,12 +219,13 @@ impl Operation for ScanOperation {
             ..configuration
         };
         parameters.physical_carry_len()?;
-        let op = Op::new(Self { parameters });
+        let op = parameters.to_op();
         state.emit(ctx, eqn, op, values, (carry_len, carry_len), &fixed)
     }
 
-    fn check_expr(&self, eqn: &Eqn) -> RegionResult<()> {
-        let [body] = eqn.subexprs() else {
+    fn check_expr(&self, eqn: Eqn<'_>) -> RegionResult<()> {
+        let mut subexprs = eqn.subexprs();
+        let (Some(body), None) = (subexprs.next(), subexprs.next()) else {
             return Err(signature("scan needs one body"));
         };
         let configuration = self.parameters();
@@ -223,11 +237,11 @@ impl Operation for ScanOperation {
             || inputs.len() < carry_len
             || !parameters(body.expr())
                 .take(carry_len)
-                .eq(step_outputs[..carry_len].iter())
+                .eq(step_outputs[..carry_len].iter().cloned())
         {
             return Err(signature("scan carry or operand signature"));
         }
-        check_child(body.expr(), parameters(body.expr()).cloned(), &step_outputs)
+        check_child(body.expr(), parameters(body.expr()), &step_outputs)
     }
 }
 

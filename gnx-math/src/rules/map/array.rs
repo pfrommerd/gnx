@@ -63,7 +63,7 @@ impl BatchRule for ReduceWindowOperation {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         _: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
@@ -88,12 +88,12 @@ impl BatchRule for SliceOperation {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         _: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
         let mut ranges = vec![(0, size, 1)];
-        ranges.extend_from_slice(self.ranges());
+        ranges.extend_from_slice(&self.ranges());
         gnx_transforms::map::def::at_leading_axis(b, size, eqn, inputs, slice(&ranges))
     }
 }
@@ -103,7 +103,7 @@ impl BatchRule for PadOperation {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         _: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
@@ -114,9 +114,9 @@ impl BatchRule for PadOperation {
             return super::extended::map_lanes(b, size, eqn, inputs);
         }
         let mut padding = vec![(0, 0, 0)];
-        padding.extend_from_slice(self.padding());
+        padding.extend_from_slice(&self.padding());
         let value = materialize(b, *input, size, 0)?;
-        let output = with_axis(&eqn.outputs()[0].1, 0, size)?;
+        let output = with_axis(&gnx_transforms::util::output_infos(eqn)[0], 0, size)?;
         Ok(vec![Batched::at(
             b.emit1(pad(&padding), &[value, fill.var], output),
             0,
@@ -178,7 +178,7 @@ use crate::ops::{
     fft::{FftOperation, fft},
 };
 
-defbatch!(FftOperation, |op| Ok(fft(op.kind(), op.lengths())));
+defbatch!(FftOperation, |op| Ok(fft(op.kind(), &op.lengths())));
 defbatch!(DotGeneralOperation, |op| {
     let mut dims = op.dimensions().clone();
     dims.lhs_batch = leading(&dims.lhs_batch);
@@ -199,7 +199,7 @@ impl BatchRule for FullOperation {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         _: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
@@ -207,7 +207,7 @@ impl BatchRule for FullOperation {
             return Err(TransformError::invalid("full signature"));
         };
         let value = materialize(b, *fill, size, 0)?;
-        let output = with_axis(&eqn.outputs()[0].1, 0, size)?;
+        let output = with_axis(&gnx_transforms::util::output_infos(eqn)[0], 0, size)?;
         Ok(vec![Batched::at(
             b.emit1(broadcast_in_dim_op(&[0]), &[value], output),
             0,

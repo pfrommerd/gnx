@@ -7,7 +7,7 @@ use std::io;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use gnx_expr::pass::{CheckSupported, Dce, Pipeline};
-use gnx_expr::{Expr, Value};
+use gnx_expr::{RootExpr, Value};
 use gnx_math::{
     ArrayInfo, DataHandle, Device, DeviceId, ExecOpts, ExecutionBoundary, HostBuffer, HostId,
     LocalAllocations, MemoryLocation, ShardStorage, TransferPolicy,
@@ -126,8 +126,8 @@ impl TorchDevice {
         }
     }
 
-    pub fn compile(&self, expr: &Expr) -> io::Result<TorchExecutable> {
-        let (projected, boundary) = ExecutionBoundary::project(expr)?;
+    pub fn compile(&self, expr: &Arc<RootExpr>) -> io::Result<TorchExecutable> {
+        let (projected, boundary) = ExecutionBoundary::project(expr.view())?;
         let mut modules = Vec::new();
         if let Some(body) = projected {
             let body = Pipeline::new()
@@ -143,7 +143,7 @@ impl TorchDevice {
                         invalid(e)
                     }
                 })?;
-            modules = lower::trace(&body, self.target)?;
+            modules = lower::trace(body.view(), self.target)?;
         }
         Ok(TorchExecutable {
             device: self.clone(),
@@ -218,7 +218,7 @@ impl TorchDevice {
 /// Retains compiled modules; `run` never traces or recompiles the GNX expression.
 pub struct TorchExecutable {
     device: TorchDevice,
-    signature: Expr,
+    signature: Arc<RootExpr>,
     boundary: ExecutionBoundary,
     modules: Vec<(CModule, ArrayInfo)>,
 }
@@ -232,7 +232,7 @@ impl TorchExecutable {
     }
 
     pub fn run(&self, args: &[Value], opts: ExecOpts) -> io::Result<Vec<Value>> {
-        ExecutionBoundary::validate_arguments(&self.signature, args)?;
+        ExecutionBoundary::validate_arguments(self.signature.view(), args)?;
         let inputs = self
             .boundary
             .arguments(args)
@@ -262,7 +262,7 @@ impl Device for TorchDevice {
     type Outputs = Vec<Value>;
     fn execute(
         &self,
-        expr: Expr,
+        expr: Arc<RootExpr>,
         args: impl IntoIterator<Item = Value>,
         opts: ExecOpts,
     ) -> impl Future<Output = io::Result<Vec<Value>>> + Send {

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 
 use dashmap::DashMap;
 use gnx_expr::{
-    Capture, CellTrace, ContextID, HExpr, Kind, ObjectTracer, Trace, TraceContext, VarInfo,
+    Capture, CellTrace, ContextID, HRootExpr, Kind, ObjectTracer, Trace, TraceContext, VarInfo,
 };
 use gnx_graph::anyhash::HasherWrite;
 use gnx_graph::util::{GraphExt, IterSource};
@@ -52,7 +52,7 @@ where
         input: I,
         name_hint: Option<&Cow<'static, str>>,
         body: impl FnOnce(I::Owned) -> Result<O, E>,
-    ) -> Result<Arc<HExpr>, E> {
+    ) -> Result<Arc<HRootExpr>, E> {
         let (entry, _) = self.get_or_trace(input, name_hint, body)?;
         Ok(entry.expr.clone())
     }
@@ -173,7 +173,7 @@ impl<O: Graph<Owned = O>> TraceSlot<O> {
 }
 
 pub(crate) struct TraceEntry<O: Graph> {
-    pub(crate) expr: Arc<HExpr>,
+    pub(crate) expr: Arc<HRootExpr>,
     pub(crate) closure: Vec<ObjectTracer>,
     pub(crate) output_builder: TracerBuilder<O>,
     /// Key path of each output tracer leaf, in leaf order.
@@ -184,7 +184,7 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
     fn is_cacheable(&self) -> bool {
         // A trace can outlive its caller's scope, but a captured local handle
         // cannot. Concrete values and root handles are safe to keep.
-        self.expr.symbol_closure().is_empty()
+        self.expr.view().closure_symbols().is_empty()
             && self.closure.iter().all(|object| match object {
                 ObjectTracer::Ref(value) => {
                     value.info().symbols().is_empty()
@@ -216,11 +216,14 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
             .expect("JIT could not capture traced function");
         let (expr, closure, ..) = capture.into_parts();
         let expr = match name_hint {
-            Some(hint) => expr.with_name_hint(hint.clone()),
+            Some(hint) => (expr.view().to_builder())
+                .with_name_hint(hint.clone())
+                .build()
+                .expect("naming a captured function keeps it valid"),
             None => expr,
         };
         Ok(Self {
-            expr: Arc::new(expr),
+            expr,
             closure,
             output_builder,
             output_paths,
@@ -230,7 +233,7 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
     fn call(&self, arguments: &[ObjectTracer]) -> O {
         rebuild_graph(
             &self.output_builder,
-            crate::cf::defer_call(self.expr.clone(), &self.closure, arguments),
+            crate::cf::defer_call(self.expr.clone().handle(), &self.closure, arguments),
         )
     }
 }

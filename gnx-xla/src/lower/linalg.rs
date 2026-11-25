@@ -49,7 +49,7 @@ impl XlaLowering for CholeskyOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let x = unary("cholesky", inputs)?;
@@ -67,7 +67,7 @@ impl XlaLowering for CholeskyUpdateOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [r, w] = inputs else {
@@ -88,7 +88,7 @@ impl XlaLowering for TriangularSolveOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [a, b] = inputs else {
@@ -129,7 +129,7 @@ impl XlaLowering for HouseholderProductOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [a, tau] = inputs else {
@@ -143,7 +143,7 @@ impl XlaLowering for OrmqrOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [a, tau, c] = inputs else {
@@ -185,7 +185,7 @@ impl XlaLowering for SymmetricProductOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [a, c] = inputs else {
@@ -207,7 +207,7 @@ impl XlaLowering for EighOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let x = unary("eigh", inputs)?;
@@ -224,7 +224,7 @@ impl XlaLowering for QrOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         if self.pivoting() {
@@ -247,11 +247,10 @@ crate::register_xla_lowering!(
 
 use xla::lapack::Kernel as Lapack;
 
-fn lapack(op: Lapack, flags: i64, eqn: &Eqn, inputs: &[XlaOp]) -> io::Result<Vec<XlaOp>> {
+fn lapack(op: Lapack, flags: i64, eqn: Eqn<'_>, inputs: &[XlaOp]) -> io::Result<Vec<XlaOp>> {
     let outputs = eqn
         .outputs()
-        .iter()
-        .map(|(_, output)| super::shape(super::metadata(output)?))
+        .map(|output| super::shape(&super::metadata(output.info_ref())?))
         .collect::<io::Result<Vec<_>>>()?;
     let result = native(op.call(flags, inputs, &outputs))?;
     if outputs.len() == 1 {
@@ -264,7 +263,7 @@ fn lapack(op: Lapack, flags: i64, eqn: &Eqn, inputs: &[XlaOp]) -> io::Result<Vec
 macro_rules! lapack_lowering {
     ($($ty:ty, $op:ident, |$me:ident| $flags:expr;)*) => {$(
         impl XlaLowering for $ty {
-            fn lower_xla(&self, _: &LoweringContext<'_>, eqn: &Eqn, inputs: &[XlaOp]) -> io::Result<Vec<XlaOp>> {
+            fn lower_xla(&self, _: &LoweringContext<'_>, eqn: Eqn<'_>, inputs: &[XlaOp]) -> io::Result<Vec<XlaOp>> {
                 let $me = self;
                 lapack(Lapack::$op, $flags, eqn, inputs)
             }
@@ -286,7 +285,7 @@ impl XlaLowering for EigOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let x = unary("eig", inputs)?;
@@ -314,7 +313,7 @@ impl XlaLowering for CustomLinearSolveOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         ctx.lower_region(1, inputs)

@@ -47,9 +47,9 @@ deflinear!(BroadcastInDimOperation, |cx, ct, [x]| {
 });
 
 deflinear!(TransposeOperation, |cx, ct, _| ct
-    .transpose(&inverse(cx.operation::<TransposeOperation>()?.perm())));
+    .transpose(&inverse(&cx.operation::<TransposeOperation>()?.perm())));
 
 deflinear!(RevOperation, |cx, ct, _| ct
-    .rev(cx.operation::<RevOperation>()?.axes()));
+    .rev(&cx.operation::<RevOperation>()?.axes()));
 
 deflinear!(ReshapeOperation, |_, ct, [x]| Ok(ct.reshape(x.info())));

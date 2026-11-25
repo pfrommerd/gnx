@@ -1,57 +1,43 @@
-use std::fmt::Display;
-
 use gnx_expr::trace::{
     CellTrace, Generic, Invocation, ObjectTracer, TraceContext, Tracer, VarInfo,
 };
-use gnx_expr::{Dialect, Operation};
-use gnx_expr::{HInstr, Op, Capture};
+use gnx_expr::{Capture, HInstr, Info, Op, Operation, Typed, dialect};
+use rkyv::{Archive, Portable, Serialize};
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct SampleOperation {
-    name: &'static str,
+// One operation type, with the name it is shown by as a parameter.
+#[derive(Archive, Serialize)]
+#[rkyv(archived = SampleOp)]
+struct Sample {
+    name: String,
 }
-pub struct SampleDialect;
 
-impl Dialect for SampleDialect {
-    fn name(&self) -> &'static str {
-        "sample"
+impl Operation for SampleOp {
+    fn display(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}::{}", self.type_name().dialect, self.name)
     }
 }
 
-impl std::fmt::Display for SampleOperation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
-    }
+dialect! {
+    dyn Operation, "sample" => { "op" => SampleOp }
 }
 
-impl Operation for SampleOperation {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-    fn dialect(&self) -> &'static dyn Dialect {
-        &SampleDialect
-    }
+#[derive(Archive, Serialize, Portable)]
+#[rkyv(as = Self)]
+#[repr(C)]
+struct InfoType;
+impl Info for InfoType {}
+
+dialect! {
+    dyn Info, "sample" => { "info" => InfoType }
 }
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct InfoType;
-
-impl Display for InfoType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "InfoType")
-    }
-}
-
-impl gnx_expr::Info for InfoType {}
 
 fn sample_info() -> VarInfo {
     VarInfo::new(InfoType)
 }
 
 fn op(name: &'static str) -> Op {
-    Op::new(SampleOperation { name })
+    Op::new(Sample { name: name.into() })
 }
-
 #[test]
 fn capture_linear_chain() {
     let guard = TraceContext::enter();
@@ -75,9 +61,9 @@ fn capture_linear_chain() {
     )
     .unwrap();
     let ex = cap.expr();
-    assert_eq!(ex.closure().len(), 0);
+    assert_eq!(ex.closure_inputs().len(), 0);
     assert_eq!(ex.inputs().len(), 2);
-    assert_eq!(ex.instructions().len(), 3);
+    assert_eq!(ex.instrs().len(), 3);
     assert_eq!(ex.outputs().len(), 1);
 
     let s = ex.to_string();
@@ -112,14 +98,8 @@ fn capture_diamond_distinct_intermediate_vars() {
         &[ObjectTracer::from(w.clone())],
     )
     .unwrap();
-    assert_eq!(cap.expr().instructions().len(), 3);
-    let add = cap
-        .expr()
-        .instructions()
-        .last()
-        .unwrap()
-        .as_apply()
-        .unwrap();
+    assert_eq!(cap.expr().instrs().len(), 3);
+    let add = cap.expr().instrs().last().unwrap().as_apply().unwrap();
     assert_eq!(add.inputs().len(), 2);
     assert_ne!(&add.inputs()[0], &add.inputs()[1]);
 }
@@ -143,13 +123,7 @@ fn capture_reuses_var_when_same_tracer_used_twice() {
         &[ObjectTracer::from(w.clone())],
     )
     .unwrap();
-    let add = cap
-        .expr()
-        .instructions()
-        .last()
-        .unwrap()
-        .as_apply()
-        .unwrap();
+    let add = cap.expr().instrs().last().unwrap().as_apply().unwrap();
     assert_eq!(&add.inputs()[0], &add.inputs()[1]);
 }
 
@@ -165,11 +139,11 @@ fn capture_placeholder_only() {
     )
     .unwrap();
     let ex = cap.expr();
-    assert!(ex.instructions().is_empty());
+    assert_eq!(ex.instrs().len(), 0);
     assert_eq!(ex.inputs().len(), 1);
     assert_eq!(
         ex.outputs(),
-        ex.inputs().iter().map(|i| i.0).collect::<Vec<_>>()
+        ex.inputs().map(|i| i.var()).collect::<Vec<_>>()
     );
 }
 
@@ -197,15 +171,9 @@ fn capture_foreign_context_tracer_is_closure() {
     )
     .unwrap();
     assert_eq!(cap.expr().inputs().len(), 1);
-    assert_eq!(cap.expr().closure().len(), 1);
+    assert_eq!(cap.expr().closure_inputs().len(), 1);
     assert_eq!(cap.closure().len(), 1);
-    let add = cap
-        .expr()
-        .instructions()
-        .last()
-        .unwrap()
-        .as_apply()
-        .unwrap();
+    let add = cap.expr().instrs().last().unwrap().as_apply().unwrap();
     assert_ne!(
         &add.inputs()[0],
         &add.inputs()[1],
@@ -232,12 +200,12 @@ fn capture_escaping_aliased_write_is_preserved() {
 
     let cap = Capture::from_context(inner_ctx, &[ObjectTracer::from(new_val)], &[]).unwrap();
     assert_eq!(
-        cap.expr().instructions().len(),
+        cap.expr().instrs().len(),
         1,
         "escaping write into a maybe-aliased cell is preserved"
     );
     assert!(matches!(
-        cap.expr().instructions()[0],
+        cap.expr().instrs().next().unwrap(),
         HInstr::WriteCell { .. }
     ));
     drop(inner);
@@ -264,19 +232,21 @@ fn capture_aliased_update_preserves_value_and_producer() {
     .unwrap();
     let expr = cap.expr();
     assert_eq!(
-        expr.instructions().len(),
+        expr.instrs().len(),
         2,
         "the assigned value's producer must survive"
     );
-    let producer = expr.instructions()[0].as_apply().unwrap();
-    let HInstr::WriteCell { cell, value } = &expr.instructions()[1] else {
+    let instrs: Vec<_> = expr.instrs().collect();
+    let producer = instrs[0].as_apply().unwrap();
+    let HInstr::WriteCell { cell, value } = instrs[1] else {
         panic!("expected structural write");
     };
     assert_eq!(producer.op().to_string(), "sample::neg");
-    assert_eq!(cell, &expr.inputs()[0].0);
+    let inputs: Vec<_> = expr.inputs().map(|param| param.var()).collect();
+    assert_eq!(cell, inputs[0]);
     assert_eq!(expr.cell_access(cell), Some(gnx_expr::CellAccess::Write));
-    assert_eq!(expr.cell_access(&expr.inputs()[1].0), None);
-    assert_eq!(value, &producer.outputs()[0].0);
+    assert_eq!(expr.cell_access(inputs[1]), None);
+    assert_eq!(value, producer.outputs().next().unwrap().var());
 }
 
 #[test]
@@ -290,21 +260,22 @@ fn capture_foreign_cell_update_preserves_assigned_closure_value() {
     cell.set(value.trace_ref().clone());
     let cap = Capture::from_context(inner.context(), vec![], vec![]).unwrap();
     let expr = cap.expr();
-    assert_eq!(expr.instructions().len(), 1);
+    assert_eq!(expr.instrs().len(), 1);
     assert_eq!(
-        expr.closure().len(),
+        expr.closure_inputs().len(),
         2,
         "capture both target and assigned value"
     );
     let HInstr::WriteCell {
         cell,
         value: assigned,
-    } = &expr.instructions()[0]
+    } = expr.instrs().next().unwrap()
     else {
         panic!("expected structural write");
     };
-    assert_eq!(cell, &expr.closure()[0].0);
-    assert_eq!(assigned, &expr.closure()[1].0);
+    let closure: Vec<_> = expr.closure_inputs().map(|param| param.var()).collect();
+    assert_eq!(cell, closure[0]);
+    assert_eq!(assigned, closure[1]);
     let ObjectTracer::Ref(captured_value) = &cap.closure()[1] else {
         panic!("assigned value must be an immutable trace");
     };
@@ -339,12 +310,10 @@ fn capture_nonaliased_dead_store_eliminated() {
     cell.set(v2.trace_ref().clone()); // live store (escapes via output)
 
     let out = ObjectTracer::Ref(cell.get());
-    let cap =
-        Capture::from_context(ctx, &[ObjectTracer::from(base.clone())], &[out]).unwrap();
+    let cap = Capture::from_context(ctx, &[ObjectTracer::from(base.clone())], &[out]).unwrap();
     let ops: Vec<String> = cap
         .expr()
-        .instructions()
-        .iter()
+        .instrs()
         .map(|e| e.as_apply().unwrap().op().to_string())
         .collect();
     assert_eq!(ops, vec!["sample::neg"], "dead store should be eliminated");
@@ -364,10 +333,9 @@ fn capture_aliased_read_write_ordering_preserved() {
     let w = Tracer::<Generic>::placeholder(sample_info());
     cell.set(w.trace_ref().clone());
 
-    let cap =
-        Capture::from_context(ctx, &[ObjectTracer::from(cell), ObjectTracer::from(w)], &[])
-            .unwrap();
-    let instructions = cap.expr().instructions();
+    let cap = Capture::from_context(ctx, &[ObjectTracer::from(cell), ObjectTracer::from(w)], &[])
+        .unwrap();
+    let instructions: Vec<_> = cap.expr().instrs().collect();
     assert_eq!(instructions.len(), 3);
     assert!(matches!(instructions[0], HInstr::ReadCell { .. }));
     assert!(matches!(instructions[1], HInstr::ReadCell { .. }));

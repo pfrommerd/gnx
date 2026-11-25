@@ -2,8 +2,6 @@
 //! [`crate::ad`]): split argument graphs into tracer leaves, trace the wrapped
 //! function once per signature, and rebuild result graphs.
 
-use std::sync::Arc;
-
 use gnx_common::ops::{ones_op, zeros_op};
 use gnx_expr::{
     Capture, CellTrace, Invocation, Kind, ObjectTracer, Op, Trace, TraceContext, VarInfo,
@@ -11,7 +9,6 @@ use gnx_expr::{
 use gnx_graph::util::GraphExt;
 use gnx_graph::{Builder, Graph, Key, Of};
 
-use crate::body::Body;
 use crate::cache::{TraceEntry, TracerBuilder, kind, rebuild_graph, split_graph};
 use crate::spec::Resolved;
 use crate::{TransformError, TransformResult, util};
@@ -70,8 +67,8 @@ pub(crate) fn body<O: Graph>(
     entry: &TraceEntry<O>,
     objects: &[ObjectTracer],
     captured: &[bool],
-) -> Body {
-    let expr = entry.expr.capture_inputs(captured);
+) -> TransformResult<gnx_expr::ApplyRegion> {
+    let expr = entry.expr.view().capture_inputs(captured).build()?;
     let captures = entry
         .closure
         .iter()
@@ -84,7 +81,7 @@ pub(crate) fn body<O: Graph>(
         )
         .cloned()
         .collect();
-    Body::new(Arc::new(expr), captures)
+    Ok(gnx_expr::ApplyRegion::new(expr.handle(), captures))
 }
 
 /// A value leaf; transformations never take cells as explicit operands.

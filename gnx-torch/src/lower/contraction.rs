@@ -60,11 +60,11 @@ pub(super) fn dot(x: &Tensor, y: &Tensor, d: &DotDimensions, k: Kind) -> io::Res
     .map_err(io::Error::other)
 }
 impl TorchLowering for DotGeneralOperation {
-    fn lower_torch(&self, eqn: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, eqn: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [a, b] = args else {
             return Err(invalid("dot expects two arguments"));
         };
-        Ok(vec![dot(a, b, self.dimensions(), result_layout(eqn)?.1)?])
+        Ok(vec![dot(a, b, &self.dimensions(), result_layout(eqn)?.1)?])
     }
 }
 fn scaled(x: &Tensor, s: Option<&Tensor>, contract: &[usize]) -> io::Result<Tensor> {
@@ -98,7 +98,7 @@ fn scaled(x: &Tensor, s: Option<&Tensor>, contract: &[usize]) -> io::Result<Tens
         .map_err(io::Error::other)
 }
 impl TorchLowering for ScaledDotOperation {
-    fn lower_torch(&self, eqn: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, eqn: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [a, b, rest @ ..] = args else {
             return Err(invalid("missing scaled dot arguments"));
         };
@@ -122,7 +122,7 @@ impl TorchLowering for ScaledDotOperation {
             },
             &d.rhs_contracting,
         )?;
-        Ok(vec![dot(&a, &b, d, result_layout(eqn)?.1)?])
+        Ok(vec![dot(&a, &b, &d, result_layout(eqn)?.1)?])
     }
 }
 fn ragged(x: &Tensor, g: &Tensor, axis: usize, prefix: &[usize]) -> io::Result<Tensor> {
@@ -167,7 +167,7 @@ fn ragged(x: &Tensor, g: &Tensor, axis: usize, prefix: &[usize]) -> io::Result<T
     .map_err(io::Error::other)
 }
 impl TorchLowering for RaggedDotGeneralOperation {
-    fn lower_torch(&self, e: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, e: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [x, y, g] = args else {
             return Err(invalid("missing ragged dot operands"));
         };

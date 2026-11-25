@@ -1,11 +1,14 @@
 use gnx_common::{ArrayInfo, DType, Shape};
 use gnx_expr::pass::{Builder, Dce, Pipeline};
-use gnx_expr::{
-    Capture, CellTrace, Expr, InputSpec, Invocation, LoweringError, ObjectTracer, Op, Operation,
-    Trace, TraceContext, VarInfo,
-};
+use std::sync::Arc;
+
 use gnx_common::ops::reduction::{ReduceAddOperation, reduce_add};
 use gnx_common::ops::{add_op, mul_op};
+use gnx_expr::util::TypedIn;
+use gnx_expr::{
+    Capture, CellTrace, Expr, InputSpec, Invocation, LoweringError, ObjectTracer, Op, OpRef,
+    Operation, RootExpr, Trace, TraceContext, VarInfo,
+};
 use gnx_transforms::ExpandTransforms;
 use gnx_transforms::ad::region::{jvp, vjp};
 use gnx_transforms::ad::{DiffParameters, JvpOperation, VjpOperation};
@@ -54,7 +57,7 @@ fn region(inputs: &[VarInfo], body: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Capt
 }
 
 /// Capture `build` over placeholders and lower it to an Expr.
-fn lowered(inputs: &[VarInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Expr {
+fn lowered(inputs: &[VarInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Arc<RootExpr> {
     let guard = TraceContext::enter();
     let args: Vec<ObjectTracer> = inputs
         .iter()
@@ -68,32 +71,32 @@ fn lowered(inputs: &[VarInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Ex
         .expr()
         .lower(&InputSpec::from_args(&[], &args))
         .unwrap();
-    program.expr.check().unwrap();
-    program.expr.as_ref().clone()
+    program.expr.view().check().unwrap();
+    program.expr.clone()
 }
 
-fn is<T: Operation>(op: &Op) -> bool {
-    op.downcast_ref::<T>().is_some()
+fn is<T: TypedIn<dyn Operation>>(op: OpRef<'_>) -> bool {
+    op.downcast::<T>().is_some()
 }
 
-fn contains_ad(expr: &Expr) -> bool {
-    expr.eqns().iter().any(|eqn| {
+fn contains_ad(expr: Expr<'_>) -> bool {
+    expr.eqns().any(|eqn| {
         is::<MapOperation>(eqn.op())
             || is::<JvpOperation>(eqn.op())
             || is::<VjpOperation>(eqn.op())
-            || eqn.subexprs().iter().any(|sub| contains_ad(sub.expr()))
+            || eqn.subexprs().any(|sub| contains_ad(sub.expr()))
     })
 }
 
 #[test]
 fn additive_reduction_expands_without_a_math_rule_provider() {
-    use gnx_expr::SubExpr;
+    use gnx_expr::SubExprBuilder;
     use gnx_transforms::ops::{ad, map};
 
     let mut body = Builder::new();
     let x = body.input(info(&[3]));
     let sum = reduce_add(&mut body, x, &[0]).unwrap();
-    let body = SubExpr::new(body.finish(vec![sum]).into(), vec![]);
+    let body = SubExprBuilder::new(body.finish(vec![sum]));
 
     let mut program = Builder::new();
     let x = program.input(info(&[3]));
@@ -112,17 +115,25 @@ fn additive_reduction_expands_without_a_math_rule_provider() {
         vec![body.clone()],
     ));
     outputs.extend(program.emit(map::map(2, &[0], &[0]), &[batch], [info(&[2])], vec![body]));
-    let expanded = gnx_transforms::expand_transforms(&program.finish(outputs)).unwrap();
+    let program = program.finish(outputs).build().unwrap();
+    let expanded = gnx_transforms::expand_transforms(program.view())
+        .unwrap()
+        .build()
+        .unwrap();
+    let expanded = expanded.view();
     expanded.check().unwrap();
-    assert!(!contains_ad(&expanded));
+    assert!(!contains_ad(expanded));
     let reductions: Vec<_> = expanded
         .eqns()
-        .iter()
-        .filter_map(|eqn| eqn.op().downcast_ref::<ReduceAddOperation>().map(|op| (eqn, op)))
+        .filter_map(|eqn| {
+            eqn.op()
+                .downcast::<ReduceAddOperation>()
+                .map(|op| (eqn, op))
+        })
         .collect();
     assert!(reductions.iter().any(|(_, op)| op.axes() == [0]));
     assert!(reductions.iter().any(|(_, op)| op.axes() == [1]));
-    assert!(reductions.iter().all(|(eqn, _)| eqn.subexprs().is_empty()));
+    assert!(reductions.iter().all(|(eqn, _)| eqn.subexprs().len() == 0));
 }
 
 #[test]
@@ -134,21 +145,22 @@ fn transformations_survive_lowering_and_expand_away() {
         let (_, grad) = vjp(&square, &[a[1].clone()], &[a[2].clone()], &[0], &[0]).unwrap();
         vec![mapped[0].clone(), tangent[0].clone(), grad[0].clone()]
     });
-    assert_eq!(expr.eqns().len(), 3);
-    let find = |pred: fn(&Op) -> bool| expr.eqns().iter().find(|eqn| pred(eqn.op())).unwrap();
+    let view = expr.view();
+    assert_eq!(view.eqns().len(), 3);
+    let find = |pred: fn(OpRef<'_>) -> bool| view.eqns().find(|eqn| pred(eqn.op())).unwrap();
     let mapped = find(is::<MapOperation>);
     assert_eq!(
-        MapParameters::from_op(mapped.op()).unwrap(),
+        MapParameters::from_op_ref(mapped.op()).unwrap(),
         MapParameters {
             size: 2,
             in_axes: vec![0],
             out_axes: vec![1]
         }
     );
-    assert_eq!(mapped.outputs()[0].1, info(&[3, 2]));
+    assert_eq!(mapped.outputs().next().unwrap().info_ref(), info(&[3, 2]));
     find(is::<JvpOperation>);
     assert_eq!(
-        DiffParameters::from_op(find(is::<VjpOperation>).op()).unwrap(),
+        DiffParameters::from_op_ref(find(is::<VjpOperation>).op()).unwrap(),
         DiffParameters {
             wrt: vec![0],
             of: vec![0]
@@ -160,7 +172,7 @@ fn transformations_survive_lowering_and_expand_away() {
         .with(Dce)
         .run(expr)
         .unwrap();
-    assert!(!contains_ad(&expanded));
+    assert!(!contains_ad(expanded.view()));
 }
 
 #[test]
@@ -174,12 +186,12 @@ fn nested_transformations_expand_innermost_first() {
     let expr = lowered(&[info(&[4])], |a| {
         map(&derivative, &[a[0].clone()], &[0], &[0]).unwrap()
     });
-    assert!(is::<MapOperation>(expr.eqns()[0].op()));
-    assert!(is::<JvpOperation>(
-        expr.eqns()[0].subexprs()[0].expr().eqns()[0].op()
-    ));
+    let first = expr.view().eqns().next().unwrap();
+    assert!(is::<MapOperation>(first.op()));
+    let body = first.subexprs().next().unwrap().expr();
+    assert!(is::<JvpOperation>(body.eqns().next().unwrap().op()));
     let expanded = Pipeline::new().with(ExpandTransforms).run(expr).unwrap();
-    assert!(!contains_ad(&expanded));
+    assert!(!contains_ad(expanded.view()));
 }
 
 #[test]
@@ -241,54 +253,59 @@ fn call_boundaries_survive_transformations() {
         let y = gnx_transforms::call(&square, &[a[0].clone().into()])[0].resolve();
         vec![apply(add_op(), &y, &a[0])]
     });
-    let calls = |expr: &Expr| {
+    let calls = |expr: Expr<'_>| {
         expr.eqns()
-            .iter()
             .filter(|eqn| is::<CallOperation>(eqn.op()))
             .count()
     };
-    let expand = |expr: Expr| {
+    let expand = |expr: Arc<RootExpr>| {
         Pipeline::new()
             .with(ExpandTransforms)
             .with(Dce)
             .run(expr)
             .unwrap()
     };
-    let no_top_level_mul = |expr: &Expr| {
-        !expr
-            .eqns()
-            .iter()
-            .any(|eqn| eqn.op() == &mul_op())
-    };
+    let no_top_level_mul = |expr: Expr<'_>| !expr.eqns().any(|eqn| eqn.op() == mul_op());
 
     let jvp_expr = expand(lowered(&[info(&[3]), info(&[3])], |a| {
         let (out, tangent) = jvp(&f, &[a[0].clone()], &[a[1].clone()], &[0], &[0]).unwrap();
         vec![out[0].clone(), tangent[0].clone()]
     }));
-    assert_eq!(calls(&jvp_expr), 2, "primal and linear calls:\n{jvp_expr}");
-    assert!(no_top_level_mul(&jvp_expr), "{jvp_expr}");
+    let jvp_expr = jvp_expr.view();
+    assert_eq!(calls(jvp_expr), 2, "primal and linear calls:\n{jvp_expr}");
+    assert!(no_top_level_mul(jvp_expr), "{jvp_expr}");
 
     let vjp_expr = expand(lowered(&[info(&[3]), info(&[3])], |a| {
         let (out, grad) = vjp(&f, &[a[0].clone()], &[a[1].clone()], &[0], &[0]).unwrap();
         vec![out[0].clone(), grad[0].clone()]
     }));
-    assert_eq!(calls(&vjp_expr), 2, "primal and transposed calls:\n{vjp_expr}");
-    assert!(no_top_level_mul(&vjp_expr), "{vjp_expr}");
+    let vjp_expr = vjp_expr.view();
+    assert_eq!(
+        calls(vjp_expr),
+        2,
+        "primal and transposed calls:\n{vjp_expr}"
+    );
+    assert!(no_top_level_mul(vjp_expr), "{vjp_expr}");
     // The transposed call consumes the cotangent and returns one value.
     let transposed = vjp_expr
         .eqns()
-        .iter()
         .filter(|eqn| is::<CallOperation>(eqn.op()))
         .last()
         .unwrap();
     assert_eq!(transposed.outputs().len(), 1);
-    assert!(transposed.inputs().contains(&vjp_expr.inputs()[1].0));
+    assert!(
+        transposed
+            .inputs()
+            .contains(&vjp_expr.inputs().nth(1).unwrap().var())
+    );
 
     let map_expr = expand(lowered(&[info(&[2, 3])], |a| {
         map(&f, &[a[0].clone()], &[0], &[0]).unwrap()
     }));
-    assert_eq!(calls(&map_expr), 1, "{map_expr}");
-    assert!(no_top_level_mul(&map_expr), "{map_expr}");
-    let batched = &map_expr.eqns()[0];
-    assert_eq!(batched.subexprs()[0].expr().inputs()[0].1, info(&[2, 3]));
+    let map_expr = map_expr.view();
+    assert_eq!(calls(map_expr), 1, "{map_expr}");
+    assert!(no_top_level_mul(map_expr), "{map_expr}");
+    let batched = map_expr.eqns().next().unwrap();
+    let body = batched.subexprs().next().unwrap().expr();
+    assert_eq!(body.inputs().next().unwrap().info_ref(), info(&[2, 3]));
 }

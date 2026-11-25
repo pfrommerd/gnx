@@ -64,11 +64,13 @@ fn sum(a: &Array) -> Array {
             result: &metadata = array::add x, y;
             in (result)
         }
-    };
+    }
+    .build()
+    .unwrap();
     let initial = apply(zeros_op(), &[], scalar);
     Invocation::invoke(
         reduce_op(&axes),
-        vec![(reducer.into(), vec![])],
+        vec![(reducer.handle(), vec![])],
         vec![a.tracer().clone(), initial.tracer().clone()],
         vec![metadata],
     )
@@ -111,7 +113,7 @@ fn map_specs_select_axes_per_argument_leaf() {
     let w = floats(&[3, 2], &[1., 10., 2., 20., 3., 30.]);
     let b = floats(&[3], &[100., 100., 100.]);
     let out = affine.invoke((xs.clone(), (w, b)));
-    assert_eq!(out.shape(), &Shape::fixed([2, 3]));
+    assert_eq!(out.shape(), Shape::fixed([2, 3]));
 
     // The macro form, stacking along axis 1.
     let scaled = gnx_transforms::map!(
@@ -120,7 +122,7 @@ fn map_specs_select_axes_per_argument_leaf() {
         out_axes = 1
     );
     let columns = scaled(xs, floats(&[3], &[1., 2., 3.]));
-    assert_eq!(columns.shape(), &Shape::fixed([3, 2]));
+    assert_eq!(columns.shape(), Shape::fixed([3, 2]));
 
     eval(&device, &(out.clone(), columns.clone()));
     close(
@@ -247,7 +249,7 @@ fn transformations_compose() {
     let (d2,) = second.invoke((scalar(2.),));
     // Hessian of sum(x³) is diag(6x).
     let h = hessian(|x: Array| sum(&cube(x))).invoke((floats(&[2], &[1., 2.]),));
-    assert_eq!(h.shape(), &Shape::fixed([2, 2]));
+    assert_eq!(h.shape(), Shape::fixed([2, 2]));
     // Per-example gradients of w * x with respect to the shared w.
     let per_example =
         map(grad(|w: Array, x: Array| mul(&w, &x)).wrt(dag!(true, false))).in_axes(dag!(*, 0));

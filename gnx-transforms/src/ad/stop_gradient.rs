@@ -1,30 +1,19 @@
 use std::fmt;
 
 use gnx_common::Array;
-use gnx_expr::{Dialect, Eqn, Invocation, LoweringError, Op, Operation};
+use gnx_expr::{Eqn, Invocation, LoweringError, Op, Operation};
 
-use super::AdDialect;
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct StopGradientOperation;
-
-impl fmt::Display for StopGradientOperation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("ad::stop_gradient")
-    }
+gnx_common::unit_operations! {
+    pub struct StopGradientOperation;
 }
 
 impl Operation for StopGradientOperation {
-    fn name(&self) -> &'static str {
-        "stop_gradient"
+    fn display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ad::stop_gradient")
     }
 
-    fn dialect(&self) -> &'static dyn Dialect {
-        &AdDialect
-    }
-
-    fn check_expr(&self, eqn: &Eqn) -> Result<(), LoweringError> {
-        if eqn.inputs().len() != 1 || eqn.outputs().len() != 1 || !eqn.subexprs().is_empty() {
+    fn check_expr(&self, eqn: Eqn<'_>) -> Result<(), LoweringError> {
+        if eqn.inputs().len() != 1 || eqn.outputs().len() != 1 || eqn.subexprs().len() != 0 {
             return Err(LoweringError::RegionSignature("stop_gradient signature"));
         }
         Ok(())

@@ -23,7 +23,7 @@ fn torch_conv(d: &TorchDevice, scale: f32) {
     let ones = |shape| {
         let mut b = Builder::new();
         let v = b.emit1(ones_op(), &[], VarInfo::new(info(shape)));
-        let p = d.compile(&b.finish(vec![v])).unwrap();
+        let p = d.compile(&b.finish(vec![v]).build().unwrap()).unwrap();
         p.modules()
             .next()
             .unwrap()
@@ -77,7 +77,7 @@ fn xla_conv(d: &XlaDevice, scale: f32) {
         ))
     };
     let out = d
-        .compile(&b.finish(vec![y]))
+        .compile(&b.finish(vec![y]).build().unwrap())
         .unwrap()
         .run(
             &[arg(X, scale), arg(W, 1.)],

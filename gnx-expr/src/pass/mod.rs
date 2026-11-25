@@ -1,9 +1,10 @@
 //! Expr-to-Expr passes and the reusable machinery to write them.
 //!
-//! A [`Pass`] transforms a lowered [`Expr`] without changing its closure, input,
-//! or output signature. A [`Pipeline`] runs passes in order and verifies the
-//! result of each. [`Builder`] and [`rewrite`] are the SSA construction kit
-//! shared by passes and by the rules they dispatch through op interfaces.
+//! A [`Pass`] transforms a lowered expression without changing its closure,
+//! input, or output signature. A [`Pipeline`] runs passes in order and
+//! verifies the result of each. [`Builder`] and [`rewrite`] are the SSA
+//! construction kit shared by passes and by the rules they dispatch through
+//! op interfaces.
 
 mod builder;
 mod dce;
@@ -15,22 +16,23 @@ pub use rewrite::rewrite;
 
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
-use crate::{Expr, VarInfo};
+use crate::{Expr, RootExpr, Symbol, VarInfo};
 
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// A stage of a [`Pipeline`]. `Pass<Expr>` (the default) is an Expr-to-Expr
-/// transformation that must preserve the closure, input, and output metadata.
-/// A pass producing another `T` (HLO, MLIR, a wire program, ...) can only be
-/// the final stage, installed with [`Pipeline::finalize`].
-pub trait Pass<T = Expr>: Send + Sync {
+/// A stage of a [`Pipeline`]. `Pass<Arc<RootExpr>>` (the default) is an
+/// Expr-to-Expr transformation that must preserve the closure, input, and
+/// output metadata. A pass producing another `T` (HLO, MLIR, a wire
+/// program, ...) can only be the final stage, installed with
+/// [`Pipeline::finalize`].
+pub trait Pass<T = Arc<RootExpr>>: Send + Sync {
     fn name(&self) -> &'static str;
-    fn run(&self, expr: Expr) -> Result<T, PassError>;
+    fn run(&self, expr: Arc<RootExpr>) -> Result<T, PassError>;
 }
 
-/// Any `Fn(Expr) -> Result<T, _>` can be a final stage.
+/// Any `Fn(Arc<RootExpr>) -> Result<T, _>` can be a final stage.
 pub struct FnPass<F> {
     name: &'static str,
     f: F,
@@ -44,13 +46,13 @@ impl<F> FnPass<F> {
 
 impl<T, E, F> Pass<T> for FnPass<F>
 where
-    F: Fn(Expr) -> Result<T, E> + Send + Sync,
+    F: Fn(Arc<RootExpr>) -> Result<T, E> + Send + Sync,
     E: Into<BoxError>,
 {
     fn name(&self) -> &'static str {
         self.name
     }
-    fn run(&self, expr: Expr) -> Result<T, PassError> {
+    fn run(&self, expr: Arc<RootExpr>) -> Result<T, PassError> {
         (self.f)(expr).map_err(|error| PassError::new(self.name, error))
     }
 }
@@ -85,7 +87,7 @@ impl PassError {
 /// After each Expr-to-Expr pass the result is checked with [`Expr::check`] and
 /// must keep the original signature. Set `GNX_DUMP_IR` to a comma-separated
 /// list of pass names (or `all`) to print the expression after those passes.
-pub struct Pipeline<T = Expr> {
+pub struct Pipeline<T = Arc<RootExpr>> {
     passes: Vec<Box<dyn Pass>>,
     last: Box<dyn Pass<T>>,
 }
@@ -95,7 +97,7 @@ impl Pass for Identity {
     fn name(&self) -> &'static str {
         "identity"
     }
-    fn run(&self, expr: Expr) -> Result<Expr, PassError> {
+    fn run(&self, expr: Arc<RootExpr>) -> Result<Arc<RootExpr>, PassError> {
         Ok(expr)
     }
 }
@@ -141,13 +143,13 @@ impl<T> Pipeline<T> {
     }
 
     /// Run the Expr-to-Expr passes only, skipping the final stage.
-    pub fn optimize(&self, mut expr: Expr) -> Result<Expr, PassError> {
-        let signature = Signature::of(&expr);
+    pub fn optimize(&self, mut expr: Arc<RootExpr>) -> Result<Arc<RootExpr>, PassError> {
+        let signature = Signature::of(expr.view());
         for pass in &self.passes {
             let name = pass.name();
             expr = pass.run(expr)?;
-            expr.check().map_err(|error| PassError::new(name, error))?;
-            let actual = Signature::of(&expr);
+            (expr.view().check()).map_err(|error| PassError::new(name, error))?;
+            let actual = Signature::of(expr.view());
             if actual != signature {
                 return Err(PassError::new(
                     name,
@@ -155,13 +157,13 @@ impl<T> Pipeline<T> {
                 ));
             }
             if dump_after(name) {
-                eprintln!("// gnx: after pass `{name}`\n{expr}");
+                eprintln!("// gnx: after pass `{name}`\n{}", expr.view());
             }
         }
         Ok(expr)
     }
 
-    pub fn run(&self, expr: Expr) -> Result<T, PassError> {
+    pub fn run(&self, expr: Arc<RootExpr>) -> Result<T, PassError> {
         self.last.run(self.optimize(expr)?)
     }
 }
@@ -182,27 +184,24 @@ fn dump_after(pass: &str) -> bool {
 
 #[derive(PartialEq, Eq)]
 struct Signature {
-    symbol_inputs: Vec<crate::Symbol>,
-    symbol_closure: Vec<crate::Symbol>,
+    closure_symbols: Vec<Symbol>,
     closure: Vec<VarInfo>,
     inputs: Vec<VarInfo>,
     outputs: Vec<Option<VarInfo>>,
 }
 
 impl Signature {
-    fn of(expr: &Expr) -> Self {
-        let params = |params: &[(crate::Var, VarInfo)]| {
-            params.iter().map(|(_, info)| info.clone()).collect()
-        };
+    fn of(expr: Expr<'_>) -> Self {
         Self {
-            symbol_inputs: expr.symbol_inputs.clone(),
-            symbol_closure: expr.symbol_closure.clone(),
-            closure: params(expr.closure()),
-            inputs: params(expr.inputs()),
-            outputs: expr
-                .outputs()
-                .iter()
-                .map(|var| expr.value_info(var).cloned())
+            closure_symbols: expr.closure_symbols().to_vec(),
+            closure: (expr.closure_inputs())
+                .map(|param| param.info_ref().to_owned())
+                .collect(),
+            inputs: (expr.inputs())
+                .map(|param| param.info_ref().to_owned())
+                .collect(),
+            outputs: (expr.outputs().iter())
+                .map(|var| expr.value_info(*var).map(|info| info.to_owned()))
                 .collect(),
         }
     }
@@ -254,13 +253,13 @@ impl<I: ?Sized + 'static> Pass for CheckSupported<I> {
         "check_supported"
     }
 
-    fn run(&self, expr: Expr) -> Result<Expr, PassError> {
-        fn check<I: ?Sized + 'static>(expr: &Expr) -> Result<(), String> {
-            for (index, eqn) in expr.eqns().iter().enumerate() {
-                eqn.op()
+    fn run(&self, expr: Arc<RootExpr>) -> Result<Arc<RootExpr>, PassError> {
+        fn check<I: ?Sized + 'static>(expr: Expr<'_>) -> Result<(), String> {
+            for (index, eqn) in expr.eqns().enumerate() {
+                (eqn.op().get())
                     .interface::<I>()
                     .map_err(|error| format!("equation {index}: {error}"))?;
-                for (region, sub) in eqn.subexprs().iter().enumerate() {
+                for (region, sub) in eqn.subexprs().enumerate() {
                     check::<I>(sub.expr()).map_err(|error| {
                         format!("equation {index} ({}) region {region}: {error}", eqn.op())
                     })?;
@@ -268,7 +267,7 @@ impl<I: ?Sized + 'static> Pass for CheckSupported<I> {
             }
             Ok(())
         }
-        check::<I>(&expr).map_err(|error| PassError::new(self.name(), error))?;
+        check::<I>(expr.view()).map_err(|error| PassError::new(self.name(), error))?;
         Ok(expr)
     }
 }

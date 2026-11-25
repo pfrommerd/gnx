@@ -10,14 +10,14 @@ use super::{
     shape, unary,
 };
 
-fn computation(reducer: &Expr) -> io::Result<XlaComputation> {
+fn computation(reducer: Expr<'_>) -> io::Result<XlaComputation> {
     let builder = XlaBuilder::new("reducer");
     let inputs = reducer
         .inputs()
-        .iter()
         .enumerate()
-        .map(|(i, (_, info))| {
-            native(builder.parameter_s(i as i64, &shape(metadata(info)?)?, "scalar"))
+        .map(|(i, param)| {
+            let info = metadata(param.info_ref())?;
+            native(builder.parameter_s(i as i64, &shape(&info)?, "scalar"))
         })
         .collect::<io::Result<Vec<_>>>()?;
     let results = lower_body(&builder, reducer, &[], &inputs)?;
@@ -28,12 +28,13 @@ fn computation(reducer: &Expr) -> io::Result<XlaComputation> {
 }
 
 fn reduce(
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     inputs: &[XlaOp],
     build: impl FnOnce(&[XlaOp], &[XlaOp], &XlaComputation) -> io::Result<XlaOp>,
 ) -> io::Result<Vec<XlaOp>> {
     let count = eqn.outputs().len();
-    let [reducer] = eqn.subexprs() else {
+    let mut regions = eqn.subexprs();
+    let (Some(reducer), None) = (regions.next(), regions.next()) else {
         return Err(invalid("reduction needs one reducer region"));
     };
     if count == 0 || inputs.len() != count * 2 {
@@ -63,7 +64,7 @@ impl XlaLowering for ReduceOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         reduce(eqn, inputs, |operands, initial, reducer| {
@@ -71,7 +72,7 @@ impl XlaLowering for ReduceOperation {
                 operands,
                 initial,
                 reducer,
-                &indices(self.axes())?,
+                &indices(&self.axes())?,
             ))
         })
     }
@@ -81,11 +82,11 @@ impl XlaLowering for ReduceAddOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let input = unary("reduce_add", inputs)?;
-        let axes = indices(self.axes())?;
+        let axes = indices(&self.axes())?;
         if !is_pred(input)? {
             return Ok(vec![native(input.reduce_sum(&axes, false))?]);
         }
@@ -102,7 +103,7 @@ impl XlaLowering for ReduceWindowOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let window = self.window();

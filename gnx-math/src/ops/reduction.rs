@@ -1,17 +1,15 @@
 //! Reductions with a scalar combiner region.
 
-use std::sync::Arc;
-
 use gnx_common::ops::reduction::{array, check_region, emit};
 use gnx_common::{ArrayInfo, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
-use gnx_expr::{Expr, Var, VarInfo};
+use gnx_expr::{ExprHandle, Var, VarInfo};
 
-use super::{Dialect, Eqn, Op, Operation, Result, fmt, signature};
+use super::{Op, Result, native, signature, stored_exactly};
 
 pub use gnx_common::ops::reduction::{ReduceOperation, reduce, reduce_add_op, reduce_op};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Window {
     pub dimensions: Vec<usize>,
     pub strides: Vec<usize>,
@@ -20,21 +18,22 @@ pub struct Window {
     pub window_dilation: Vec<usize>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ReduceWindowOperation {
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = ReduceWindowOperation)]
+pub struct ReduceWindow {
     window: Window,
 }
 
 impl ReduceWindowOperation {
-    pub fn window(&self) -> &Window {
-        &self.window
+    pub fn window(&self) -> Window {
+        native(&self.window)
     }
 }
 
 gnx_common::array_operation!(ReduceWindowOperation, "reduce_window", |op, eqn| {
-    op.window.check(check_region(eqn)?)
+    op.window().check(check_region(eqn)?)
 }, window;
-    fn lower(&self, eqn: &gnx_expr::HEqn, ctx: &mut gnx_expr::lower::LoweringContext<'_>) -> Result<()> {
+    fn lower(&self, eqn: gnx_expr::HEqn<'_>, ctx: &mut gnx_expr::lower::LoweringContext<'_>) -> Result<()> {
         ctx.lower_closed_regions_apply(eqn)
     }
 );
@@ -90,7 +89,13 @@ impl Window {
 }
 
 pub fn reduce_window_op(window: Window) -> Op {
-    Op::new(ReduceWindowOperation { window })
+    let op = Op::new(ReduceWindow {
+        window: window.clone(),
+    });
+    stored_exactly(
+        (op.downcast_ref::<ReduceWindowOperation>()).is_some_and(|op| op.window() == window),
+    );
+    op
 }
 
 pub fn reduce_window(
@@ -98,7 +103,7 @@ pub fn reduce_window(
     operands: &[Var],
     initial: &[Var],
     window: Window,
-    reducer: Arc<Expr>,
+    reducer: ExprHandle,
 ) -> Result<Vec<Var>> {
     emit(
         builder,
@@ -124,7 +129,7 @@ fn arg_extreme(
         select_op,
     };
     use gnx_common::DType;
-    let x = array(b.info(input))?.clone();
+    let x = array(b.info(input))?;
     let shape = fixed_dims(&x).map_err(|_| signature("arg reduction requires fixed dimensions"))?;
     if shape.get(axis).is_none_or(|&dim| dim == 0) {
         return Err(signature("arg reduction requires a nonempty axis"));
@@ -170,7 +175,7 @@ fn arg_extreme(
         &[input, index],
         &[value_identity, index_identity],
         &[axis],
-        Arc::new(reducer.finish(vec![val, ix])),
+        reducer.finish(vec![val, ix]).build()?.handle(),
     )?[1])
 }
 

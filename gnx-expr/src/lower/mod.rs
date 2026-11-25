@@ -1,14 +1,20 @@
 //! HExpr-to-Expr lowering, input specifications, and execution-boundary metadata.
 
+mod replay;
 mod structured;
+pub use replay::CallError;
 pub use structured::{FixedRegion, RegionArgument, RegionCell, StructuredRegion};
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use crate::{Eqn, Expr, HEqn, HExpr, HInstr, HSubExpr, Kind, Op, SubExpr, Var, VarInfo, VarScope};
+use crate::check::BuildError;
+use crate::{
+    EqnSource, ExprBuilder, ExprRef, HEqn, HEqnSource, HExpr, HExprBuilder, HExprRef, HInstr,
+    HInstrSource, HParam, HRootExpr, HSubExpr, HSubExprBuilder, Kind, Op, RootExpr, SubExprBuilder,
+    Symbol, Var, VarInfo, VarScope,
+};
 
 /// Canonical source of a supplied value or cell, indexed in the original HExpr
 /// argument lists. Aliases share a source. Explicit inputs take precedence over
@@ -24,46 +30,6 @@ pub enum InputId {
 pub struct InputSpec {
     pub closure: Vec<(InputId, Kind, VarInfo)>,
     pub inputs: Vec<(InputId, Kind, VarInfo)>,
-}
-impl InputSpec {
-    /// Derive shared identities and kinds from actual arguments. Equal values
-    /// are not merged unless their trace identities match.
-    pub fn from_args(closure: &[crate::ObjectTracer], inputs: &[crate::ObjectTracer]) -> Self {
-        #[derive(PartialEq, Eq, PartialOrd, Ord)]
-        enum Identity {
-            Value(crate::TracerKey),
-            Cell(crate::CellKey),
-        }
-        let mut identities = BTreeMap::new();
-        let mut bind = |(index, object): (InputId, &crate::ObjectTracer)| {
-            let (identity, kind, info) = match object {
-                crate::ObjectTracer::Ref(value) => (
-                    Identity::Value(crate::TracerKey::from(value)),
-                    Kind::Value,
-                    value.info().clone(),
-                ),
-                crate::ObjectTracer::Cell(cell) => (
-                    Identity::Cell(crate::CellKey::from(cell)),
-                    Kind::Cell,
-                    cell.type_info().clone(),
-                ),
-            };
-            (*identities.entry(identity).or_insert(index), kind, info)
-        };
-        // Visit explicit inputs first so captures of the same handle use the
-        // first explicit-input offset, not a closure offset or a dense ID.
-        let inputs = inputs
-            .iter()
-            .enumerate()
-            .map(|(index, value)| bind((InputId::Input(index), value)))
-            .collect();
-        let closure = closure
-            .iter()
-            .enumerate()
-            .map(|(index, value)| bind((InputId::Closure(index), value)))
-            .collect();
-        Self { closure, inputs }
-    }
 }
 
 // Internal identity used while functionalizing cells; never part of the boundary API.
@@ -83,19 +49,25 @@ pub enum Output {
 }
 
 /// Pure program and its execution-boundary mappings. Closure and inputs correspond
-/// one to one with expr.closure() and expr.inputs(), respectively. Closure-only
-/// identities stay in closure; any identity appearing in explicit inputs belongs
-/// to inputs, even when also captured. InputSpec supplies kinds and aliases.
+/// one to one with the closure inputs and inputs of `expr`, respectively.
+/// Closure-only identities stay in closure; any identity appearing in explicit
+/// inputs belongs to inputs, even when also captured. InputSpec supplies kinds
+/// and aliases.
 ///
 /// `outputs` assembles the user results. `updates` maps each written external
-/// cell to a final value in `expr.outputs()`. Parameter forwarding is expressed
-/// directly by returning its variable.
+/// cell to a final value in the outputs of `expr`. Parameter forwarding is
+/// expressed directly by returning its variable.
 #[derive(Clone, Debug)]
 pub struct LoweredExpr {
     spec: InputSpec,
     snapshot_inputs: BTreeSet<InputId>,
-    pub expr: Arc<Expr>,
-    trace_body: Arc<HExpr>,
+    pub expr: Arc<RootExpr>,
+    // `expr` returning only the outputs of the trace body
+    computation: Arc<RootExpr>,
+    trace_body: Arc<HRootExpr>,
+    // The owned forms of `expr` and `trace_body`, to derive variants from
+    source: ExprBuilder,
+    trace_source: HExprBuilder,
     /// Metadata for distinct computed results, in replay-body output order.
     pub output_infos: Vec<VarInfo>,
     pub closure: Vec<InputId>,
@@ -106,7 +78,7 @@ pub struct LoweredExpr {
 impl LoweredExpr {
     /// Replay body returning only distinct computed results. The wrapper
     /// forwards any parameters directly from their snapshots.
-    pub fn trace_body(&self) -> &Arc<HExpr> {
+    pub fn trace_body(&self) -> &Arc<HRootExpr> {
         &self.trace_body
     }
     pub fn results(&self) -> &[Output] {
@@ -114,212 +86,28 @@ impl LoweredExpr {
     }
 
     pub(crate) fn input_id(&self, var: Var) -> Option<InputId> {
-        self.expr
-            .closure()
-            .iter()
-            .zip(&self.closure)
-            .chain(self.expr.inputs().iter().zip(&self.inputs))
+        (self.source.closure_inputs.iter().zip(&self.closure))
+            .chain(self.source.inputs.iter().zip(&self.inputs))
             .find_map(|((parameter, _), &id)| (*parameter == var).then_some(id))
     }
 
     pub(crate) fn result_source(&self, result_idx: usize) -> Option<ResultSource> {
-        let &var = self.expr.outputs().get(result_idx)?;
+        let &var = self.source.outputs.get(result_idx)?;
         if let Some(id) = self.input_id(var) {
             Some(ResultSource::Parameter(id))
         } else {
-            self.trace_body
-                .outputs()
-                .iter()
+            (self.trace_source.outputs.iter())
                 .position(|&result| result == var)
                 .map(ResultSource::Computed)
         }
     }
 
-    pub(crate) fn computation_expr(&self) -> Arc<Expr> {
-        if self.expr.outputs() == self.trace_body.outputs() {
-            self.expr.clone()
-        } else {
-            let mut expr = self.expr.as_ref().clone();
-            expr.outputs = self.trace_body.outputs().to_vec();
-            Arc::new(expr)
-        }
-    }
-
-    /// Emit an immutable application using `emit` and materialize its boundary. All required cell
-    /// snapshots are taken before any updates; repeated local-cell IDs share one
-    /// fresh handle. Returning an input cell alone does not read its contents.
-    ///
-    /// The caller must supply the alias specialization used during lowering.
-    /// Sources are resolved directly through stored InputId offsets; this method
-    /// checks arity and metadata but does not rediscover or validate identities.
-    pub fn replay(
-        &self,
-        closure: &[crate::ObjectTracer],
-        inputs: &[crate::ObjectTracer],
-        emit: impl FnOnce(
-            Arc<HExpr>,
-            Vec<crate::Trace>,
-            Vec<crate::Trace>,
-            Vec<VarInfo>,
-        ) -> Vec<crate::Trace>,
-    ) -> Result<Vec<crate::ObjectTracer>, CallError> {
-        let symbols = self.expr.symbol_closure.clone();
-        self.replay_with_symbols(&symbols, closure, inputs, emit)
-    }
-    /// Replay with explicit symbols from the enclosing trace.
-    pub fn replay_with_symbols(
-        &self,
-        symbol_captures: &[crate::Symbol],
-        closure: &[crate::ObjectTracer],
-        inputs: &[crate::ObjectTracer],
-        emit: impl FnOnce(
-            Arc<HExpr>,
-            Vec<crate::Trace>,
-            Vec<crate::Trace>,
-            Vec<VarInfo>,
-        ) -> Vec<crate::Trace>,
-    ) -> Result<Vec<crate::ObjectTracer>, CallError> {
-        use crate::{CellTrace, ObjectTracer, Trace};
-        let spec = &self.spec;
-        if closure.len() != spec.closure.len() || inputs.len() != spec.inputs.len() {
-            return Err(CallError::Arity);
-        }
-        let binding = |id: InputId| {
-            match id {
-                InputId::Closure(index) => closure.get(index),
-                InputId::Input(index) => inputs.get(index),
-            }
-            .ok_or(CallError::MissingInput(id))
-        };
-        let actuals = closure.iter().chain(inputs).map(|v| match v {
-            ObjectTracer::Ref(v) => v.info(),
-            ObjectTracer::Cell(c) => c.type_info(),
-        });
-        let symbols = crate::symbol_substitution(
-            &self.expr.symbol_closure,
-            symbol_captures,
-            &self.expr.symbol_inputs,
-            spec.closure
-                .iter()
-                .chain(&spec.inputs)
-                .map(|v| &v.2)
-                .zip(actuals),
-            |s| crate::TraceContext::current().is_some_and(|c| c.has_symbol(s)),
-        )
-        .map_err(CallError::InvalidExpr)?;
-        for ((id, kind, info), object) in spec
-            .closure
-            .iter()
-            .chain(&spec.inputs)
-            .zip(closure.iter().chain(inputs))
-        {
-            let actual = info.remap_symbols(|s| symbols[&s]);
-            let valid = match (kind, object) {
-                (Kind::Value, ObjectTracer::Ref(value)) => &actual == value.info(),
-                (Kind::Cell, ObjectTracer::Cell(cell)) => &actual == cell.type_info(),
-                _ => false,
-            };
-            if !valid {
-                return Err(CallError::ArgumentType(*id));
-            }
-        }
-        self.expr.check().map_err(CallError::InvalidExpr)?;
-        let mut initial = BTreeMap::<InputId, Trace>::new();
-        for &id in &self.snapshot_inputs {
-            let object = binding(id)?;
-            initial.insert(
-                id,
-                match object {
-                    ObjectTracer::Ref(value) => value.clone(),
-                    ObjectTracer::Cell(cell) => cell.get(),
-                },
-            );
-        }
-        let bind_value = |id: &InputId| {
-            if let Some(value) = initial.get(id) {
-                return Ok(value.clone());
-            }
-            match binding(*id)? {
-                ObjectTracer::Ref(value) => Ok(value.clone()),
-                ObjectTracer::Cell(cell) => Ok(cell.read_home()), // unused parameter, not an observable read
-            }
-        };
-        let captures = self
-            .closure
-            .iter()
-            .map(bind_value)
-            .collect::<Result<Vec<_>, CallError>>()?;
-        let arguments = self
-            .inputs
-            .iter()
-            .map(bind_value)
-            .collect::<Result<Vec<_>, CallError>>()?;
-        let body = if symbols.iter().all(|(s, a)| s == a) {
-            self.trace_body.clone()
-        } else {
-            Arc::new(self.trace_body.substitute_symbols(&symbols))
-        };
-        let returned = emit(
-            body,
-            captures,
-            arguments,
-            self.output_infos
-                .iter()
-                .map(|i| i.remap_symbols(|s| symbols[&s]))
-                .collect(),
-        );
-        if returned.len() != self.output_infos.len() {
-            return Err(CallError::Arity);
-        }
-        let result_value = |result_idx: usize| match self
-            .result_source(result_idx)
-            .expect("lowered result source")
-        {
-            ResultSource::Computed(index) => &returned[index],
-            ResultSource::Parameter(id) => &initial[&id],
-        };
-        let mut locals = BTreeMap::new();
-        let results = self
-            .results()
-            .iter()
-            .map(|output| {
-                Ok(match *output {
-                    Output::Value { result_idx } => {
-                        ObjectTracer::Ref(result_value(result_idx).clone())
-                    }
-                    Output::InputCell { input_id } => binding(input_id)?.clone(),
-                    Output::NewCell { id, result_idx } => ObjectTracer::Cell(
-                        locals
-                            .entry(id)
-                            .or_insert_with(|| CellTrace::new(result_value(result_idx).clone()))
-                            .clone(),
-                    ),
-                })
-            })
-            .collect::<Result<Vec<_>, CallError>>()?;
-        for &(input_id, result_idx) in &self.updates {
-            let ObjectTracer::Cell(cell) = binding(input_id)? else {
-                return Err(CallError::ArgumentType(input_id));
-            };
-            cell.set(result_value(result_idx).clone());
-        }
-        Ok(results)
+    /// `expr`, returning only the distinct computed results: the outputs
+    /// of the trace body.
+    pub fn computation_expr(&self) -> Arc<RootExpr> {
+        self.computation.clone()
     }
 }
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CallError {
-    Arity,
-    ArgumentType(InputId),
-    MissingInput(InputId),
-    InvalidExpr(LoweringError),
-}
-impl fmt::Display for CallError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-impl std::error::Error for CallError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoweringError {
@@ -346,6 +134,8 @@ pub enum LoweringError {
     CallArity,
     UnsupportedNestedOperation,
     RegionSignature(&'static str),
+    /// An operation or info that cannot be stored in a root.
+    Unstorable(String),
 }
 impl fmt::Display for LoweringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -354,9 +144,35 @@ impl fmt::Display for LoweringError {
 }
 impl std::error::Error for LoweringError {}
 
-/// Lower a captured HExpr. There is intentionally no trace-DAG-to-Expr shortcut.
-pub fn lower(expr: &HExpr, spec: &InputSpec) -> Result<LoweredExpr, LoweringError> {
+impl From<BuildError> for LoweringError {
+    fn from(error: BuildError) -> Self {
+        match error {
+            BuildError::UndefinedVar(var) => Self::UndefinedVariable(var),
+            BuildError::DuplicateVar(var) => Self::DuplicateDefinition(var),
+            BuildError::Hole => Self::InvalidComputation,
+            BuildError::UndefinedSymbol(_) => Self::RegionSignature("undeclared metadata symbol"),
+            BuildError::Kind { var, expected } => match expected {
+                Kind::Value => Self::ExpectedValue(var),
+                Kind::Cell => Self::ExpectedCell(var),
+            },
+            BuildError::SymbolArity { .. } => Self::RegionSignature("symbol capture arity"),
+            BuildError::VarArity { expected, actual } => Self::CaptureArity { expected, actual },
+            error => Self::Unstorable(error.to_string()),
+        }
+    }
+}
+
+/// Lower a high-level expression. There is intentionally no trace-DAG-to-Expr
+/// shortcut.
+pub fn lower(expr: HExpr<'_>, spec: &InputSpec) -> Result<LoweredExpr, LoweringError> {
     Lowerer::new(expr, spec)?.lower(expr)
+}
+
+impl HExpr<'_> {
+    /// Resolve cell aliases and replace cell actions with immutable SSA flow.
+    pub fn lower(self, spec: &InputSpec) -> Result<LoweredExpr, LoweringError> {
+        lower(self, spec)
+    }
 }
 
 /// Source for the optimized execution boundary, derived from the Expr's SSA
@@ -375,7 +191,7 @@ enum NestedBinding {
 /// A recursively lowered region with bindings resolved in its parent scope.
 pub struct LoweredRegion {
     output_infos: Vec<VarInfo>,
-    symbol_captures: Vec<crate::Symbol>,
+    symbol_captures: Vec<Symbol>,
     program: LoweredExpr,
     bindings: BTreeMap<InputId, NestedBinding>,
     initial: BTreeMap<InputId, Var>,
@@ -391,9 +207,7 @@ impl LoweredRegion {
     }
 
     pub fn inputs(&self) -> Vec<Var> {
-        self.program
-            .inputs
-            .iter()
+        (self.program.inputs.iter())
             .map(|id| self.initial[id])
             .collect()
     }
@@ -401,12 +215,9 @@ impl LoweredRegion {
     pub fn subexpr(&self) -> RegionUse {
         RegionUse {
             symbol_captures: self.symbol_captures.clone(),
-            expr: self.program.computation_expr(),
-            trace_body: self.program.trace_body.clone(),
-            captures: self
-                .program
-                .closure
-                .iter()
+            expr: self.program.computation_expr().handle().into(),
+            trace_body: self.program.trace_body.clone().handle().into(),
+            captures: (self.program.closure.iter())
                 .map(|id| self.initial[id])
                 .collect(),
         }
@@ -426,9 +237,9 @@ impl LoweredRegion {
 
 /// A lowered child and the parent SSA values bound to its captures.
 pub struct RegionUse {
-    symbol_captures: Vec<crate::Symbol>,
-    expr: Arc<Expr>,
-    trace_body: Arc<HExpr>,
+    symbol_captures: Vec<Symbol>,
+    expr: ExprRef,
+    trace_body: HExprRef,
     captures: Vec<Var>,
 }
 
@@ -438,7 +249,7 @@ pub struct LoweringContext<'a> {
 }
 
 struct Lowerer {
-    symbols: BTreeSet<crate::Symbol>,
+    symbols: BTreeSet<Symbol>,
     spec: InputSpec,
     scope: VarScope,
     values: BTreeMap<Var, Var>,
@@ -450,19 +261,15 @@ struct Lowerer {
     closure_sources: Vec<InputId>,
     inputs: Vec<(Var, VarInfo)>,
     input_sources: Vec<InputId>,
-    eqns: Vec<Eqn>,
-    trace_eqns: Vec<HInstr>,
+    eqns: Vec<EqnSource>,
+    trace_eqns: Vec<HInstrSource>,
     local_count: usize,
 }
 impl Lowerer {
-    fn new(expr: &HExpr, spec: &InputSpec) -> Result<Self, LoweringError> {
-        expr.check_symbols()?;
+    fn new(expr: HExpr<'_>, spec: &InputSpec) -> Result<Self, LoweringError> {
         let mut lowerer = Self {
-            symbols: expr
-                .symbol_closure
-                .iter()
-                .chain(&expr.symbol_inputs)
-                .copied()
+            symbols: (expr.closure_symbols().iter().copied())
+                .chain(expr.input_symbols())
                 .collect(),
             spec: spec.clone(),
             scope: VarScope::new(),
@@ -479,9 +286,13 @@ impl Lowerer {
             trace_eqns: vec![],
             local_count: 0,
         };
+        // Symbols of the lowered expression keep their names.
+        lowerer.scope.reserve([], lowerer.symbols.iter().copied());
+        let closure: Vec<_> = expr.closure_inputs().collect();
+        let inputs: Vec<_> = expr.inputs().collect();
         for (is_closure, params, specs) in [
-            (true, expr.closure(), spec.closure.as_slice()),
-            (false, expr.inputs(), spec.inputs.as_slice()),
+            (true, closure, spec.closure.as_slice()),
+            (false, inputs, spec.inputs.as_slice()),
         ] {
             if params.len() != specs.len() {
                 return Err(LoweringError::InputSpecArity {
@@ -490,10 +301,8 @@ impl Lowerer {
                     actual: specs.len(),
                 });
             }
-            for (index, ((param, param_kind, param_info), (id, kind, info))) in
-                params.iter().zip(specs).enumerate()
-            {
-                if param_kind != kind || param_info != info {
+            for (index, (param, (id, kind, info))) in params.iter().zip(specs).enumerate() {
+                if param.kind() != *kind || param.info_ref() != *info {
                     return Err(LoweringError::KindMismatch {
                         closure: is_closure,
                         index,
@@ -513,11 +322,11 @@ impl Lowerer {
                 };
                 match kind {
                     Kind::Value => {
-                        lowerer.values.insert(*param, var);
+                        lowerer.values.insert(param.var(), var);
                     }
                     Kind::Cell => {
                         let resource = CellBinding::Input(*id);
-                        lowerer.cells.insert(*param, resource);
+                        lowerer.cells.insert(param.var(), resource);
                         lowerer.states.entry(resource).or_insert(var);
                     }
                 }
@@ -563,14 +372,14 @@ impl Lowerer {
             }
         })
     }
-    fn lower_equation(&mut self, eqn: &HEqn) -> Result<(), LoweringError> {
-        eqn.op().lower(eqn, &mut LoweringContext { lowerer: self })
+    fn lower_equation(&mut self, eqn: HEqn<'_>) -> Result<(), LoweringError> {
+        (eqn.op().get()).lower(eqn, &mut LoweringContext { lowerer: self })
     }
 }
 
 impl LoweringContext<'_> {
-    pub fn lower_value_apply(&mut self, eqn: &HEqn) -> Result<(), LoweringError> {
-        if !eqn.subexprs().is_empty() {
+    pub fn lower_value_apply(&mut self, eqn: HEqn<'_>) -> Result<(), LoweringError> {
+        if eqn.subexprs().len() != 0 {
             return Err(LoweringError::UnsupportedNestedOperation);
         }
         self.lower_value_apply_with_regions(eqn, vec![])
@@ -578,22 +387,15 @@ impl LoweringContext<'_> {
 
     /// Lower an operation whose regions accept independent value arguments and
     /// have no captures or mutable state, such as a reduction combiner.
-    pub fn lower_closed_regions_apply(&mut self, eqn: &HEqn) -> Result<(), LoweringError> {
+    pub fn lower_closed_regions_apply(&mut self, eqn: HEqn<'_>) -> Result<(), LoweringError> {
         let regions = eqn
             .subexprs()
-            .iter()
             .map(|region| {
                 let body = region.expr();
-                if !region.closure().is_empty()
-                    || !body.closure().is_empty()
-                    || body
-                        .inputs()
-                        .iter()
-                        .any(|(_, kind, _)| !matches!(kind, Kind::Value))
-                    || body
-                        .outputs()
-                        .iter()
-                        .any(|var| !matches!(body.kind(var), Some(Kind::Value)))
+                if !region.provided_vars().is_empty()
+                    || body.closure_inputs().len() != 0
+                    || body.inputs().any(|param| param.kind() != Kind::Value)
+                    || (body.outputs().iter()).any(|var| body.kind(*var) != Some(Kind::Value))
                 {
                     return Err(LoweringError::RegionSignature(
                         "expected a closed value region",
@@ -603,16 +405,17 @@ impl LoweringContext<'_> {
                     closure: vec![],
                     inputs: body
                         .inputs()
-                        .iter()
                         .enumerate()
-                        .map(|(i, (_, kind, info))| (InputId::Input(i), *kind, info.clone()))
+                        .map(|(i, param)| {
+                            (InputId::Input(i), param.kind(), param.info_ref().to_owned())
+                        })
                         .collect(),
                 };
                 let program = lower(body, &spec)?;
                 Ok(RegionUse {
-                    symbol_captures: region.symbol_captures.clone(),
-                    expr: program.expr,
-                    trace_body: body.clone(),
+                    symbol_captures: region.provided_symbols().to_vec(),
+                    expr: program.expr.handle().into(),
+                    trace_body: region.to_ref(),
                     captures: vec![],
                 })
             })
@@ -622,7 +425,7 @@ impl LoweringContext<'_> {
 
     fn lower_value_apply_with_regions(
         &mut self,
-        eqn: &HEqn,
+        eqn: HEqn<'_>,
         regions: Vec<RegionUse>,
     ) -> Result<(), LoweringError> {
         let inputs = eqn
@@ -631,15 +434,19 @@ impl LoweringContext<'_> {
             .map(|&var| self.lowerer.value(var))
             .collect::<Result<_, _>>()?;
         let mut outputs = Vec::new();
-        for (output, kind, info) in eqn.outputs() {
-            let Kind::Value = kind else {
-                return Err(LoweringError::ExpectedValue(*output));
+        for output in eqn.outputs() {
+            let Kind::Value = output.kind() else {
+                return Err(LoweringError::ExpectedValue(output.var()));
             };
+            if output.var().is_hole() {
+                outputs.push((Var::hole(), output.info_ref().to_owned()));
+                continue;
+            }
             let var = self.lowerer.scope.create_var();
-            self.lowerer.values.insert(*output, var);
-            outputs.push((var, info.clone()));
+            self.lowerer.values.insert(output.var(), var);
+            outputs.push((var, output.info_ref().to_owned()));
         }
-        self.emit(eqn.op().clone(), inputs, outputs, regions);
+        self.emit(eqn.op().to_owned(), inputs, outputs, regions);
         Ok(())
     }
 
@@ -651,20 +458,18 @@ impl LoweringContext<'_> {
     }
     fn child_bindings(
         &self,
-        sub: &HSubExpr,
+        sub: HSubExpr<'_>,
         actual_inputs: &[VarInfo],
-    ) -> Result<BTreeMap<crate::Symbol, crate::Symbol>, LoweringError> {
-        let body = sub.expr().as_ref();
-        if body.symbol_inputs.is_empty() && body.symbol_closure.is_empty() {
+    ) -> Result<BTreeMap<Symbol, Symbol>, LoweringError> {
+        let body = sub.expr();
+        if body.input_symbols().is_empty() && body.closure_symbols().is_empty() {
             return Ok(BTreeMap::new());
         }
-        let captures = sub
-            .closure()
-            .iter()
-            .zip(&body.closure)
-            .map(|(v, (_, k, _))| self.object_info(*v, *k))
+        let captures = (sub.provided_vars().iter())
+            .zip(body.closure_inputs())
+            .map(|(v, param)| self.object_info(*v, param.kind()))
             .collect::<Result<Vec<_>, _>>()?;
-        body.bind_symbols(&sub.symbol_captures, &captures, actual_inputs, |s| {
+        body.bind_symbols(sub.provided_symbols(), &captures, actual_inputs, |s| {
             self.lowerer.symbols.contains(&s)
         })
     }
@@ -673,14 +478,14 @@ impl LoweringContext<'_> {
     /// those arguments and the region's captures.
     pub fn lower_region(
         &self,
-        sub: &HSubExpr,
+        sub: HSubExpr<'_>,
         operands: &[Var],
     ) -> Result<LoweredRegion, LoweringError> {
         let body = sub.expr();
-        if sub.closure().len() != body.closure().len() {
+        if sub.provided_vars().len() != body.closure_inputs().len() {
             return Err(LoweringError::CaptureArity {
-                expected: body.closure().len(),
-                actual: sub.closure().len(),
+                expected: body.closure_inputs().len(),
+                actual: sub.provided_vars().len(),
             });
         }
         if operands.len() != body.inputs().len() {
@@ -690,33 +495,37 @@ impl LoweringContext<'_> {
                 actual: operands.len(),
             });
         }
-        let actual = operands
-            .iter()
-            .zip(&body.inputs)
-            .map(|(v, (_, k, _))| self.object_info(*v, *k))
+        let actual = (operands.iter())
+            .zip(body.inputs())
+            .map(|(v, param)| self.object_info(*v, param.kind()))
             .collect::<Result<Vec<_>, _>>()?;
         let symbols = self.child_bindings(sub, &actual)?;
         let mut identities = BTreeMap::new();
         let mut bindings = BTreeMap::new();
-        let mut bind =
-            |operands: &[Var], params: &[(Var, Kind, VarInfo)], id: fn(usize) -> InputId| {
-                operands
-                    .iter()
-                    .zip(params)
-                    .enumerate()
-                    .map(|(index, (&var, (_, kind, info)))| {
-                        let binding = match kind {
-                            Kind::Value => NestedBinding::Value(self.lowerer.value(var)?),
-                            Kind::Cell => NestedBinding::Cell(self.lowerer.cell(var)?),
-                        };
-                        let id = *identities.entry(binding).or_insert_with(|| id(index));
-                        bindings.insert(id, binding);
-                        Ok((id, *kind, info.clone()))
-                    })
-                    .collect::<Result<Vec<_>, LoweringError>>()
-            };
-        let inputs = bind(operands, body.inputs(), InputId::Input)?;
-        let closure = bind(sub.closure(), body.closure(), InputId::Closure)?;
+        let mut bind = |operands: &[Var],
+                        params: &mut dyn Iterator<Item = HParam<'_>>,
+                        id: fn(usize) -> InputId| {
+            operands
+                .iter()
+                .zip(params)
+                .enumerate()
+                .map(|(index, (&var, param))| {
+                    let binding = match param.kind() {
+                        Kind::Value => NestedBinding::Value(self.lowerer.value(var)?),
+                        Kind::Cell => NestedBinding::Cell(self.lowerer.cell(var)?),
+                    };
+                    let id = *identities.entry(binding).or_insert_with(|| id(index));
+                    bindings.insert(id, binding);
+                    Ok((id, param.kind(), param.info_ref().to_owned()))
+                })
+                .collect::<Result<Vec<_>, LoweringError>>()
+        };
+        let inputs = bind(operands, &mut body.inputs(), InputId::Input)?;
+        let closure = bind(
+            sub.provided_vars(),
+            &mut body.closure_inputs(),
+            InputId::Closure,
+        )?;
         let lowered = body.lower(&InputSpec { closure, inputs })?;
 
         // Snapshot all operands from current SSA state before processing updates.
@@ -731,7 +540,7 @@ impl LoweringContext<'_> {
             })
             .collect();
         Ok(LoweredRegion {
-            symbol_captures: sub.symbol_captures.clone(),
+            symbol_captures: sub.provided_symbols().to_vec(),
             output_infos: lowered
                 .output_infos
                 .iter()
@@ -751,9 +560,9 @@ impl LoweringContext<'_> {
     }
 
     /// Bind the high-level results of one region known to have executed.
-    pub fn bind_region_results(
+    pub fn bind_region_results<'b>(
         &mut self,
-        outputs: &[(Var, Kind, VarInfo)],
+        outputs: impl ExactSizeIterator<Item = HParam<'b>>,
         region: &LoweredRegion,
         physical: &[(Var, VarInfo)],
     ) -> Result<(), LoweringError> {
@@ -763,8 +572,9 @@ impl LoweringContext<'_> {
             return Err(LoweringError::InvalidComputation);
         }
         let mut new_cells = BTreeMap::new();
-        for ((var, kind, info), result) in outputs.iter().zip(region.program.results()) {
-            match (kind, result) {
+        for (output, result) in outputs.zip(region.program.results()) {
+            let var = output.var();
+            match (output.kind(), result) {
                 (Kind::Value, Output::Value { result_idx }) => {
                     let source = region.source(*result_idx, physical);
                     let actual = physical
@@ -772,18 +582,18 @@ impl LoweringContext<'_> {
                         .find_map(|(v, i)| (*v == source).then_some(i.clone()))
                         .map(Ok)
                         .unwrap_or_else(|| self.ssa_info(source))?;
-                    if actual != *info {
+                    if output.info_ref() != actual {
                         return Err(LoweringError::RegionSignature(
                             "call result metadata mismatch",
                         ));
                     }
-                    self.lowerer.values.insert(*var, source);
+                    self.lowerer.values.insert(var, source);
                 }
                 (Kind::Cell, Output::InputCell { input_id }) => {
                     let NestedBinding::Cell(cell) = region.bindings[input_id] else {
                         unreachable!()
                     };
-                    self.lowerer.cells.insert(*var, cell);
+                    self.lowerer.cells.insert(var, cell);
                 }
                 (Kind::Cell, Output::NewCell { id, result_idx }) => {
                     let cell = *new_cells.entry(*id).or_insert_with(|| {
@@ -794,7 +604,7 @@ impl LoweringContext<'_> {
                             .insert(cell, region.source(*result_idx, physical));
                         cell
                     });
-                    self.lowerer.cells.insert(*var, cell);
+                    self.lowerer.cells.insert(var, cell);
                 }
                 _ => return Err(LoweringError::InvalidComputation),
             }
@@ -835,18 +645,20 @@ impl LoweringContext<'_> {
         let high = regions
             .iter()
             .map(|region| {
-                HSubExpr::new(region.trace_body.clone(), region.captures.clone())
-                    .with_symbol_captures(region.symbol_captures.clone())
+                HSubExprBuilder::new(region.trace_body.clone())
+                    .with_vars(region.captures.iter().copied())
+                    .with_symbols(region.symbol_captures.iter().copied())
             })
             .collect();
         let low = regions
             .into_iter()
             .map(|region| {
-                SubExpr::new(region.expr, region.captures)
-                    .with_symbol_captures(region.symbol_captures)
+                SubExprBuilder::new(region.expr)
+                    .with_vars(region.captures)
+                    .with_symbols(region.symbol_captures)
             })
             .collect();
-        self.lowerer.trace_eqns.push(HInstr::Apply(HEqn::new(
+        (self.lowerer.trace_eqns).push(HInstrSource::Apply(HEqnSource::new(
             op.clone(),
             high,
             inputs.clone(),
@@ -855,31 +667,29 @@ impl LoweringContext<'_> {
                 .map(|(var, info)| (*var, Kind::Value, info.clone()))
                 .collect(),
         )));
-        self.lowerer
-            .eqns
-            .push(Eqn::new_with_subexprs(op, low, inputs, outputs));
+        (self.lowerer.eqns).push(EqnSource::new(op, low, inputs, outputs));
     }
 }
 
 impl Lowerer {
-    fn lower(mut self, expr: &HExpr) -> Result<LoweredExpr, LoweringError> {
-        for instr in expr.instructions() {
+    fn lower(mut self, expr: HExpr<'_>) -> Result<LoweredExpr, LoweringError> {
+        for instr in expr.instrs() {
             match instr {
                 HInstr::Apply(eqn) => self.lower_equation(eqn)?,
                 HInstr::CreateCell { cell, initial, .. } => {
-                    let initial = self.value(*initial)?;
+                    let initial = self.value(initial)?;
                     let resource = CellBinding::Local(self.local_count);
                     self.local_count += 1;
-                    self.cells.insert(*cell, resource);
+                    self.cells.insert(cell, resource);
                     self.states.insert(resource, initial);
                 }
                 HInstr::ReadCell { cell, output, .. } => {
-                    let resource = self.cell(*cell)?;
-                    self.values.insert(*output, self.states[&resource]);
+                    let resource = self.cell(cell)?;
+                    self.values.insert(output, self.states[&resource]);
                 }
                 HInstr::WriteCell { cell, value } => {
-                    let resource = self.cell(*cell)?;
-                    let value = self.value(*value)?;
+                    let resource = self.cell(cell)?;
+                    let value = self.value(value)?;
                     self.states.insert(resource, value);
                     self.written.insert(resource);
                 }
@@ -918,36 +728,30 @@ impl Lowerer {
                 updates.push((input_id, result(self.states[&cell])));
             }
         }
-        let expr = Expr {
-            symbol_inputs: expr.symbol_inputs.clone(),
-            symbol_closure: expr.symbol_closure.clone(),
-            closure: self.closure,
-            inputs: self.inputs,
-            eqns: self.eqns,
-            outputs: return_vars,
-            name_hint: expr.name_hint.clone(),
-        };
-        expr.check()?;
+        let closure_symbols = expr.closure_symbols().to_vec();
+        let name = expr.name_hint().map(str::to_owned);
+        let mut source = ExprBuilder::from_parts(
+            closure_symbols.clone(),
+            self.closure,
+            self.inputs,
+            self.eqns,
+            return_vars,
+        );
+        source.set_name_hint(name.clone());
+        let expr = source.clone().build()?;
+        expr.view().check()?;
         // At the execution boundary, skip forwarded parameters and compute
         // repeated SSA results only once. Expr itself still yields all results.
-        let mut seen: BTreeSet<_> = expr
-            .closure()
-            .iter()
-            .chain(expr.inputs())
+        let mut seen: BTreeSet<_> = (source.closure_inputs.iter().chain(&source.inputs))
             .map(|(var, _)| *var)
             .collect();
-        let computed: Vec<_> = expr
-            .outputs()
-            .iter()
-            .copied()
+        let computed: Vec<_> = (source.outputs.iter().copied())
             .filter(|var| seen.insert(*var))
             .collect();
         let output_infos = computed
             .iter()
             .map(|var| {
-                expr.value_info(var)
-                    .cloned()
-                    .ok_or(LoweringError::UndefinedVariable(*var))
+                (source.value_info(*var).cloned()).ok_or(LoweringError::UndefinedVariable(*var))
             })
             .collect::<Result<_, _>>()?;
         let trace_params = |params: &[(Var, VarInfo)]| {
@@ -956,28 +760,31 @@ impl Lowerer {
                 .map(|(var, info)| (*var, Kind::Value, info.clone()))
                 .collect()
         };
-        let trace_body = Arc::new(HExpr {
-            symbol_inputs: expr.symbol_inputs.clone(),
-            symbol_closure: expr.symbol_closure.clone(),
-            closure: trace_params(expr.closure()),
-            inputs: trace_params(expr.inputs()),
-            instructions: self.trace_eqns,
-            outputs: computed,
-            name_hint: expr.name_hint.clone(),
-        });
+        let mut trace_source = HExprBuilder::from_parts(
+            closure_symbols,
+            trace_params(&source.closure_inputs),
+            trace_params(&source.inputs),
+            self.trace_eqns,
+            computed.clone(),
+        );
+        trace_source.set_name_hint(name);
+        let trace_body = trace_source.clone().build()?;
+        let computation = if source.outputs == computed {
+            expr.clone()
+        } else {
+            let mut computation = source.clone();
+            computation.outputs = computed;
+            computation.build()?
+        };
         let mut needed = BTreeSet::new();
-        let returned: BTreeSet<_> = expr.outputs().iter().copied().collect();
-        for (id, (var, _)) in self
-            .closure_sources
-            .iter()
-            .chain(&self.input_sources)
-            .zip(expr.closure().iter().chain(expr.inputs()))
+        let returned: BTreeSet<_> = source.outputs.iter().copied().collect();
+        for (id, (var, _)) in (self.closure_sources.iter().chain(&self.input_sources))
+            .zip(source.closure_inputs.iter().chain(&source.inputs))
         {
             let used = returned.contains(var)
-                || expr.eqns().iter().any(|eqn| {
-                    eqn.inputs()
-                        .iter()
-                        .chain(eqn.subexprs().iter().flat_map(|sub| sub.closure()))
+                || source.eqns.iter().any(|eqn| {
+                    (eqn.inputs().iter())
+                        .chain(eqn.subexprs().iter().flat_map(|sub| sub.provided_vars()))
                         .any(|input| input == var)
                 });
             if used {
@@ -987,8 +794,11 @@ impl Lowerer {
         Ok(LoweredExpr {
             snapshot_inputs: needed,
             spec: self.spec,
-            expr: Arc::new(expr),
+            expr,
+            computation,
             trace_body,
+            source,
+            trace_source,
             output_infos,
             closure: self.closure_sources,
             inputs: self.input_sources,

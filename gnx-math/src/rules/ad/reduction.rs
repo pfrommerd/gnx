@@ -19,10 +19,10 @@ impl ReduceJvpRule for NonAdditiveReduce {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         axes: &[usize],
         inputs: &[Dual],
-        reducer: &Expr,
+        reducer: Expr<'_>,
     ) -> TransformResult<Vec<Dual>> {
         let (operands, identities) = inputs.split_at(eqn.outputs().len());
         if extremum_body(reducer).is_some() {
@@ -86,14 +86,14 @@ fn apply_dual(
 
 fn tree_jvp(
     b: &mut Builder,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     axes: &[usize],
     operands: &[Dual],
     identities: &[Dual],
-    reducer: &Expr,
+    reducer: Expr<'_>,
 ) -> TransformResult<Vec<Dual>> {
     let input_shape = dims(b.info(operands[0].primal))?;
-    let output_shape = dims(&eqn.outputs()[0].1)?;
+    let output_shape = dims(&gnx_transforms::util::output_infos(eqn)[0])?;
     let product = |sizes: &[usize]| {
         sizes
             .iter()
@@ -175,7 +175,7 @@ fn tree_jvp(
         }
         lhs.extend(rhs);
         let batch = vectorize(reducer, count)?;
-        values = jvp_expr(b, &batch, &[], &lhs)?
+        values = jvp_expr(b, batch.view(), &[], &lhs)?
             .into_iter()
             .map(|value| apply_dual(b, value, reshape_op(), &[], &[rows, pairs]))
             .collect::<TransformResult<_>>()?;
@@ -188,25 +188,25 @@ fn tree_jvp(
         .collect()
 }
 
-fn vectorize(reducer: &Expr, count: usize) -> TransformResult<Expr> {
+fn vectorize(reducer: Expr<'_>, count: usize) -> TransformResult<gnx_expr::ExprHandle> {
     let mut b = Builder::new();
     let mut inputs = Vec::new();
-    for (_, scalar) in reducer.inputs() {
-        inputs.push(Batched::at(b.input(info(&[count], dtype(scalar)?)), 0));
+    for scalar in gnx_transforms::util::input_infos(reducer) {
+        inputs.push(Batched::at(b.input(info(&[count], dtype(&scalar)?)), 0));
     }
     let outputs = batch_expr(&mut b, count, reducer, &[], &inputs)?;
     let outputs = outputs
         .into_iter()
         .map(|value| materialize(&mut b, value, count, 0))
         .collect::<TransformResult<_>>()?;
-    Ok(b.finish(outputs))
+    Ok(b.finish(outputs).build()?.handle())
 }
 
 impl JvpRule for ReduceWindowOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -231,7 +231,7 @@ impl JvpRule for ReduceWindowOperation {
                             &[tangent],
                             &[identity],
                             self.window().clone(),
-                            eqn.subexprs()[0].expr().clone(),
+                            reducer_handle(eqn)?,
                         )?[0],
                     )
                 }
@@ -247,7 +247,7 @@ impl JvpRule for ReduceWindowOperation {
                 Tangent::Zero => Tangent::Zero,
                 Tangent::Var(tangent) => Tangent::Var(gather_window_winners(
                     b,
-                    self.window(),
+                    &self.window(),
                     operands[0].primal,
                     identities[0].primal,
                     tangent,
@@ -257,16 +257,14 @@ impl JvpRule for ReduceWindowOperation {
             return Ok(vec![Dual { primal, tangent }]);
         }
         let mut region = Builder::new();
-        let (lhs, rhs) = body.inputs().split_at(count);
-        let mut parameters = |slots: &[(Var, gnx_expr::VarInfo)]| {
-            let primals: Vec<_> = slots
-                .iter()
-                .map(|(_, ty)| region.input(ty.clone()))
-                .collect();
+        let slots = gnx_transforms::util::input_infos(body);
+        let (lhs, rhs) = slots.split_at(count);
+        let mut parameters = |slots: &[gnx_expr::VarInfo]| {
+            let primals: Vec<_> = slots.iter().map(|ty| region.input(ty.clone())).collect();
             primals
                 .into_iter()
                 .zip(slots.iter())
-                .map(|(primal, (_, ty))| Dual {
+                .map(|(primal, ty)| Dual {
                     primal,
                     tangent: Tangent::Var(region.input(ty.clone())),
                 })
@@ -280,7 +278,7 @@ impl JvpRule for ReduceWindowOperation {
             let ty = region.info(value.primal).clone();
             outputs.push(instantiate(&mut region, value.tangent, &ty));
         }
-        let differentiated = std::sync::Arc::new(region.finish(outputs));
+        let differentiated = region.finish(outputs).build()?.handle();
         let mut arrays: Vec<_> = operands.iter().map(|value| value.primal).collect();
         for value in operands {
             let ty = b.info(value.primal).clone();
@@ -312,15 +310,18 @@ impl JvpRule for ReduceWindowOperation {
 gnx_expr::register_op_interface!(dyn JvpRule: ReduceWindowOperation);
 gnx_expr::register_op_interface!(dyn TransposeRule: ReduceWindowOperation);
 
-fn extremum_body(body: &Expr) -> Option<bool> {
+fn extremum_body(body: Expr<'_>) -> Option<bool> {
     use crate::ops::elementwise::{MaxOperation, MinOperation};
-    let [eqn] = body.eqns() else {
+    let mut eqns = body.eqns();
+    let (Some(eqn), None) = (eqns.next(), eqns.next()) else {
         return None;
     };
-    if body.inputs().len() != 2
-        || eqn.inputs() != [body.inputs()[0].0, body.inputs()[1].0]
-        || eqn.outputs().len() != 1
-        || body.outputs() != [eqn.outputs()[0].0]
+    let inputs: Vec<_> = body.inputs().map(|input| input.var()).collect();
+    let outputs: Vec<_> = eqn.outputs().map(|output| output.var()).collect();
+    if inputs.len() != 2
+        || eqn.inputs() != inputs
+        || outputs.len() != 1
+        || body.outputs() != outputs
     {
         return None;
     }
@@ -368,7 +369,10 @@ fn gather_window_winners(
     let pred = reducer.emit1(comparison, &[a, c], info(&[], DType::Bool));
     let winning_value = reducer.emit1(select_op(), &[pred, a, c], scalar.clone());
     let winning_index = reducer.emit1(select_op(), &[pred, ai, ci], index_scalar);
-    let reducer = std::sync::Arc::new(reducer.finish(vec![winning_value, winning_index]));
+    let reducer = reducer
+        .finish(vec![winning_value, winning_index])
+        .build()?
+        .handle();
     let results = reduce_window(
         b,
         &[operand, index],
@@ -407,7 +411,7 @@ impl TransposeRule for ReduceWindowOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         operands: &[Operand],
         _: &[Vec<Var>],
         cotangents: &[Tangent],
@@ -424,7 +428,7 @@ impl TransposeRule for ReduceWindowOperation {
                 "expected an additive linear window reducer",
             ));
         }
-        let output = &eqn.outputs()[0].1;
+        let output = &gnx_transforms::util::output_infos(eqn)[0];
         let out_shape = dims(output)?;
         if out_shape.contains(&0) {
             return Ok(vec![Tangent::Zero, Tangent::Zero]);
@@ -487,7 +491,10 @@ impl TransposeRule for ReduceWindowOperation {
         }
         let (_, mut cts) = gnx_transforms::ad::transpose::transpose_expr(
             b,
-            &program.finish(vec![sum.expect("nonempty reduction window")]),
+            program
+                .finish(vec![sum.expect("nonempty reduction window")])
+                .build()?
+                .view(),
             &[None],
             &[Tangent::Var(*ct)],
         )?;
@@ -496,3 +503,10 @@ impl TransposeRule for ReduceWindowOperation {
 }
 
 gnx_expr::register_op_interface!(dyn ReduceJvpRule: ReduceOperation => NonAdditiveReduce);
+
+/// A handle to the reducer of a reduction.
+fn reducer_handle(eqn: Eqn<'_>) -> TransformResult<gnx_expr::ExprHandle> {
+    let region = gnx_transforms::util::single_region(eqn)
+        .ok_or_else(|| TransformError::invalid("reduction needs one reducer region"))?;
+    gnx_transforms::util::region_body(&gnx_expr::SubExprBuilder::new(region.to_ref()))
+}

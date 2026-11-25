@@ -1,14 +1,15 @@
-use super::{Dialect, Eqn, Op, Operation, Result, arity, fmt, result_rank, signature};
+use super::{Op, arity, count, result_rank, signature};
 
 pub use super::{eye_op as eye, ones_op as ones, zeros_op as zeros};
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct IotaOperation {
-    axis: usize,
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = IotaOperation)]
+pub struct Iota {
+    axis: u64,
 }
 impl IotaOperation {
     pub fn axis(&self) -> usize {
-        self.axis
+        count(self.axis)
     }
 }
 gnx_common::array_operation!(
@@ -16,7 +17,7 @@ gnx_common::array_operation!(
     "iota",
     |op, eqn| {
         arity(eqn, 0)?;
-        if op.axis >= result_rank(eqn)? {
+        if op.axis() >= result_rank(eqn)? {
             return Err(signature("iota axis is out of range"));
         }
         Ok(())
@@ -24,21 +25,25 @@ gnx_common::array_operation!(
     axis
 );
 pub fn iota(axis: usize) -> Op {
-    Op::new(IotaOperation { axis })
+    Op::new(Iota { axis: axis as u64 })
 }
 
 simple_operations! {
-    FullOperation, full_op, full, 1;
+    FullOperation, full_op, full, "full", 1;
 }
 pub use zeros as empty;
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ConstantOperation {
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = ConstantOperation)]
+pub struct Constant {
     bits: u64,
 }
 impl ConstantOperation {
     pub fn value(&self) -> f64 {
-        f64::from_bits(self.bits)
+        f64::from_bits(self.bits())
+    }
+    fn bits(&self) -> u64 {
+        self.bits.to_native()
     }
 }
 gnx_common::array_operation!(
@@ -55,13 +60,14 @@ gnx_common::array_operation!(
 );
 /// A floating-point scalar, converted to the result's dtype.
 pub fn constant(value: f64) -> Op {
-    Op::new(ConstantOperation {
+    Op::new(Constant {
         bits: value.to_bits(),
     })
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ScalarBoundOperation {
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = ScalarBoundOperation)]
+pub struct ScalarBound {
     lower: bool,
 }
 impl ScalarBoundOperation {
@@ -82,5 +88,5 @@ gnx_common::array_operation!(
     lower
 );
 pub fn scalar_bound(lower: bool) -> Op {
-    Op::new(ScalarBoundOperation { lower })
+    Op::new(ScalarBound { lower })
 }

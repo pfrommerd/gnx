@@ -37,7 +37,8 @@ use std::cell::{Cell, RefCell};
 use std::ops;
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Op, Operation, VarInfo, Var};
+use gnx_expr::util::TypedIn;
+use gnx_expr::{Eqn, Op, OpRef, Operation, Var, VarInfo};
 
 use super::jvp::{Dual, Tangent, accumulate, instantiate};
 use super::transpose::Operand;
@@ -51,36 +52,36 @@ pub use crate::{defbilinear, defjvp, deflinear, deftranspose};
 /// the builder that rule closures emit into.
 pub struct Ctx<'a> {
     b: RefCell<Builder>,
-    eqn: &'a Eqn,
+    eqn: Eqn<'a>,
     ans: Cell<Option<Var>>,
 }
 
 impl<'a> Ctx<'a> {
-    pub fn eqn(&self) -> &'a Eqn {
+    pub fn eqn(&self) -> Eqn<'a> {
         self.eqn
     }
 
-    pub fn op(&self) -> &'a Op {
+    pub fn op(&self) -> OpRef<'a> {
         self.eqn.op()
     }
 
     /// Metadata of the (single) result.
-    pub fn out(&self) -> &'a VarInfo {
-        &self.eqn.outputs()[0].1
+    pub fn out(&self) -> VarInfo {
+        let output = self.eqn.outputs().next().expect("a single result");
+        output.info_ref().to_owned()
     }
 
     /// The primal result. Available in JVP closures only.
     pub fn ans(&'a self) -> TransformResult<Val<'a>> {
-        self.ans
-            .get()
-            .map(|var| self.val(var))
-            .ok_or_else(|| TransformError::invalid("the primal result is only available in jvp rules"))
+        self.ans.get().map(|var| self.val(var)).ok_or_else(|| {
+            TransformError::invalid("the primal result is only available in jvp rules")
+        })
     }
 
     /// The typed operation being differentiated.
-    pub fn operation<T: Operation>(&self) -> TransformResult<&'a T> {
+    pub fn operation<T: TypedIn<dyn Operation>>(&self) -> TransformResult<&'a T> {
         self.op()
-            .downcast_ref::<T>()
+            .downcast::<T>()
             .ok_or_else(|| TransformError::invalid("unexpected operation in differentiation rule"))
     }
 
@@ -109,7 +110,7 @@ impl<'a> Ctx<'a> {
 
     /// Re-emit this rule's operation (with its attributes) on new operands.
     pub fn apply(&'a self, inputs: &[Val<'a>]) -> Val<'a> {
-        self.emit(self.op().clone(), inputs, self.out().clone())
+        self.emit(self.op().to_owned(), inputs, self.out())
     }
 
     fn val(&'a self, var: Var) -> Val<'a> {
@@ -122,7 +123,7 @@ impl<'a> Ctx<'a> {
 }
 
 /// Run `f` with a rule context that temporarily owns the builder.
-fn with_ctx<R>(b: &mut Builder, eqn: &Eqn, f: impl FnOnce(&Ctx<'_>) -> R) -> R {
+fn with_ctx<R>(b: &mut Builder, eqn: Eqn<'_>, f: impl FnOnce(&Ctx<'_>) -> R) -> R {
     let cx = Ctx {
         b: RefCell::new(std::mem::take(b)),
         eqn,
@@ -157,7 +158,10 @@ impl<'a> Val<'a> {
         self.cx.zeros(&self.info())
     }
 
-    fn map(self, f: impl FnOnce(&mut Builder, Var) -> TransformResult<Var>) -> TransformResult<Self> {
+    fn map(
+        self,
+        f: impl FnOnce(&mut Builder, Var) -> TransformResult<Var>,
+    ) -> TransformResult<Self> {
         let var = f(&mut self.cx.b.borrow_mut(), self.var)?;
         Ok(self.cx.val(var))
     }
@@ -262,13 +266,14 @@ where
     f
 }
 
-fn operation(eqn: &Eqn) -> String {
-    format!("{}.{}", eqn.op().dialect().name(), eqn.op().name())
+fn operation(eqn: Eqn<'_>) -> String {
+    format!("{}.{}", eqn.op().dialect(), eqn.op().name())
 }
 
-fn single_result(eqn: &Eqn) -> TransformResult<&VarInfo> {
-    match eqn.outputs() {
-        [(_, info)] => Ok(info),
+fn single_result(eqn: Eqn<'_>) -> TransformResult<VarInfo> {
+    let mut outputs = eqn.outputs();
+    match (outputs.next(), outputs.next()) {
+        (Some(output), None) => Ok(output.info_ref().to_owned()),
         _ => Err(TransformError::invalid(format!(
             "{} must have exactly one result to use a declarative rule",
             operation(eqn)
@@ -276,7 +281,7 @@ fn single_result(eqn: &Eqn) -> TransformResult<&VarInfo> {
     }
 }
 
-fn operands<'s, T, const N: usize>(eqn: &Eqn, values: &'s [T]) -> TransformResult<&'s [T; N]> {
+fn operands<'s, T, const N: usize>(eqn: Eqn<'_>, values: &'s [T]) -> TransformResult<&'s [T; N]> {
     values.try_into().map_err(|_| {
         TransformError::invalid(format!(
             "{} has {} operands but its rule expects {N}",
@@ -286,7 +291,7 @@ fn operands<'s, T, const N: usize>(eqn: &Eqn, values: &'s [T]) -> TransformResul
     })
 }
 
-fn check(eqn: &Eqn, what: &str, value: Val<'_>, expected: &VarInfo) -> TransformResult<Var> {
+fn check(eqn: Eqn<'_>, what: &str, value: Val<'_>, expected: &VarInfo) -> TransformResult<Var> {
     let info = value.info();
     if &info != expected {
         return Err(TransformError::invalid(format!(
@@ -320,7 +325,7 @@ fn sum<'a>(cx: &'a Ctx<'a>, total: Tangent, term: Var) -> Tangent {
 /// [`JvpRule`] body for `defjvp!`: sum one contribution per nonzero tangent.
 pub fn jvp<const N: usize>(
     b: &mut Builder,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     inputs: &[Dual],
     captures: &[Vec<Dual>],
     rules: [Option<&JvpFn<'_, N>>; N],
@@ -334,7 +339,7 @@ pub fn jvp<const N: usize>(
             let (Tangent::Var(t), Some(rule)) = (dual.tangent, rule) else {
                 continue;
             };
-            let term = check(eqn, "jvp", rule(cx, cx.val(t), primals)?, out)?;
+            let term = check(eqn, "jvp", rule(cx, cx.val(t), primals)?, &out)?;
             tangent = sum(cx, tangent, term);
         }
         Ok(vec![Dual {
@@ -348,7 +353,7 @@ pub fn jvp<const N: usize>(
 /// operand tangents, materializing zeros only when some tangent is nonzero.
 pub fn linear_jvp(
     b: &mut Builder,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     inputs: &[Dual],
     captures: &[Vec<Dual>],
 ) -> TransformResult<Vec<Dual>> {
@@ -377,7 +382,7 @@ pub fn linear_jvp(
 /// [`JvpRule`] body for `defbilinear!`: `op(tx, y) + op(x, ty)`.
 pub fn bilinear_jvp(
     b: &mut Builder,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     inputs: &[Dual],
     captures: &[Vec<Dual>],
 ) -> TransformResult<Vec<Dual>> {
@@ -402,7 +407,7 @@ pub fn bilinear_jvp(
 /// [`TransposeRule`] body: one cotangent per linear operand.
 pub fn transpose<const N: usize>(
     b: &mut Builder,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     operands: &[Operand],
     cotangents: &[Tangent],
     rules: [Option<&TransposeFn<'_, N>>; N],
@@ -435,7 +440,12 @@ pub fn transpose<const N: usize>(
                         operation(eqn)
                     ))
                 })?;
-                Ok(Tangent::Var(check(eqn, "transpose", rule(cx, ct, args)?, info)?))
+                Ok(Tangent::Var(check(
+                    eqn,
+                    "transpose",
+                    rule(cx, ct, args)?,
+                    info,
+                )?))
             })
             .collect()
     })
@@ -545,7 +555,7 @@ macro_rules! __ad_def {
             fn jvp(
                 &self,
                 b: &mut $crate::__private::gnx_expr::pass::Builder,
-                eqn: &$crate::__private::gnx_expr::Eqn,
+                eqn: $crate::__private::gnx_expr::Eqn<'_>,
                 inputs: &[$crate::ad::Dual],
                 captures: &[::std::vec::Vec<$crate::ad::Dual>],
             ) -> $crate::TransformResult<::std::vec::Vec<$crate::ad::Dual>> {
@@ -573,7 +583,7 @@ macro_rules! __ad_def {
             fn transpose(
                 &self,
                 b: &mut $crate::__private::gnx_expr::pass::Builder,
-                eqn: &$crate::__private::gnx_expr::Eqn,
+                eqn: $crate::__private::gnx_expr::Eqn<'_>,
                 operands: &[$crate::ad::Operand],
                 _captures: &[::std::vec::Vec<$crate::__private::gnx_expr::Var>],
                 cotangents: &[$crate::ad::Tangent],
@@ -600,7 +610,7 @@ macro_rules! __ad_def {
             fn jvp(
                 &self,
                 b: &mut $crate::__private::gnx_expr::pass::Builder,
-                eqn: &$crate::__private::gnx_expr::Eqn,
+                eqn: $crate::__private::gnx_expr::Eqn<'_>,
                 inputs: &[$crate::ad::Dual],
                 captures: &[::std::vec::Vec<$crate::ad::Dual>],
             ) -> $crate::TransformResult<::std::vec::Vec<$crate::ad::Dual>> {

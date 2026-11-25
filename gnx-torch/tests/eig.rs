@@ -22,7 +22,7 @@ fn compiled(shape: &[usize], dtype: DType, left: bool, right: bool) -> Vec<CModu
     let results = b.emit(eig(left, right), &[x], out, vec![]);
     TorchDevice::cpu()
         .unwrap()
-        .compile(&b.finish(results))
+        .compile(&b.finish(results).build().unwrap())
         .unwrap()
         .modules()
         .map(support::reload)

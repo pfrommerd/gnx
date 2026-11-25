@@ -1,16 +1,17 @@
-use super::{Dialect, Eqn, Op, Operation, Result, arity, fmt};
+use super::{Op, arity};
 
 simple_operations! {
-    RealOperation, real_op, real, 1;
-    ImagOperation, imag_op, imag, 1;
-    ConvertElementTypeOperation, convert_element_type_op, convert_element_type, 1;
-    ConjOperation, conj_op, conj, 1;
-    BitcastConvertTypeOperation, bitcast_convert_type_op, bitcast_convert_type, 1;
-    ComplexOperation, complex_op, complex, 2;
+    RealOperation, real_op, real, "real", 1;
+    ImagOperation, imag_op, imag, "imag", 1;
+    ConvertElementTypeOperation, convert_element_type_op, convert_element_type, "convert_element_type", 1;
+    ConjOperation, conj_op, conj, "conj", 1;
+    BitcastConvertTypeOperation, bitcast_convert_type_op, bitcast_convert_type, "bitcast_convert_type", 1;
+    ComplexOperation, complex_op, complex, "complex", 2;
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ReducePrecisionOperation {
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = ReducePrecisionOperation)]
+pub struct ReducePrecision {
     exponent_bits: u8,
     mantissa_bits: u8,
 }
@@ -26,7 +27,7 @@ gnx_common::array_operation!(ReducePrecisionOperation, "reduce_precision", |eqn|
     eqn, 1
 ));
 pub fn reduce_precision(exponent_bits: u8, mantissa_bits: u8) -> Op {
-    Op::new(ReducePrecisionOperation {
+    Op::new(ReducePrecision {
         exponent_bits,
         mantissa_bits,
     })

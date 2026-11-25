@@ -10,7 +10,7 @@ macro_rules! lower_elementwise {
             fn lower_xla(
                 &self,
                 _: &LoweringContext<'_>,
-                _eqn: &Eqn,
+                _eqn: Eqn<'_>,
                 inputs: &[XlaOp],
             ) -> io::Result<Vec<XlaOp>> {
                 Ok(vec![lower_elementwise!(@call self, _eqn, inputs, $method, $arity)?])
@@ -235,7 +235,7 @@ impl XlaLowering for RoundOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let x = super::unary("round", inputs)?;
@@ -250,7 +250,7 @@ impl XlaLowering for IntegerPowOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let x = super::unary("integer_pow", inputs)?;
@@ -289,7 +289,7 @@ impl XlaLowering for PolynomialOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [x, coeffs @ ..] = inputs else {
@@ -328,7 +328,7 @@ impl XlaLowering for ReducePrecisionOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let x = super::unary("reduce_precision", inputs)?;

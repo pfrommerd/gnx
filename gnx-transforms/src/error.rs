@@ -1,4 +1,4 @@
-use gnx_expr::{Eqn, InterfaceError, LoweringError};
+use gnx_expr::{BuildError, Eqn, InterfaceError, LoweringError};
 
 /// An error tracing, recording, or expanding a function transformation.
 #[derive(Debug, thiserror::Error)]
@@ -27,12 +27,18 @@ impl TransformError {
         Self::Invalid(message.into())
     }
 
-    pub(crate) fn at(self, index: usize, eqn: &Eqn) -> Self {
+    pub(crate) fn at(self, index: usize, eqn: Eqn<'_>) -> Self {
         Self::Equation {
             index,
             op: eqn.op().to_string(),
             source: Box::new(self),
         }
+    }
+}
+
+impl From<BuildError> for TransformError {
+    fn from(error: BuildError) -> Self {
+        Self::Signature(error.into())
     }
 }
 

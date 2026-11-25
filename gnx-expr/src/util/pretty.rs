@@ -1,30 +1,26 @@
-use crate::{Eqn, Expr, HExpr, HInstr, Kind, Var, VarInfo};
+//! Textual form of expressions.
+//!
+//! Variables have no names of their own: they are shown by generated names
+//! (`a`, `b`, ...). Large or shared subexpressions can be hoisted into
+//! definitions ahead of the expression, named by their name hints. Metadata is displayed as a
+//! value, not serialized back to Rust source.
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::Arc;
 
-#[derive(Debug)]
-pub struct PrettyVarScope {
+use crate::{Eqn, Expr, HEqn, HExpr, HInstr, HParam, Kind, Param, Symbol, Var};
+
+// The names of the variables of one expression
+struct PrettyVarScope {
     names: RefCell<BTreeMap<Var, String>>,
     used_names: RefCell<BTreeSet<String>>,
     next_name: Cell<usize>,
     nested: bool,
 }
 
-impl Clone for PrettyVarScope {
-    fn clone(&self) -> Self {
-        Self {
-            names: RefCell::new(self.names.borrow().clone()),
-            used_names: RefCell::new(self.used_names.borrow().clone()),
-            next_name: Cell::new(self.next_name.get()),
-            nested: self.nested,
-        }
-    }
-}
-
 impl PrettyVarScope {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             names: RefCell::new(BTreeMap::new()),
             used_names: RefCell::new(BTreeSet::new()),
@@ -33,25 +29,22 @@ impl PrettyVarScope {
         }
     }
 
-    pub fn bind(&self, var: &Var) -> String {
-        self.name_for(var)
-    }
-
-    pub fn alias(&self, var: &Var, name: impl Into<String>) {
-        if var.id().is_some() {
-            let name = name.into();
+    fn alias(&self, var: Var, name: String) {
+        if !var.is_hole() {
             self.used_names.borrow_mut().insert(name.clone());
-            self.names.borrow_mut().insert(var.clone(), name);
+            self.names.borrow_mut().insert(var, name);
         }
     }
 
-    fn child(aliases: &[(Var, String)]) -> Self {
+    // The scope of a subexpression shown inline: its closure inputs go
+    // by the names of what they are provided.
+    fn child(aliases: Vec<(Var, String)>) -> Self {
         let scope = Self {
             nested: true,
             ..Self::new()
         };
         for (var, name) in aliases {
-            scope.alias(var, name.clone());
+            scope.alias(var, name);
         }
         scope
     }
@@ -63,224 +56,24 @@ impl PrettyVarScope {
     ) -> Vec<(Var, String)> {
         parameters
             .zip(captures)
-            .map(|(parameter, outer)| (parameter, self.name_for(outer)))
+            .map(|(parameter, outer)| (parameter, self.name_for(*outer)))
             .collect()
     }
 
-    fn visible_closure<'a, T>(&self, closure: &'a [T]) -> &'a [T] {
-        if self.nested { &[] } else { closure }
-    }
-
-    pub fn fmt_var(&self, var: &Var, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt_var(&self, var: Var, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name_for(var))
     }
 
-    fn fmt_param(&self, (var, info): &(Var, VarInfo), f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_var(var, f)?;
-        write!(f, ": {info}")
-    }
-
-    fn fmt_definition(
-        &self,
-        (var, kind, info): &(Var, Kind, VarInfo),
-        f: &mut fmt::Formatter<'_>,
-    ) -> fmt::Result {
-        self.fmt_var(var, f)?;
-        match kind {
-            Kind::Value => write!(f, ": {info}"),
-            Kind::Cell => write!(f, "[:]: {info}"),
-        }
-    }
-
-    pub fn fmt_eqn(&self, eqn: &Eqn, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let printer = PrettyPrinter::new(
-            PrettyConfig::new(),
-            eqn.subexprs().iter().map(|sub| sub.expr()),
-        );
-        printer.fmt_definitions(f)?;
-        self.fmt_eqn_with_printer(eqn, f, &printer, 0)
-    }
-
-    fn fmt_eqn_with_printer(
-        &self,
-        eqn: &Eqn,
-        f: &mut fmt::Formatter<'_>,
-        printer: &PrettyPrinter<'_, Expr>,
-        indent_level: usize,
-    ) -> fmt::Result {
-        fmt_list(f, eqn.outputs(), |output, f| self.fmt_param(output, f))?;
-        if !eqn.outputs().is_empty() {
-            write!(f, " = ")?;
-        }
-        self.fmt_eqn_op(eqn, f, printer, indent_level)?;
-        if !eqn.inputs().is_empty() {
-            write!(f, " ")?;
-            for (i, input) in eqn.inputs().iter().enumerate() {
-                if i > 0 {
-                    write!(f, " ")?;
-                }
-                self.fmt_var(input, f)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn fmt_expr(&self, expr: &Expr, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        PrettyExpr::new(expr).fmt_with_scope(self, f)
-    }
-
-    /// Format the HExpr body and display metadata at its explicit definitions.
-    pub fn fmt_hexpr(&self, expr: &HExpr, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        PrettyExpr::new(expr).fmt_with_scope(self, f)
-    }
-
-    fn fmt_hexpr_at(
-        &self,
-        expr: &HExpr,
-        f: &mut fmt::Formatter<'_>,
-        printer: &PrettyPrinter<'_, HExpr>,
-        indent: usize,
-    ) -> fmt::Result {
-        let cell_var = |var: &Var, f: &mut fmt::Formatter<'_>| {
-            self.fmt_var(var, f)?;
-            if matches!(expr.kind(var), Some(Kind::Cell)) {
-                write!(f, "[:]")?;
-            }
-            Ok(())
-        };
-        fmt_symbol_params(f, expr.symbol_closure(), expr.symbol_inputs())?;
-        fmt_lambda(
-            f,
-            self.visible_closure(expr.closure()),
-            expr.inputs(),
-            |param, f| self.fmt_definition(param, f),
-        )?;
-        if expr.instructions().is_empty() {
-            return fmt_tuple(f, expr.outputs(), cell_var);
-        }
-        writeln!(f, "{{")?;
-        for instruction in expr.instructions() {
-            printer.write_indent(f, indent + 1)?;
-            match instruction {
-                HInstr::Apply(eqn) => {
-                    if !eqn.outputs().is_empty() {
-                        fmt_list(f, eqn.outputs(), |output, f| self.fmt_definition(output, f))?;
-                        write!(f, " = ")?;
-                    }
-                    fmt::Display::fmt(eqn.op(), f)?;
-                    for sub in eqn.subexprs() {
-                        write!(f, " [")?;
-                        fmt_symbol_args(f, &sub.symbol_captures)?;
-                        printer.fmt_region(f, self, sub.expr(), sub.closure(), indent, cell_var)?;
-                        write!(f, "]")?;
-                    }
-                    for var in eqn.inputs() {
-                        write!(f, " ")?;
-                        cell_var(var, f)?;
-                    }
-                }
-                HInstr::CreateCell { cell, initial, .. } => {
-                    cell_var(cell, f)?;
-                    write!(f, " = ")?;
-                    self.fmt_var(initial, f)?;
-                }
-                HInstr::ReadCell { cell, output, .. } => {
-                    self.fmt_var(output, f)?;
-                    write!(f, " <- ")?;
-                    cell_var(cell, f)?;
-                }
-                HInstr::WriteCell { cell, value } => {
-                    cell_var(cell, f)?;
-                    write!(f, " <- ")?;
-                    self.fmt_var(value, f)?;
-                }
-            }
-            writeln!(f, ";")?;
-        }
-        printer.fmt_return(f, indent, expr.outputs(), cell_var)
-    }
-
-    fn fmt_expr_with_printer(
-        &self,
-        expr: &Expr,
-        f: &mut fmt::Formatter<'_>,
-        printer: &PrettyPrinter<'_, Expr>,
-        indent_level: usize,
-    ) -> fmt::Result {
-        fmt_symbol_params(f, expr.symbol_closure(), expr.symbol_inputs())?;
-        fmt_lambda(
-            f,
-            self.visible_closure(expr.closure()),
-            expr.inputs(),
-            |input, f| self.fmt_param(input, f),
-        )?;
-        let value_var = |var: &Var, f: &mut fmt::Formatter<'_>| self.fmt_var(var, f);
-        if expr.eqns().is_empty() {
-            return fmt_tuple(f, expr.outputs(), value_var);
-        }
-        writeln!(f, "{{")?;
-        for eqn in expr.eqns() {
-            printer.write_indent(f, indent_level + 1)?;
-            self.fmt_eqn_with_printer(eqn, f, printer, indent_level)?;
-            writeln!(f, ";")?;
-        }
-        printer.fmt_return(f, indent_level, expr.outputs(), value_var)
-    }
-
-    fn fmt_eqn_op(
-        &self,
-        eqn: &Eqn,
-        f: &mut fmt::Formatter<'_>,
-        printer: &PrettyPrinter<'_, Expr>,
-        indent_level: usize,
-    ) -> fmt::Result {
-        fmt::Display::fmt(eqn.op(), f)?;
-        for subexpr in eqn.subexprs() {
-            write!(f, " [")?;
-            fmt_symbol_args(f, &subexpr.symbol_captures)?;
-            printer.fmt_region(
-                f,
-                self,
-                subexpr.expr(),
-                subexpr.closure(),
-                indent_level,
-                |var, f| self.fmt_var(var, f),
-            )?;
-            write!(f, "]")?;
-        }
-        Ok(())
-    }
-
-    fn name_for(&self, var: &Var) -> String {
-        if var.id().is_none() {
+    fn name_for(&self, var: Var) -> String {
+        if var.is_hole() {
             return "_".to_string();
         }
         if let Some(name) = self.names.borrow().get(&var).cloned() {
             return name;
         }
-        let name = if let Some(hint) = var.name_hint() {
-            self.unique_hint_name(hint)
-        } else {
-            self.next_generated_name()
-        };
-        self.names.borrow_mut().insert(var.clone(), name.clone());
+        let name = self.next_generated_name();
+        self.names.borrow_mut().insert(var, name.clone());
         name
-    }
-
-    fn unique_hint_name(&self, hint: &str) -> String {
-        let base = if hint.is_empty() { "v" } else { hint };
-        let mut suffix = 1;
-        loop {
-            let candidate = if suffix == 1 {
-                base.to_string()
-            } else {
-                format!("{base}_{suffix}")
-            };
-            if self.used_names.borrow_mut().insert(candidate.clone()) {
-                return candidate;
-            }
-            suffix += 1;
-        }
     }
 
     fn next_generated_name(&self) -> String {
@@ -294,12 +87,7 @@ impl PrettyVarScope {
     }
 }
 
-impl Default for PrettyVarScope {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
+/// How an expression is laid out when shown.
 #[derive(Clone, Debug)]
 pub struct PrettyConfig {
     max_inline_eqns: usize,
@@ -317,6 +105,7 @@ impl PrettyConfig {
     }
 
     /// Maximum number of instructions in an inline region (default: 8).
+    /// Larger subexpressions are shown as named definitions.
     pub fn max_inline_eqns(mut self, max_inline_eqns: usize) -> Self {
         self.max_inline_eqns = max_inline_eqns;
         self
@@ -343,13 +132,15 @@ impl Default for PrettyConfig {
     }
 }
 
-pub struct PrettyExpr<'a, E = Expr> {
-    expr: &'a E,
+/// An expression with the layout to show it in. Made by `Expr::pretty`
+/// and `HExpr::pretty`.
+pub struct PrettyExpr<E> {
+    expr: E,
     config: PrettyConfig,
 }
 
-impl<'a, E> PrettyExpr<'a, E> {
-    pub fn new(expr: &'a E) -> Self {
+impl<E> PrettyExpr<E> {
+    fn new(expr: E) -> Self {
         Self {
             expr,
             config: PrettyConfig::new(),
@@ -382,108 +173,269 @@ impl<'a, E> PrettyExpr<'a, E> {
     }
 }
 
-pub type PrettyHExpr<'a> = PrettyExpr<'a, HExpr>;
-
-impl PrettyExpr<'_, Expr> {
-    pub fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_with_scope(&PrettyVarScope::new(), f)
+impl<'a> Expr<'a> {
+    pub fn pretty(self) -> PrettyExpr<Expr<'a>> {
+        PrettyExpr::new(self)
     }
 }
 
-impl fmt::Display for PrettyHExpr<'_> {
+impl<'a> HExpr<'a> {
+    pub fn pretty(self) -> PrettyExpr<HExpr<'a>> {
+        PrettyExpr::new(self)
+    }
+}
+
+impl<'a, E: PrintableExpr<'a>> fmt::Display for PrettyExpr<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt_with_scope(&PrettyVarScope::new(), f)
-    }
-}
-
-impl<E> PrettyExpr<'_, E> {
-    fn fmt_with_scope(&self, scope: &PrettyVarScope, f: &mut fmt::Formatter<'_>) -> fmt::Result
-    where
-        E: PrintableExpr,
-    {
         let printer = PrettyPrinter::new(self.config.clone(), self.expr.regions());
         printer.fmt_definitions(f)?;
-        self.expr.fmt_body(f, scope, &printer, 0)
+        (self.expr).fmt_body(f, &PrettyVarScope::new(), &printer, 0)
     }
 }
 
-trait PrintableExpr: Sized {
-    fn regions(&self) -> impl Iterator<Item = &Arc<Self>>;
-    fn body_len(&self) -> usize;
-    fn name_hint(&self) -> Option<&str>;
-    fn closure_vars(&self) -> impl Iterator<Item = Var>;
+// What Expr and HExpr have in common, as far as showing them goes
+trait PrintableExpr<'a>: Copy + 'a {
+    // Identifies the stored expression
+    fn key(self) -> *const ();
+    // The expressions used as subexpressions, in order
+    fn regions(self) -> Vec<Self>;
+    fn body_len(self) -> usize;
+    fn name_hint(self) -> Option<&'a str>;
+    fn closure_vars(self) -> Vec<Var>;
     fn fmt_body(
-        &self,
+        self,
         f: &mut fmt::Formatter<'_>,
         scope: &PrettyVarScope,
-        printer: &PrettyPrinter<'_, Self>,
+        printer: &PrettyPrinter<'a, Self>,
         indent: usize,
     ) -> fmt::Result;
 }
 
-impl PrintableExpr for Expr {
-    fn regions(&self) -> impl Iterator<Item = &Arc<Self>> {
-        self.eqns()
-            .iter()
+impl<'a> PrintableExpr<'a> for Expr<'a> {
+    fn key(self) -> *const () {
+        self.data_ptr()
+    }
+    fn regions(self) -> Vec<Self> {
+        (self.eqns())
             .flat_map(|eqn| eqn.subexprs())
             .map(|sub| sub.expr())
+            .collect()
     }
-    fn body_len(&self) -> usize {
+    fn body_len(self) -> usize {
         self.eqns().len()
     }
-    fn name_hint(&self) -> Option<&str> {
-        self.name_hint()
+    fn name_hint(self) -> Option<&'a str> {
+        Expr::name_hint(self)
     }
-    fn closure_vars(&self) -> impl Iterator<Item = Var> {
-        self.closure().iter().map(|v| v.0)
+    fn closure_vars(self) -> Vec<Var> {
+        self.closure_inputs().map(|param| param.var()).collect()
     }
     fn fmt_body(
-        &self,
+        self,
         f: &mut fmt::Formatter<'_>,
         scope: &PrettyVarScope,
-        printer: &PrettyPrinter<'_, Self>,
+        printer: &PrettyPrinter<'a, Self>,
         indent: usize,
     ) -> fmt::Result {
-        scope.fmt_expr_with_printer(self, f, printer, indent)
+        fmt_expr(self, f, scope, printer, indent)
     }
 }
 
-impl PrintableExpr for HExpr {
-    fn regions(&self) -> impl Iterator<Item = &Arc<Self>> {
-        self.instructions()
-            .iter()
+impl<'a> PrintableExpr<'a> for HExpr<'a> {
+    fn key(self) -> *const () {
+        self.data_ptr()
+    }
+    fn regions(self) -> Vec<Self> {
+        (self.instrs())
             .filter_map(HInstr::as_apply)
             .flat_map(|eqn| eqn.subexprs())
             .map(|sub| sub.expr())
+            .collect()
     }
-    fn body_len(&self) -> usize {
-        self.instructions().len()
+    fn body_len(self) -> usize {
+        self.instrs().len()
     }
-    fn name_hint(&self) -> Option<&str> {
-        self.name_hint()
+    fn name_hint(self) -> Option<&'a str> {
+        HExpr::name_hint(self)
     }
-    fn closure_vars(&self) -> impl Iterator<Item = Var> {
-        self.closure().iter().map(|v| v.0)
+    fn closure_vars(self) -> Vec<Var> {
+        self.closure_inputs().map(|param| param.var()).collect()
     }
     fn fmt_body(
-        &self,
+        self,
         f: &mut fmt::Formatter<'_>,
         scope: &PrettyVarScope,
-        printer: &PrettyPrinter<'_, Self>,
+        printer: &PrettyPrinter<'a, Self>,
         indent: usize,
     ) -> fmt::Result {
-        scope.fmt_hexpr_at(self, f, printer, indent)
+        fmt_hexpr(self, f, scope, printer, indent)
     }
 }
 
-struct PrettyPrinter<'a, E> {
-    config: PrettyConfig,
-    definitions: Vec<&'a E>,
-    names: BTreeMap<*const E, String>,
+fn fmt_param(scope: &PrettyVarScope, param: Param<'_>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    scope.fmt_var(param.var(), f)?;
+    write!(f, ": {}", param.info_ref())
 }
 
-impl<'a, E: PrintableExpr + 'a> PrettyPrinter<'a, E> {
-    fn new(config: PrettyConfig, regions: impl IntoIterator<Item = &'a Arc<E>>) -> Self {
+fn fmt_definition(
+    scope: &PrettyVarScope,
+    param: HParam<'_>,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    scope.fmt_var(param.var(), f)?;
+    match param.kind() {
+        Kind::Value => write!(f, ": {}", param.info_ref()),
+        Kind::Cell => write!(f, "[:]: {}", param.info_ref()),
+    }
+}
+
+// An equation, without the `;` that ends it in a body
+fn fmt_eqn<'a>(
+    eqn: Eqn<'a>,
+    f: &mut fmt::Formatter<'_>,
+    scope: &PrettyVarScope,
+    printer: &PrettyPrinter<'a, Expr<'a>>,
+    indent: usize,
+) -> fmt::Result {
+    let outputs: Vec<_> = eqn.outputs().collect();
+    fmt_list(f, &outputs, |output, f| fmt_param(scope, *output, f))?;
+    if !outputs.is_empty() {
+        write!(f, " = ")?;
+    }
+    fmt::Display::fmt(&eqn.op(), f)?;
+    for sub in eqn.subexprs() {
+        write!(f, " [")?;
+        fmt_symbol_args(f, sub.provided_symbols())?;
+        let captures = sub.provided_vars();
+        printer.fmt_region(f, scope, sub.expr(), captures, indent, |var, f| {
+            scope.fmt_var(*var, f)
+        })?;
+        write!(f, "]")?;
+    }
+    for input in eqn.inputs() {
+        write!(f, " ")?;
+        scope.fmt_var(*input, f)?;
+    }
+    Ok(())
+}
+
+fn fmt_expr<'a>(
+    expr: Expr<'a>,
+    f: &mut fmt::Formatter<'_>,
+    scope: &PrettyVarScope,
+    printer: &PrettyPrinter<'a, Expr<'a>>,
+    indent: usize,
+) -> fmt::Result {
+    fmt_symbol_params(f, expr.closure_symbols(), &expr.input_symbols())?;
+    // The closure of a subexpression shown inline goes by outer names.
+    let closure: Vec<_> = (expr.closure_inputs()).filter(|_| !scope.nested).collect();
+    let inputs: Vec<_> = expr.inputs().collect();
+    fmt_lambda(f, &closure, &inputs, |param, f| fmt_param(scope, *param, f))?;
+    let value_var = |var: &Var, f: &mut fmt::Formatter<'_>| scope.fmt_var(*var, f);
+    if expr.eqns().len() == 0 {
+        return fmt_tuple(f, expr.outputs(), value_var);
+    }
+    writeln!(f, "{{")?;
+    for eqn in expr.eqns() {
+        printer.write_indent(f, indent + 1)?;
+        fmt_eqn(eqn, f, scope, printer, indent)?;
+        writeln!(f, ";")?;
+    }
+    printer.fmt_return(f, indent, expr.outputs(), value_var)
+}
+
+/// Format the body, displaying metadata at its explicit definitions.
+fn fmt_hexpr<'a>(
+    expr: HExpr<'a>,
+    f: &mut fmt::Formatter<'_>,
+    scope: &PrettyVarScope,
+    printer: &PrettyPrinter<'a, HExpr<'a>>,
+    indent: usize,
+) -> fmt::Result {
+    let cell_var = |var: &Var, f: &mut fmt::Formatter<'_>| {
+        scope.fmt_var(*var, f)?;
+        if expr.kind(*var) == Some(Kind::Cell) {
+            write!(f, "[:]")?;
+        }
+        Ok(())
+    };
+    fmt_symbol_params(f, expr.closure_symbols(), &expr.input_symbols())?;
+    let closure: Vec<_> = (expr.closure_inputs()).filter(|_| !scope.nested).collect();
+    let inputs: Vec<_> = expr.inputs().collect();
+    fmt_lambda(f, &closure, &inputs, |param, f| {
+        fmt_definition(scope, *param, f)
+    })?;
+    if expr.instrs().len() == 0 {
+        return fmt_tuple(f, expr.outputs(), cell_var);
+    }
+    writeln!(f, "{{")?;
+    for instruction in expr.instrs() {
+        printer.write_indent(f, indent + 1)?;
+        fmt_instr(instruction, f, scope, printer, indent, &cell_var)?;
+        writeln!(f, ";")?;
+    }
+    printer.fmt_return(f, indent, expr.outputs(), cell_var)
+}
+
+// An instruction, without the `;` that ends it in a body
+fn fmt_instr<'a>(
+    instruction: HInstr<'a>,
+    f: &mut fmt::Formatter<'_>,
+    scope: &PrettyVarScope,
+    printer: &PrettyPrinter<'a, HExpr<'a>>,
+    indent: usize,
+    cell_var: &dyn Fn(&Var, &mut fmt::Formatter<'_>) -> fmt::Result,
+) -> fmt::Result {
+    match instruction {
+        HInstr::Apply(eqn) => {
+            let outputs: Vec<_> = eqn.outputs().collect();
+            if !outputs.is_empty() {
+                fmt_list(f, &outputs, |output, f| fmt_definition(scope, *output, f))?;
+                write!(f, " = ")?;
+            }
+            fmt::Display::fmt(&eqn.op(), f)?;
+            for sub in eqn.subexprs() {
+                write!(f, " [")?;
+                fmt_symbol_args(f, sub.provided_symbols())?;
+                let captures = sub.provided_vars();
+                printer.fmt_region(f, scope, sub.expr(), captures, indent, cell_var)?;
+                write!(f, "]")?;
+            }
+            for var in eqn.inputs() {
+                write!(f, " ")?;
+                cell_var(var, f)?;
+            }
+            Ok(())
+        }
+        HInstr::CreateCell { cell, initial, .. } => {
+            // The cell is being defined, so its kind is known.
+            scope.fmt_var(cell, f)?;
+            write!(f, "[:] = ")?;
+            scope.fmt_var(initial, f)
+        }
+        HInstr::ReadCell { cell, output, .. } => {
+            scope.fmt_var(output, f)?;
+            write!(f, " <- ")?;
+            cell_var(&cell, f)
+        }
+        HInstr::WriteCell { cell, value } => {
+            cell_var(&cell, f)?;
+            write!(f, " <- ")?;
+            scope.fmt_var(value, f)
+        }
+    }
+}
+
+// Decides which subexpressions are hoisted into named definitions.
+struct PrettyPrinter<'a, E> {
+    config: PrettyConfig,
+    definitions: Vec<E>,
+    names: BTreeMap<*const (), String>,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a, E: PrintableExpr<'a>> PrettyPrinter<'a, E> {
+    fn new(config: PrettyConfig, regions: impl IntoIterator<Item = E>) -> Self {
         let mut seen = BTreeSet::new();
         let mut definitions = Vec::new();
         if config.max_inline_eqns != usize::MAX {
@@ -492,7 +444,7 @@ impl<'a, E: PrintableExpr + 'a> PrettyPrinter<'a, E> {
             }
         }
         // Reserve actual hints so anonymous bodies don't take their names.
-        let hint = |expr: &'a E| expr.name_hint().filter(|hint| !hint.is_empty());
+        let hint = |expr: E| expr.name_hint().filter(|hint| !hint.is_empty());
         let reserved: BTreeSet<_> = definitions.iter().filter_map(|&expr| hint(expr)).collect();
         let mut used = BTreeSet::new();
         let mut generated = (0..).map(alphabetic_name);
@@ -510,23 +462,19 @@ impl<'a, E: PrintableExpr + 'a> PrettyPrinter<'a, E> {
                     None => generated.by_ref().find(|name| available(name)).unwrap(),
                 };
                 used.insert(name.clone());
-                (std::ptr::from_ref(expr), name)
+                (expr.key(), name)
             })
             .collect();
         Self {
             config,
             definitions,
             names,
+            _marker: std::marker::PhantomData,
         }
     }
 
-    fn collect(
-        expr: &'a E,
-        limit: usize,
-        seen: &mut BTreeSet<*const E>,
-        definitions: &mut Vec<&'a E>,
-    ) {
-        if !seen.insert(std::ptr::from_ref(expr)) {
+    fn collect(expr: E, limit: usize, seen: &mut BTreeSet<*const ()>, definitions: &mut Vec<E>) {
+        if !seen.insert(expr.key()) {
             return;
         }
         for region in expr.regions() {
@@ -539,10 +487,8 @@ impl<'a, E: PrintableExpr + 'a> PrettyPrinter<'a, E> {
         }
     }
 
-    fn name(&self, expr: &E) -> Option<&str> {
-        self.names
-            .get(&std::ptr::from_ref(expr))
-            .map(String::as_str)
+    fn name(&self, expr: E) -> Option<&str> {
+        self.names.get(&expr.key()).map(String::as_str)
     }
 
     fn fmt_definitions(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -561,7 +507,7 @@ impl<'a, E: PrintableExpr + 'a> PrettyPrinter<'a, E> {
         &self,
         f: &mut fmt::Formatter<'_>,
         scope: &PrettyVarScope,
-        expr: &E,
+        expr: E,
         captures: &[Var],
         indent: usize,
         fmt_capture: impl Fn(&Var, &mut fmt::Formatter<'_>) -> fmt::Result,
@@ -575,10 +521,10 @@ impl<'a, E: PrintableExpr + 'a> PrettyPrinter<'a, E> {
             }
             Ok(())
         } else {
-            let aliases = scope.aliases(expr.closure_vars(), captures);
+            let aliases = scope.aliases(expr.closure_vars().into_iter(), captures);
             expr.fmt_body(
                 f,
-                &PrettyVarScope::child(&aliases),
+                &PrettyVarScope::child(aliases),
                 self,
                 indent + self.config.inline_subexpr_indent,
             )
@@ -608,7 +554,7 @@ impl<'a, E: PrintableExpr + 'a> PrettyPrinter<'a, E> {
     }
 }
 
-fn fmt_symbol_args(f: &mut fmt::Formatter<'_>, args: &[crate::Symbol]) -> fmt::Result {
+fn fmt_symbol_args(f: &mut fmt::Formatter<'_>, args: &[Symbol]) -> fmt::Result {
     if !args.is_empty() {
         write!(f, "bind[")?;
         fmt_list(f, args, |s, f| write!(f, "{s}"))?;
@@ -618,12 +564,12 @@ fn fmt_symbol_args(f: &mut fmt::Formatter<'_>, args: &[crate::Symbol]) -> fmt::R
 }
 fn fmt_symbol_params(
     f: &mut fmt::Formatter<'_>,
-    closure: &[crate::Symbol],
-    inputs: &[crate::Symbol],
+    closure: &[Symbol],
+    inputs: &[Symbol],
 ) -> fmt::Result {
     if !closure.is_empty() || !inputs.is_empty() {
         write!(f, "[")?;
-        let decl = |s: &crate::Symbol, f: &mut fmt::Formatter<'_>| write!(f, "{s}");
+        let decl = |s: &Symbol, f: &mut fmt::Formatter<'_>| write!(f, "{s}");
         if !closure.is_empty() {
             fmt_list(f, closure, decl)?;
             write!(f, "; ")?;
@@ -688,4 +634,39 @@ fn alphabetic_name(mut index: usize) -> String {
         index -= 1;
     }
     chars.iter().rev().collect()
+}
+
+impl fmt::Display for Expr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.pretty().fmt(f)
+    }
+}
+
+impl fmt::Display for HExpr<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.pretty().fmt(f)
+    }
+}
+
+// An equation on its own is shown in a scope of its own, after the
+// definitions of any subexpressions that are hoisted.
+impl<'a> fmt::Display for Eqn<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let regions = self.subexprs().map(|sub| sub.expr());
+        let printer = PrettyPrinter::new(PrettyConfig::new(), regions);
+        printer.fmt_definitions(f)?;
+        fmt_eqn(*self, f, &PrettyVarScope::new(), &printer, 0)
+    }
+}
+
+impl<'a> fmt::Display for HEqn<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let regions = self.subexprs().map(|sub| sub.expr());
+        let printer = PrettyPrinter::new(PrettyConfig::new(), regions);
+        printer.fmt_definitions(f)?;
+        let scope = PrettyVarScope::new();
+        // Without its expression, the kinds of its operands are unknown.
+        let var = |var: &Var, f: &mut fmt::Formatter<'_>| scope.fmt_var(*var, f);
+        fmt_instr(HInstr::Apply(*self), f, &scope, &printer, 0, &var)
+    }
 }

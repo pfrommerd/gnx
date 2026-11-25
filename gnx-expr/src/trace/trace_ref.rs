@@ -1,4 +1,4 @@
-use crate::{Generic, Invocation, Traceable, Value, VarInfo};
+use crate::{Generic, InfoCast, Invocation, Traceable, Value, VarInfo};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -236,7 +236,7 @@ impl<T: Traceable> Tracer<T> {
     }
 
     pub fn info(&self) -> &T::Info {
-        self.trace.info().downcast().unwrap()
+        T::Info::cast(self.trace.info()).expect("Tracer contained incorrect info")
     }
 
     pub fn trace_ref(&self) -> &Trace {
@@ -268,18 +268,18 @@ impl<T: Traceable> Tracer<T> {
     }
 
     pub fn try_cast_ref<U: Traceable>(&self) -> Result<&Tracer<U>, &Self> {
-        match self.trace.info().downcast::<U::Info>() {
+        match U::Info::cast(self.trace.info()) {
             // SAFETY: It is safe to cast to U since we just checked that the info matches.
-            Ok(_) => Ok(unsafe { self.cast_ref_unchecked() }),
-            Err(_) => Err(self),
+            Some(_) => Ok(unsafe { self.cast_ref_unchecked() }),
+            None => Err(self),
         }
     }
 
     pub fn try_cast<U: Traceable>(self) -> Result<Tracer<U>, Self> {
-        match self.trace.info().downcast::<U::Info>() {
+        match U::Info::cast(self.trace.info()) {
             // SAFETY: We have checked that the info matches.
-            Ok(_) => Ok(unsafe { Tracer::unchecked_new(self.trace) }),
-            Err(_) => Err(self),
+            Some(_) => Ok(unsafe { Tracer::unchecked_new(self.trace) }),
+            None => Err(self),
         }
     }
 

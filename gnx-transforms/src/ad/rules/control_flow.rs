@@ -4,7 +4,7 @@
 //! expression is lowered, private cell state is just more carry.
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Expr, SubExpr, Var, VarInfo, register_op_interface};
+use gnx_expr::{Eqn, Expr, SubExprBuilder, Var, VarInfo, register_op_interface};
 
 use crate::ad::jvp::{Dual, JvpRule, Linearized, Tangent, instantiate, jvp_expr, linearize};
 use crate::ad::transpose::{Operand, TransposeRule, transpose_expr};
@@ -12,7 +12,9 @@ use crate::cf::{
     CallOperation, CondOperation, ScanOperation, ScanParameters, SwitchOperation, WhileOperation,
     branch_op, call_op, scan_op, while_op,
 };
-use crate::util::{infos, output_infos, rev, union, with_axis, without_axis, zeros};
+use crate::util::{
+    infos, input_infos, output_infos, rev, single_region, union, with_axis, without_axis, zeros,
+};
 use crate::{TransformError, TransformResult};
 
 fn primals(duals: &[Dual]) -> Vec<Var> {
@@ -44,9 +46,9 @@ fn flagged_tangents(b: &mut Builder, duals: &[Dual], flags: &[bool]) -> Vec<Var>
 // call to transpose into a third call.
 
 /// Name a derived body after the original, e.g. `jvp(f)` or `transpose(f)`.
-fn name_after(rb: &mut Builder, transform: &str, body: &Expr) {
+fn name_after(rb: &mut Builder, transform: &str, body: Expr<'_>) {
     if let Some(name) = body.name_hint() {
-        rb.set_name_hint(Some(format!("{transform}({name})").into()));
+        rb.set_name_hint(Some(format!("{transform}({name})")));
     }
 }
 
@@ -54,11 +56,11 @@ impl JvpRule for CallOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         captures: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
-        let ([sub], [captures]) = (eqn.subexprs(), captures) else {
+        let (Some(sub), [captures]) = (single_region(eqn), captures) else {
             return Err(TransformError::invalid("call takes one body"));
         };
         let body = sub.expr();
@@ -73,7 +75,7 @@ impl JvpRule for CallOperation {
             &infos(b, &operands),
             |rb, closure, params| {
                 name_after(rb, "jvp", body);
-                rb.inline(&linear.primal, &[], closure, params)
+                rb.inline(linear.primal.view(), &[], closure, params)
                     .map_err(TransformError::from)
             },
         )?;
@@ -96,7 +98,7 @@ impl JvpRule for CallOperation {
         args.extend(flagged_tangents(b, inputs, &input_flags));
         let region = b.region(&[], &infos(b, &args), |rb, _, params| {
             name_after(rb, "lin", body);
-            rb.inline(&linear.tangent, &[], &[], params)
+            rb.inline(linear.tangent.view(), &[], &[], params)
                 .map_err(TransformError::from)
         })?;
         let tangent_infos: Vec<_> = output_infos(eqn)
@@ -127,12 +129,12 @@ impl TransposeRule for CallOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         operands: &[Operand],
         captures: &[Vec<Var>],
         cotangents: &[Tangent],
     ) -> TransformResult<Vec<Tangent>> {
-        let ([sub], [captures]) = (eqn.subexprs(), captures) else {
+        let (Some(sub), [captures]) = (single_region(eqn), captures) else {
             return Err(TransformError::invalid("call takes one body"));
         };
         let body = sub.expr();
@@ -213,17 +215,16 @@ impl TransposeRule for CallOperation {
 
 /// Linearize every branch with a common output tangent layout.
 fn linearize_branches(
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     operands: &[bool],
     captures: &[Vec<Dual>],
 ) -> TransformResult<Vec<Linearized>> {
     let mut outputs = vec![false; eqn.outputs().len()];
-    for (sub, captures) in eqn.subexprs().iter().zip(captures) {
+    for (sub, captures) in eqn.subexprs().zip(captures) {
         let linear = linearize(sub.expr(), &nonzero(captures), operands, None)?;
         union(&mut outputs, &linear.outputs);
     }
     eqn.subexprs()
-        .iter()
         .zip(captures)
         .map(|(sub, captures)| linearize(sub.expr(), &nonzero(captures), operands, Some(&outputs)))
         .collect()
@@ -231,7 +232,7 @@ fn linearize_branches(
 
 fn jvp_branches(
     b: &mut Builder,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     inputs: &[Dual],
     captures: &[Vec<Dual>],
 ) -> TransformResult<Vec<Dual>> {
@@ -257,7 +258,7 @@ fn jvp_branches(
     let mut regions = Vec::new();
     for (index, (linear, captures)) in branches.iter().zip(captures).enumerate() {
         let region = b.region(&primals(captures), &operand_infos, |rb, closure, params| {
-            let mut results = rb.inline(&linear.primal, &[], closure, params)?;
+            let mut results = rb.inline(linear.primal.view(), &[], closure, params)?;
             let residuals = results.split_off(eqn.outputs().len());
             let mut slots = Vec::new();
             for (other, branch) in branches.iter().enumerate() {
@@ -320,7 +321,7 @@ fn jvp_branches(
             let mut inputs = all_residuals[start..start + linear.residuals.len()].to_vec();
             inputs.extend(own_captures);
             inputs.extend(operand_tangents);
-            rb.inline(&linear.tangent, &[], &[], &inputs)
+            rb.inline(linear.tangent.view(), &[], &[], &inputs)
                 .map_err(TransformError::from)
         })?;
         regions.push(region);
@@ -352,7 +353,7 @@ fn jvp_branches(
 
 fn transpose_branches(
     b: &mut Builder,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     operands: &[Operand],
     captures: &[Vec<Var>],
     cotangents: &[Tangent],
@@ -384,7 +385,7 @@ fn transpose_branches(
     let mut region_inputs = infos(b, &residuals);
     region_inputs.extend(infos(b, &cts));
     let mut regions = Vec::new();
-    for (sub, captures) in eqn.subexprs().iter().zip(captures) {
+    for (sub, captures) in eqn.subexprs().zip(captures) {
         let region = b.region(captures, &region_inputs, |rb, closure, params| {
             let (residual_params, ct_params) = params.split_at(residuals.len());
             let mut residual_params = residual_params.iter();
@@ -432,7 +433,7 @@ macro_rules! branch_rules {
             fn jvp(
                 &self,
                 b: &mut Builder,
-                eqn: &Eqn,
+                eqn: Eqn<'_>,
                 inputs: &[Dual],
                 captures: &[Vec<Dual>],
             ) -> TransformResult<Vec<Dual>> {
@@ -443,7 +444,7 @@ macro_rules! branch_rules {
             fn transpose(
                 &self,
                 b: &mut Builder,
-                eqn: &Eqn,
+                eqn: Eqn<'_>,
                 operands: &[Operand],
                 captures: &[Vec<Var>],
                 cotangents: &[Tangent],
@@ -461,11 +462,11 @@ branch_rules!(CondOperation, SwitchOperation);
 /// flagged tangents, returning primals followed by the flagged result tangents.
 fn jvp_region(
     b: &Builder,
-    body: &Expr,
+    body: Expr<'_>,
     captures: &[Dual],
     inputs: &[bool],
     outputs: Option<&[bool]>,
-) -> TransformResult<(SubExpr, Vec<bool>)> {
+) -> TransformResult<(SubExprBuilder, Vec<bool>)> {
     let capture_tangents: Vec<Var> = captures
         .iter()
         .filter_map(|dual| match dual.tangent {
@@ -477,7 +478,7 @@ fn jvp_region(
         .into_iter()
         .chain(capture_tangents)
         .collect();
-    let primal_infos: Vec<_> = body.inputs().iter().map(|(_, info)| info.clone()).collect();
+    let primal_infos = input_infos(body);
     let mut region_inputs = primal_infos.clone();
     region_inputs.extend(
         primal_infos
@@ -541,11 +542,12 @@ impl JvpRule for WhileOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         captures: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
-        let [predicate, body] = eqn.subexprs() else {
+        let regions: Vec<_> = eqn.subexprs().collect();
+        let [predicate, body] = regions[..] else {
             return Err(TransformError::invalid("while needs a predicate and body"));
         };
         let mut flags = nonzero(inputs);
@@ -567,7 +569,7 @@ impl JvpRule for WhileOperation {
             b.region(&predicate_captures, &carry_infos, |rb, closure, params| {
                 rb.inline(
                     predicate.expr(),
-                    &predicate.symbol_captures,
+                    predicate.provided_symbols(),
                     closure,
                     &params[..params.len() - tangent_count],
                 )
@@ -598,16 +600,22 @@ impl JvpRule for WhileOperation {
 
 // ----- scan -------------------------------------------------------------------
 
+fn scan_body<'a>(eqn: Eqn<'a>) -> TransformResult<Expr<'a>> {
+    single_region(eqn)
+        .map(|region| region.expr())
+        .ok_or_else(|| TransformError::invalid("scan needs one body"))
+}
+
 impl JvpRule for ScanOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         captures: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
         let (carry_len, length) = ScanParameters::layout(eqn)?;
-        let body = eqn.subexprs()[0].expr();
+        let body = scan_body(eqn)?;
         let captures = &captures[0];
         let capture_flags = nonzero(captures);
         let mut flags = nonzero(inputs);
@@ -622,9 +630,9 @@ impl JvpRule for ScanOperation {
         let ys = eqn.outputs().len() - carry_len;
 
         // Primal scan: stacks the residuals of each step as extra outputs.
-        let body_inputs: Vec<_> = body.inputs().iter().map(|(_, info)| info.clone()).collect();
+        let body_inputs = input_infos(body);
         let primal_region = b.region(&primals(captures), &body_inputs, |rb, closure, params| {
-            rb.inline(&linear.primal, &[], closure, params)
+            rb.inline(linear.primal.view(), &[], closure, params)
                 .map_err(TransformError::from)
         })?;
         let stacked = linear
@@ -673,7 +681,7 @@ impl JvpRule for ScanOperation {
             inputs.extend(carries);
             inputs.extend(x_tangents);
             let mut results = passthrough.to_vec();
-            results.extend(rb.inline(&linear.tangent, &[], &[], &inputs)?);
+            results.extend(rb.inline(linear.tangent.view(), &[], &[], &inputs)?);
             Ok::<_, TransformError>(results)
         })?;
         let infos_out: Vec<_> = capture_tangents
@@ -714,13 +722,14 @@ impl TransposeRule for ScanOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         operands: &[Operand],
         captures: &[Vec<Var>],
         cotangents: &[Tangent],
     ) -> TransformResult<Vec<Tangent>> {
         let (carry_len, length) = ScanParameters::layout(eqn)?;
-        let body = eqn.subexprs()[0].expr();
+        let body = scan_body(eqn)?;
+        let body_infos = input_infos(body);
         // Every carry is treated as linear: a constant initial carry here is a
         // materialized zero tangent, and its cotangent is discarded.
         let (carry, xs) = operands.split_at(carry_len);
@@ -775,12 +784,12 @@ impl TransposeRule for ScanOperation {
             let (_, param_cts) = transpose_expr(rb, body, &bindings, &cotangents)?;
             let param_cts = &param_cts[closure.len()..];
             let mut results = Vec::new();
-            for ((_, info), &ct) in body.inputs().iter().zip(param_cts).take(carry_len) {
+            for (info, &ct) in body_infos.iter().zip(param_cts).take(carry_len) {
                 results.push(instantiate(rb, ct, info));
             }
-            for ((operand, (_, info)), &ct) in xs
+            for ((operand, info), &ct) in xs
                 .iter()
-                .zip(&body.inputs()[carry_len..])
+                .zip(&body_infos[carry_len..])
                 .zip(&param_cts[carry_len..])
             {
                 if operand.is_linear() {

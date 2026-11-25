@@ -170,8 +170,12 @@ pub fn trace_while(
 }
 
 struct Regions<'a> {
-    eqn: &'a Eqn,
+    eqn: Eqn<'a>,
     captures: &'a [Vec<Tensor>],
+}
+pub(super) fn region(eqn: Eqn<'_>, index: usize) -> io::Result<Expr<'_>> {
+    let region = eqn.subexprs().nth(index);
+    Ok(region.ok_or_else(|| invalid("missing region"))?.expr())
 }
 impl Regions<'_> {
     fn emit(&self, index: usize, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
@@ -180,7 +184,7 @@ impl Regions<'_> {
             .chain(args)
             .map(Tensor::shallow_clone)
             .collect::<Vec<_>>();
-        emit_results(self.eqn.subexprs()[index].expr(), &params)
+        emit_results(region(self.eqn, index)?, &params)
     }
     fn count(&self) -> usize {
         self.eqn.outputs().len()
@@ -249,7 +253,7 @@ impl Regions<'_> {
 macro_rules! region_op {
     ($ty:ty,$method:ident) => {
         impl TorchLowering for $ty {
-            fn lower_torch(&self, e: &Eqn, x: &[Tensor]) -> io::Result<Vec<Tensor>> {
+            fn lower_torch(&self, e: Eqn<'_>, x: &[Tensor]) -> io::Result<Vec<Tensor>> {
                 self.lower_torch_regions(
                     e,
                     x,
@@ -260,7 +264,7 @@ macro_rules! region_op {
             }
             fn lower_torch_regions(
                 &self,
-                e: &Eqn,
+                e: Eqn<'_>,
                 x: &[Tensor],
                 captures: &[Vec<Tensor>],
             ) -> io::Result<Vec<Tensor>> {

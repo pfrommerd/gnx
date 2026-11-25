@@ -1,24 +1,20 @@
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap};
 
-use crate::{Eqn, Expr, Op, SubExpr, Var, VarInfo, VarScope};
+use crate::symbol::symbol_substitution;
+use crate::{
+    EqnSource, Expr, ExprBuilder, LoweringError, Op, SubExprBuilder, Symbol, Var, VarInfo,
+};
 
-/// Incrementally constructs one closed [`Expr`] in its own variable namespace.
+/// Incrementally constructs one closed expression in its own variable
+/// namespace, keeping track of the info of every variable.
 ///
 /// Variables from another expression (including a parent) are never valid
 /// here; pass parent values into nested regions explicitly as captures (see
 /// [`Builder::region`]).
 #[derive(Default)]
 pub struct Builder {
-    symbol_closure: Vec<crate::Symbol>,
-    symbol_inputs: Vec<crate::Symbol>,
-    scope: VarScope,
-    closure: Vec<(Var, VarInfo)>,
-    inputs: Vec<(Var, VarInfo)>,
-    eqns: Vec<Eqn>,
+    expr: ExprBuilder,
     infos: HashMap<Var, VarInfo>,
-    name_hint: Option<Cow<'static, str>>,
 }
 
 impl Builder {
@@ -26,70 +22,49 @@ impl Builder {
         Self::default()
     }
 
-    pub(crate) fn inherit_symbols(&mut self, expr: &Expr) {
-        self.symbol_closure = expr.symbol_closure.clone();
-        self.symbol_inputs = expr.symbol_inputs.clone();
-        self.scope.next_symbol = self
-            .symbol_closure
-            .iter()
-            .chain(&self.symbol_inputs)
-            .map(|s| s.0 + 1)
-            .max()
-            .unwrap_or(0);
-    }
-    pub fn set_name_hint(&mut self, hint: Option<Cow<'static, str>>) {
-        self.name_hint = hint;
+    // Declares the closure symbols of expr, and keeps clear of the
+    // symbols it uses.
+    pub(crate) fn inherit_symbols(&mut self, expr: Expr<'_>) {
+        self.expr.closure_symbols = expr.closure_symbols().to_vec();
+        let symbols = (expr.closure_symbols().iter().copied()).chain(expr.input_symbols());
+        self.expr.scope.reserve([], symbols);
     }
 
-    /// Allocate a variable bound to `info`, reusing the name hint of `like`.
-    pub(crate) fn fresh_like(&mut self, like: Option<Var>, info: VarInfo) -> Var {
-        let var = match like.and_then(|var| var.name_hint) {
-            Some(hint) => self.scope.create_var_with_hint(hint),
-            None => self.scope.create_var(),
-        };
-        self.infos.insert(var, info);
-        var
+    pub fn set_name_hint(&mut self, hint: Option<String>) {
+        self.expr.set_name_hint(hint);
     }
 
     /// Allocate an equation result variable for use with [`Builder::push`].
     pub fn fresh(&mut self, info: VarInfo) -> Var {
-        self.fresh_like(None, info)
+        let var = self.expr.fresh_var();
+        self.infos.insert(var, info);
+        var
     }
 
-    pub fn symbol_closure(&mut self) -> crate::Symbol {
-        let s = self.scope.create_symbol();
-        self.symbol_closure.push(s);
-        s
+    /// Declares a symbol provided by the enclosing expression.
+    pub fn symbol_closure(&mut self) -> Symbol {
+        self.expr.closure_symbol()
     }
-    pub fn symbol_input(&mut self) -> crate::Symbol {
-        let s = self.scope.create_symbol();
-        self.symbol_inputs.push(s);
-        s
+
+    /// Allocates a symbol to be bound by an input: it comes into scope
+    /// once it appears in the info of an input.
+    pub fn symbol_input(&mut self) -> Symbol {
+        self.expr.symbol()
     }
-    fn declares_symbol(&self, s: crate::Symbol) -> bool {
-        self.symbol_closure.contains(&s) || self.symbol_inputs.contains(&s)
+
+    fn declares_symbol(&self, s: Symbol) -> bool {
+        self.expr.declares_symbol(s)
     }
+
     pub fn closure(&mut self, info: VarInfo) -> Var {
         let var = self.fresh(info.clone());
-        self.closure.push((var, info));
+        self.expr.closure_inputs.push((var, info));
         var
     }
 
     pub fn input(&mut self, info: VarInfo) -> Var {
         let var = self.fresh(info.clone());
-        self.inputs.push((var, info));
-        var
-    }
-
-    pub(crate) fn closure_like(&mut self, like: Var, info: VarInfo) -> Var {
-        let var = self.fresh_like(Some(like), info.clone());
-        self.closure.push((var, info));
-        var
-    }
-
-    pub(crate) fn input_like(&mut self, like: Var, info: VarInfo) -> Var {
-        let var = self.fresh_like(Some(like), info.clone());
-        self.inputs.push((var, info));
+        self.expr.inputs.push((var, info));
         var
     }
 
@@ -108,11 +83,13 @@ impl Builder {
     }
 
     pub fn closure_vars(&self) -> Vec<Var> {
-        self.closure.iter().map(|(var, _)| *var).collect()
+        (self.expr.closure_inputs.iter())
+            .map(|(var, _)| *var)
+            .collect()
     }
 
     pub fn input_vars(&self) -> Vec<Var> {
-        self.inputs.iter().map(|(var, _)| *var).collect()
+        self.expr.inputs.iter().map(|(var, _)| *var).collect()
     }
 
     /// Append an equation with fresh result variables.
@@ -121,18 +98,13 @@ impl Builder {
         op: Op,
         inputs: &[Var],
         outputs: impl IntoIterator<Item = VarInfo>,
-        subexprs: Vec<SubExpr>,
+        subexprs: Vec<SubExprBuilder>,
     ) -> Vec<Var> {
         let outputs = outputs
             .into_iter()
             .map(|info| (self.fresh(info.clone()), info))
             .collect();
-        self.push(Eqn::new_with_subexprs(
-            op,
-            subexprs,
-            inputs.to_vec(),
-            outputs,
-        ))
+        self.push(EqnSource::new(op, subexprs, inputs.to_vec(), outputs))
     }
 
     /// Append a single-result equation without regions.
@@ -141,78 +113,69 @@ impl Builder {
     }
 
     /// Append an equation whose results were allocated with [`Builder::fresh`].
-    pub fn push(&mut self, eqn: Eqn) -> Vec<Var> {
-        let outputs = eqn
-            .outputs
-            .iter()
-            .map(|(var, info)| {
+    pub fn push(&mut self, eqn: EqnSource) -> Vec<Var> {
+        for (var, info) in eqn.outputs() {
+            if !var.is_hole() {
                 self.infos.insert(*var, info.clone());
-                *var
-            })
-            .collect();
-        self.eqns.push(eqn);
-        outputs
+            }
+        }
+        self.expr.push(eqn)
     }
 
     /// Copy a region's equations into this builder and return its result variables.
     /// Bind captured symbols explicitly and infer input symbols from operand metadata.
     pub fn inline(
         &mut self,
-        expr: &Expr,
-        symbol_captures: &[crate::Symbol],
+        expr: Expr<'_>,
+        symbol_captures: &[Symbol],
         captures: &[Var],
         inputs: &[Var],
-    ) -> Result<Vec<Var>, crate::LoweringError> {
-        let symbols = crate::symbol_substitution(
-            &expr.symbol_closure,
+    ) -> Result<Vec<Var>, LoweringError> {
+        let formal: Vec<_> = expr.closure_inputs().chain(expr.inputs()).collect();
+        let symbols = symbol_substitution(
+            expr.closure_symbols(),
             symbol_captures,
-            &expr.symbol_inputs,
-            expr.closure
-                .iter()
-                .chain(&expr.inputs)
-                .map(|v| &v.1)
-                .zip(captures.iter().chain(inputs).map(|v| self.info(*v))),
+            &expr.input_symbols(),
+            (formal.iter().map(|param| param.info().symbols()))
+                .zip((captures.iter().chain(inputs)).map(|v| self.info(*v).symbols())),
             |s| self.declares_symbol(s),
         )?;
-        if captures.len() != expr.closure.len() || inputs.len() != expr.inputs.len() {
-            return Err(crate::LoweringError::CallArity);
+        if captures.len() != expr.closure_inputs().len() || inputs.len() != expr.inputs().len() {
+            return Err(LoweringError::CallArity);
         }
         expr.check()?;
-        let mut map: HashMap<Var, Var> = expr
-            .closure
-            .iter()
-            .chain(&expr.inputs)
-            .map(|(var, _)| *var)
+        let mut map: HashMap<Var, Var> = (formal.iter().map(|param| param.var()))
             .zip(captures.iter().chain(inputs).copied())
             .collect();
-        for eqn in &expr.eqns {
+        for eqn in expr.eqns() {
             let outputs = eqn
-                .outputs
-                .iter()
-                .map(|(var, info)| {
-                    let info = info.remap_symbols(|s| symbols[&s]);
-                    let new = self.fresh_like(Some(*var), info.clone());
-                    map.insert(*var, new);
+                .outputs()
+                .map(|param| {
+                    let info = param.info_ref().to_owned().remap_symbols(|s| symbols[&s]);
+                    if param.var().is_hole() {
+                        return (Var::hole(), info);
+                    }
+                    let new = self.fresh(info.clone());
+                    map.insert(param.var(), new);
                     (new, info)
                 })
                 .collect();
-            let eqn = Eqn::new_with_subexprs(
-                eqn.op.clone(),
-                eqn.subexprs
-                    .iter()
-                    .map(|sub| {
-                        SubExpr::new(sub.expr.clone(), rename(&map, &sub.captures))
-                            .with_symbol_captures(
-                                sub.symbol_captures.iter().map(|s| symbols[s]).collect(),
-                            )
-                    })
-                    .collect(),
-                rename(&map, &eqn.inputs),
+            let subexprs = eqn
+                .subexprs()
+                .map(|sub| {
+                    SubExprBuilder::new(sub.to_ref())
+                        .with_vars(rename(&map, sub.provided_vars()))
+                        .with_symbols(sub.provided_symbols().iter().map(|s| symbols[s]))
+                })
+                .collect();
+            self.push(EqnSource::new(
+                eqn.op().to_owned(),
+                subexprs,
+                rename(&map, eqn.inputs()),
                 outputs,
-            );
-            self.push(eqn);
+            ));
         }
-        Ok(rename(&map, &expr.outputs))
+        Ok(rename(&map, expr.outputs()))
     }
 
     /// Build a closed child region. `build` receives the child's closure
@@ -222,24 +185,25 @@ impl Builder {
         captures: &[Var],
         inputs: &[VarInfo],
         build: impl FnOnce(&mut Builder, &[Var], &[Var]) -> Result<Vec<Var>, E>,
-    ) -> Result<SubExpr, E> {
+    ) -> Result<SubExprBuilder, E> {
         let mut child = Builder::new();
         let mut symbol_captures = Vec::new();
-        let mut bound = std::collections::BTreeSet::new();
-        for &s in inputs.iter().flat_map(VarInfo::symbols) {
+        let mut bound = BTreeSet::new();
+        // The inputs of the child bind the symbols in their infos.
+        for &s in inputs.iter().flat_map(|info| info.symbols()) {
             if bound.insert(s) {
                 assert!(self.declares_symbol(s), "undeclared input symbol");
-                child.symbol_inputs.push(s);
             }
         }
         for &s in captures.iter().flat_map(|v| self.info(*v).symbols()) {
             if bound.insert(s) {
                 assert!(self.declares_symbol(s), "undeclared capture symbol");
-                child.symbol_closure.push(s);
+                child.expr.closure_symbols.push(s);
                 symbol_captures.push(s);
             }
         }
-        child.scope.next_symbol = self.scope.next_symbol;
+        // The child refers to symbols of this builder by the same names.
+        child.expr.scope = self.expr.scope.clone();
         let closure: Vec<_> = captures
             .iter()
             .map(|&var| child.closure(self.info(var).clone()))
@@ -252,43 +216,29 @@ impl Builder {
         let mut expr = child.finish(outputs);
         // A result type (or nested attachment) can capture a symbol even when
         // the region has no captured value with that symbol in its metadata.
-        bound.extend(
-            expr.symbol_inputs
-                .iter()
-                .chain(&expr.symbol_closure)
-                .copied(),
-        );
-        let free: Vec<_> = expr
-            .eqns
-            .iter()
+        let free: Vec<_> = (expr.eqns.iter())
             .flat_map(|e| {
-                e.outputs
-                    .iter()
-                    .flat_map(|v| v.1.symbols())
-                    .chain(e.subexprs.iter().flat_map(|r| &r.symbol_captures))
+                (e.outputs().iter().flat_map(|(_, info)| info.symbols()))
+                    .chain(e.subexprs().iter().flat_map(|r| r.provided_symbols()))
             })
             .copied()
             .collect();
         for s in free {
             if bound.insert(s) {
                 assert!(self.declares_symbol(s), "undeclared free symbol");
-                expr.symbol_closure.push(s);
+                expr.closure_symbols.push(s);
                 symbol_captures.push(s);
             }
         }
-        Ok(SubExpr::new(Arc::new(expr), captures.to_vec()).with_symbol_captures(symbol_captures))
+        Ok(SubExprBuilder::new(expr)
+            .with_vars(captures.iter().copied())
+            .with_symbols(symbol_captures))
     }
 
-    pub fn finish(self, outputs: Vec<Var>) -> Expr {
-        Expr {
-            symbol_inputs: self.symbol_inputs,
-            symbol_closure: self.symbol_closure,
-            closure: self.closure,
-            inputs: self.inputs,
-            eqns: self.eqns,
-            outputs,
-            name_hint: self.name_hint,
-        }
+    pub fn finish(self, outputs: Vec<Var>) -> ExprBuilder {
+        let mut expr = self.expr;
+        expr.outputs = outputs;
+        expr
     }
 }
 

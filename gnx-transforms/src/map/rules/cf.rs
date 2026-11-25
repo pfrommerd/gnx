@@ -3,10 +3,8 @@
 //! Once an expression is lowered, private cell state is part of the carry.
 //! New region operations start with a private state count of zero.
 
-use std::sync::Arc;
-
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Expr, SubExpr, Var, register_op_interface};
+use gnx_expr::{Eqn, Expr, ExprBuilder, Ref, SubExprBuilder, Var, register_op_interface};
 
 use crate::cf::{
     CallOperation, CondOperation, ScanOperation, ScanParameters, SwitchOperation, WhileOperation,
@@ -14,7 +12,8 @@ use crate::cf::{
 };
 use crate::map::batch::{BatchRule, Batched, batch_expr, batch_region, materialize};
 use crate::util::{
-    broadcast_in_dim, dims, infos, output_infos, reduce_sum, select, union, with_axis,
+    broadcast_in_dim, dims, infos, output_infos, reduce_sum, select, single_region, union,
+    with_axis,
 };
 use crate::{TransformError, TransformResult};
 
@@ -27,13 +26,13 @@ impl BatchRule for CallOperation {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         captures: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
         // As with JAX's `pjit`, emit a call to the batched body rather than
         // inlining it. Batched operands enter the body on axis 0.
-        let ([sub], [captures]) = (eqn.subexprs(), captures) else {
+        let (Some(sub), [captures]) = (single_region(eqn), captures) else {
             return Err(TransformError::invalid("call takes one body"));
         };
         let operands = inputs
@@ -45,13 +44,13 @@ impl BatchRule for CallOperation {
             .collect::<TransformResult<Vec<_>>>()?;
         let flags: Vec<_> = inputs.iter().map(|value| value.axis.is_some()).collect();
         let (region, outputs) = batch_region(b, size, sub.expr(), captures, &flags, None)?;
-        let region = match sub.expr().name_hint() {
-            Some(name) => SubExpr::new(
-                Arc::new(Expr::clone(region.expr()).with_name_hint(format!("map({name})"))),
-                region.closure().to_vec(),
-            )
-            .with_symbol_captures(region.symbol_captures),
-            None => region,
+        let region = match (sub.expr().name_hint(), region.expr()) {
+            (Some(name), Ref::Internal(expr)) => {
+                SubExprBuilder::new(ExprBuilder::clone(expr).with_name_hint(format!("map({name})")))
+                    .with_vars(region.provided_vars().iter().copied())
+                    .with_symbols(region.provided_symbols().iter().copied())
+            }
+            _ => region,
         };
         let result_infos = output_infos(eqn)
             .iter()
@@ -79,7 +78,7 @@ impl BatchRule for CallOperation {
 fn batch_branches(
     b: &mut Builder,
     size: usize,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     inputs: &[Batched],
     captures: &[Vec<Batched>],
 ) -> TransformResult<Vec<Batched>> {
@@ -94,7 +93,7 @@ fn batch_branches(
         // Evaluate both branches and select per instance.
         let predicate = materialize(b, *selector, size, 0)?;
         let mut branches = Vec::new();
-        for (sub, captures) in eqn.subexprs().iter().zip(captures) {
+        for (sub, captures) in eqn.subexprs().zip(captures) {
             let results = batch_expr(b, size, sub.expr(), captures, operands)?;
             branches.push(
                 results
@@ -127,13 +126,12 @@ fn batch_branches(
         .collect::<TransformResult<Vec<_>>>()?;
     let flags: Vec<_> = operands.iter().map(|value| value.axis.is_some()).collect();
     let mut outputs = vec![false; infos.len()];
-    for (sub, captures) in eqn.subexprs().iter().zip(captures) {
+    for (sub, captures) in eqn.subexprs().zip(captures) {
         let (_, batched) = batch_region(b, size, sub.expr(), captures, &flags, None)?;
         union(&mut outputs, &batched);
     }
     let regions = eqn
         .subexprs()
-        .iter()
         .zip(captures)
         .map(|(sub, captures)| {
             Ok(batch_region(b, size, sub.expr(), captures, &flags, Some(&outputs))?.0)
@@ -170,7 +168,7 @@ macro_rules! branch_rules {
                 &self,
                 b: &mut Builder,
                 size: usize,
-                eqn: &Eqn,
+                eqn: Eqn<'_>,
                 inputs: &[Batched],
                 captures: &[Vec<Batched>],
             ) -> TransformResult<Vec<Batched>> {
@@ -186,11 +184,12 @@ impl BatchRule for WhileOperation {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         captures: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
-        let [predicate, body] = eqn.subexprs() else {
+        let regions: Vec<_> = eqn.subexprs().collect();
+        let [predicate, body] = regions[..] else {
             return Err(TransformError::invalid("while needs a predicate and body"));
         };
         let mut flags: Vec<_> = inputs.iter().map(|value| value.axis.is_some()).collect();
@@ -310,7 +309,7 @@ impl BatchRule for WhileOperation {
 fn mask(
     rb: &mut Builder,
     size: usize,
-    predicate: &Expr,
+    predicate: Expr<'_>,
     captures: &[Batched],
     closure: &[Var],
     params: &[Var],
@@ -335,12 +334,14 @@ impl BatchRule for ScanOperation {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         captures: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
         let (carry_len, _) = ScanParameters::layout(eqn)?;
-        let body = eqn.subexprs()[0].expr();
+        let body = single_region(eqn)
+            .ok_or_else(|| TransformError::invalid("scan needs one body"))?
+            .expr();
         let captures = &captures[0];
         // Stacked inputs keep the scanned axis first; their batch axis goes to
         // 1 so that each slice is batched along axis 0.
@@ -398,7 +399,7 @@ impl BatchRule for ScanOperation {
                 },
             )
             .collect::<TransformResult<Vec<_>>>()?;
-        let results = b.emit(eqn.op().clone(), &args, result_infos, vec![region]);
+        let results = b.emit(eqn.op().to_owned(), &args, result_infos, vec![region]);
         Ok(results
             .into_iter()
             .zip(outputs)

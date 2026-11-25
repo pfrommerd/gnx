@@ -1,7 +1,7 @@
 use gnx_common::{ArrayInfo, DType, Shape};
 use gnx_expr::{
-    Capture, CellTrace, HExpr, InputSpec, Kind, LoweringError, ObjectTracer, Trace, TraceContext,
-    VarInfo, hexpr,
+    Capture, CellTrace, HExpr, HParam, InputSpec, Kind, LoweringError, ObjectTracer, Trace,
+    TraceContext, VarInfo, hexpr,
 };
 use gnx_transforms::cf::{ScanParameters, cond, scan, scan_op, switch, while_loop};
 use gnx_transforms::ops;
@@ -26,20 +26,22 @@ fn region(
     Capture::from_context(guard.context(), &placeholders, &outputs).unwrap()
 }
 
-fn value_only_spec(expr: &HExpr) -> InputSpec {
+fn value_only_spec(expr: HExpr<'_>) -> InputSpec {
     use gnx_expr::InputId;
-    let spec = |params: &[(gnx_expr::Var, Kind, VarInfo)], id: fn(usize) -> InputId| {
+    fn spec<'a>(
+        params: impl Iterator<Item = HParam<'a>>,
+        id: fn(usize) -> InputId,
+    ) -> Vec<(InputId, Kind, VarInfo)> {
         params
-            .iter()
             .enumerate()
-            .map(|(index, (_, kind, info))| {
-                assert!(matches!(kind, Kind::Value));
-                (id(index), *kind, info.clone())
+            .map(|(index, param)| {
+                assert!(matches!(param.kind(), Kind::Value));
+                (id(index), param.kind(), param.info_ref().to_owned())
             })
             .collect()
-    };
+    }
     InputSpec {
-        closure: spec(expr.closure(), InputId::Closure),
+        closure: spec(expr.closure_inputs(), InputId::Closure),
         inputs: spec(expr.inputs(), InputId::Input),
     }
 }
@@ -55,17 +57,19 @@ fn lowering_preserves_hints_on_programs_and_structured_regions() {
         result: &value = cf::cond[yes => ()][no => ()] pred x;
         in (result)
     })
-    .with_name_hint("choose");
+    .with_name_hint("choose")
+    .build()
+    .unwrap();
+    let program = program.view();
     assert_eq!(program.name_hint(), Some("choose"));
-    let lowered = program.lower(&value_only_spec(&program)).unwrap();
-    assert_eq!(lowered.trace_body().name_hint(), Some("choose"));
-    let replay = lowered
-        .trace_body()
-        .lower(&value_only_spec(lowered.trace_body()))
-        .unwrap();
+    let lowered = program.lower(&value_only_spec(program)).unwrap();
+    let trace_body = lowered.trace_body().view();
+    assert_eq!(trace_body.name_hint(), Some("choose"));
+    let replay = trace_body.lower(&value_only_spec(trace_body)).unwrap();
     for expr in [&lowered.expr, &replay.expr] {
+        let expr = expr.view();
         assert_eq!(expr.name_hint(), Some("choose"));
-        let regions = expr.eqns()[0].subexprs();
+        let regions: Vec<_> = expr.eqns().next().unwrap().subexprs().collect();
         assert_eq!(regions[0].expr().name_hint(), Some("yes"));
         assert_eq!(regions[1].expr().name_hint(), Some("no"));
     }
@@ -118,16 +122,17 @@ fn branch_specializes_an_alias_between_an_operand_and_a_capture() {
     assert_eq!(aliased.results().len(), 1);
     assert_eq!(aliased.updates.len(), 1);
     for (program, free_cells) in [(&distinct, 1), (&aliased, 0)] {
-        let eqn = &program.expr.eqns()[0];
+        let eqn = program.expr.view().eqns().next().unwrap();
         assert_eq!(eqn.outputs().len(), 2);
         for branch in eqn.subexprs() {
             assert_eq!(branch.expr().inputs().len(), 2);
-            assert_eq!(branch.closure().len(), free_cells);
+            assert_eq!(branch.provided_vars().len(), free_cells);
         }
     }
-    let true_branch = aliased.expr.eqns()[0].subexprs()[0].expr();
-    let new = true_branch.inputs()[0].0;
-    assert!(true_branch.eqns().is_empty());
+    let eqn = aliased.expr.view().eqns().next().unwrap();
+    let true_branch = eqn.subexprs().next().unwrap().expr();
+    let new = true_branch.inputs().next().unwrap().var();
+    assert_eq!(true_branch.eqns().len(), 0);
     assert_eq!(true_branch.outputs(), &[new, new]);
 }
 
@@ -144,13 +149,13 @@ fn read_only_branch_cells_stay_captures() {
         .expr()
         .lower(&InputSpec::from_args(&[], &inputs))
         .unwrap();
-    let eqn = &lowered.expr.eqns()[0];
+    let eqn = lowered.expr.view().eqns().next().unwrap();
     assert_eq!(eqn.inputs().len(), 1); // selector only
     assert_eq!(eqn.outputs().len(), 1);
     assert!(lowered.updates.is_empty());
     for branch in eqn.subexprs() {
-        assert_eq!(branch.closure().len(), 1);
-        assert!(branch.expr().inputs().is_empty());
+        assert_eq!(branch.provided_vars().len(), 1);
+        assert_eq!(branch.expr().inputs().len(), 0);
     }
 }
 
@@ -185,13 +190,11 @@ fn scan_tracks_hidden_state_separately_and_can_be_lowered_again() {
         .expr()
         .lower(&InputSpec::from_args(&[], &inputs))
         .unwrap();
-    let replay = lowered
-        .trace_body()
-        .lower(&value_only_spec(lowered.trace_body()))
-        .unwrap();
+    let trace_body = lowered.trace_body().view();
+    let replay = trace_body.lower(&value_only_spec(trace_body)).unwrap();
     for program in [&lowered, &replay] {
-        let eqn = &program.expr.eqns()[0];
-        let config = ScanParameters::from_op(eqn.op()).unwrap();
+        let eqn = program.expr.view().eqns().next().unwrap();
+        let config = ScanParameters::from_op_ref(eqn.op()).unwrap();
         assert_eq!(
             (config.carry_len, config.state_len, config.length),
             (1, 1, 0)

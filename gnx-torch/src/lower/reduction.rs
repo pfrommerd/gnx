@@ -6,10 +6,10 @@ use std::io;
 use tch::Tensor;
 
 // GNX checks that the reducer is closed and takes (lhs..., rhs...).
-fn validate(eqn: &Eqn, operands: &[Tensor], initial: &[Tensor], out: &[i64]) -> io::Result<()> {
+fn validate(eqn: Eqn<'_>, operands: &[Tensor], initial: &[Tensor], out: &[i64]) -> io::Result<()> {
     let shape = operands[0].size();
-    for ((x, init), (_, info)) in operands.iter().zip(initial).zip(eqn.outputs()) {
-        let (dims, kind) = layout(metadata(info)?)?;
+    for ((x, init), output) in operands.iter().zip(initial).zip(eqn.outputs()) {
+        let (dims, kind) = layout(&metadata(output.info_ref())?)?;
         if x.size() != shape
             || init.dim() != 0
             || x.kind() != kind
@@ -32,7 +32,12 @@ fn identities(initial: &[Tensor], out: &[i64]) -> io::Result<Vec<Tensor>> {
 
 // Each lane is arranged as [output axes..., reduction axes...]. Fold one
 // row per output position with the same variadic scalar region in both ops.
-fn fold(eqn: &Eqn, lanes: &[Tensor], initial: &[Tensor], out: &[i64]) -> io::Result<Vec<Tensor>> {
+fn fold(
+    eqn: Eqn<'_>,
+    lanes: &[Tensor],
+    initial: &[Tensor],
+    out: &[i64],
+) -> io::Result<Vec<Tensor>> {
     let rows = out
         .iter()
         .try_fold(1i64, |p, &n| p.checked_mul(n))
@@ -42,7 +47,7 @@ fn fold(eqn: &Eqn, lanes: &[Tensor], initial: &[Tensor], out: &[i64]) -> io::Res
         .map(|x| x.f_reshape([rows, -1]))
         .collect::<Result<Vec<_>, _>>()
         .map_err(io::Error::other)?;
-    let body = eqn.subexprs()[0].expr();
+    let body = super::control_flow::region(eqn, 0)?;
     let mut outputs: Vec<Vec<Tensor>> = (0..lanes.len()).map(|_| Vec::new()).collect();
     for row in 0..rows {
         let lanes = matrices
@@ -71,7 +76,7 @@ fn fold(eqn: &Eqn, lanes: &[Tensor], initial: &[Tensor], out: &[i64]) -> io::Res
         .collect()
 }
 impl TorchLowering for ReduceOperation {
-    fn lower_torch(&self, eqn: &Eqn, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, eqn: Eqn<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let (operands, initial) = inputs.split_at(eqn.outputs().len());
         let shape = operands[0].size();
         let reduced = self.axes();
@@ -87,7 +92,7 @@ impl TorchLowering for ReduceOperation {
         if shape.contains(&0) {
             return identities(initial, &out);
         }
-        let perm = axes(&[&kept[..], reduced].concat())?;
+        let perm = axes(&[&kept[..], &reduced[..]].concat())?;
         let lanes = operands
             .iter()
             .map(|x| x.f_permute(&perm))
@@ -97,7 +102,7 @@ impl TorchLowering for ReduceOperation {
     }
 }
 impl TorchLowering for ReduceWindowOperation {
-    fn lower_torch(&self, eqn: &Eqn, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, eqn: Eqn<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let (operands, initial) = inputs.split_at(eqn.outputs().len());
         let shape = operands[0].size();
         let w = self.window();

@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
-use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, Op, Var, VarInfo, VarScope};
+use crate::{
+    HEqnSource, HExprBuilder as HExpr, HExprRef, HInstrSource, HSubExprBuilder, Kind, Op, Var,
+    VarInfo,
+};
 
+// What `hexpr!` expands to calls of: builds a high-level expression whose
+// variables are referred to by name.
 #[doc(hidden)]
 pub struct HExprBuilder<'a> {
     expr: HExpr,
-    scope: VarScope,
     vars: BTreeMap<&'static str, Var>,
     info: Option<VarInfo>,
     outer: Option<&'a mut dyn FnMut(&'static str) -> Option<(Kind, VarInfo)>>,
@@ -15,16 +18,7 @@ pub struct HExprBuilder<'a> {
 impl HExprBuilder<'_> {
     pub fn new(info: Option<VarInfo>) -> Self {
         Self {
-            expr: HExpr {
-                symbol_inputs: vec![],
-                symbol_closure: vec![],
-                closure: vec![],
-                inputs: vec![],
-                instructions: vec![],
-                outputs: vec![],
-                name_hint: None,
-            },
-            scope: VarScope::new(),
+            expr: HExpr::new(),
             vars: BTreeMap::new(),
             info,
             outer: None,
@@ -33,7 +27,7 @@ impl HExprBuilder<'_> {
 
     fn define(&mut self, name: &'static str) -> Var {
         assert!(!self.vars.contains_key(name), "duplicate variable `{name}`");
-        let var = self.scope.create_var_with_hint(name);
+        let var = self.expr.fresh_var();
         self.vars.insert(name, var);
         var
     }
@@ -42,12 +36,12 @@ impl HExprBuilder<'_> {
         if let Some(&var) = self.vars.get(name) {
             return self
                 .expr
-                .definition(&var)
+                .definition(var)
                 .map(|(kind, info)| (var, kind, info.clone()));
         }
         let (kind, info) = (self.outer.as_mut()?)(name)?;
         let var = self.define(name);
-        self.expr.closure.push((var, kind, info.clone()));
+        self.expr.closure_inputs.push((var, kind, info.clone()));
         Some((var, kind, info))
     }
 
@@ -76,7 +70,7 @@ impl HExprBuilder<'_> {
         let kind = if cell { Kind::Cell } else { Kind::Value };
         let var = self.define(name);
         let params = if closure {
-            &mut self.expr.closure
+            &mut self.expr.closure_inputs
         } else {
             &mut self.expr.inputs
         };
@@ -86,7 +80,7 @@ impl HExprBuilder<'_> {
     pub fn create_cell(&mut self, name: &'static str, initial: &'static str) {
         let (initial, info) = self.lookup(initial, false);
         let cell = self.define(name);
-        self.expr.instructions.push(HInstr::CreateCell {
+        self.expr.instrs.push(HInstrSource::CreateCell {
             cell,
             initial,
             info,
@@ -97,8 +91,8 @@ impl HExprBuilder<'_> {
         let (cell, info) = self.lookup(cell, true);
         let output = self.define(name);
         self.expr
-            .instructions
-            .push(HInstr::ReadCell { cell, output, info });
+            .instrs
+            .push(HInstrSource::ReadCell { cell, output, info });
     }
 
     pub fn write_cell(&mut self, cell: &'static str, value: &'static str) {
@@ -106,8 +100,8 @@ impl HExprBuilder<'_> {
         let (value, value_info) = self.lookup(value, false);
         assert_eq!(cell_info, value_info, "cell assignment type mismatch");
         self.expr
-            .instructions
-            .push(HInstr::WriteCell { cell, value });
+            .instrs
+            .push(HInstrSource::WriteCell { cell, value });
     }
 
     pub fn operand(&mut self, name: &'static str) -> Var {
@@ -118,11 +112,14 @@ impl HExprBuilder<'_> {
         self.lookup(name, true).0
     }
 
-    pub fn subexpr(&self, body: impl Into<Arc<HExpr>>, captures: Vec<Var>) -> HSubExpr {
-        HSubExpr::new(body.into(), captures)
+    pub fn subexpr(&self, body: impl Into<HExprRef>, captures: Vec<Var>) -> HSubExprBuilder {
+        HSubExprBuilder::new(body).with_vars(captures)
     }
 
-    pub fn inline_subexpr(&mut self, build: impl FnOnce(HExprBuilder<'_>) -> HExpr) -> HSubExpr {
+    pub fn inline_subexpr(
+        &mut self,
+        build: impl FnOnce(HExprBuilder<'_>) -> HExpr,
+    ) -> HSubExprBuilder {
         let mut child = HExprBuilder::new(self.info.clone());
         let mut captures = Vec::new();
         let mut outer = |name| {
@@ -131,7 +128,7 @@ impl HExprBuilder<'_> {
             Some((kind, info))
         };
         child.outer = Some(&mut outer);
-        HSubExpr::new(Arc::new(build(child)), captures)
+        HSubExprBuilder::new(build(child)).with_vars(captures)
     }
 
     pub fn output(&mut self, name: &'static str) -> (Var, Kind, VarInfo) {
@@ -139,9 +136,9 @@ impl HExprBuilder<'_> {
     }
 
     pub fn typed_output(&mut self, name: &'static str, info: VarInfo) -> (Var, Kind, VarInfo) {
-        // Even an unused equation result needs a fresh SSA variable.
+        // A hole discards the result.
         let var = if name == "_" {
-            self.scope.create_var()
+            Var::hole()
         } else {
             self.define(name)
         };
@@ -153,11 +150,11 @@ impl HExprBuilder<'_> {
         outputs: Vec<(Var, Kind, VarInfo)>,
         op: Op,
         inputs: Vec<Var>,
-        subexprs: Vec<HSubExpr>,
+        subexprs: Vec<HSubExprBuilder>,
     ) {
-        self.expr
-            .instructions
-            .push(HInstr::Apply(HEqn::new(op, subexprs, inputs, outputs)));
+        self.expr.instrs.push(HInstrSource::Apply(HEqnSource::new(
+            op, subexprs, inputs, outputs,
+        )));
     }
 
     pub fn result(&mut self, name: &'static str, cell: bool) -> Var {
@@ -182,7 +179,9 @@ impl HExprBuilder<'_> {
 /// Inline a region with `dialect::op [|| => (outer[:])]` to refer to
 /// an enclosing cell directly. Shared definitions go before `in |...| => { ... }`
 /// and are referenced with `dialect::op [@name{outer[:]}]`. To attach a prebuilt
-/// `HExpr` or `Arc<HExpr>`, use `dialect::op[body => (captures)]`.
+/// expression (an `HExprBuilder`, an `HExprRef` or an `HExprHandle`), use
+/// `dialect::op[body => (captures)]`. The result is an `HExprBuilder`: call
+/// `build()` on it for a root.
 /// Write parameters as `|captured[:]: &info; value: &info| => { ... }` and
 /// return with `in (x)`, `in (x, y)`, or `in ()`. A body with no instructions
 /// can be just the result tuple.
@@ -190,21 +189,25 @@ impl HExprBuilder<'_> {
 /// ```
 /// use gnx_expr::{HInstr, VarInfo, hexpr};
 /// let info = VarInfo::new(0usize);
-/// let body = hexpr!(|captured[:]: &info; value: info| => {
+/// let root = hexpr!(|captured[:]: &info; value: info| => {
 ///     local[:] = value;
 ///     captured[:] <- value;
 ///     result <- captured[:];
 ///     in (result, local[:])
-/// });
-/// assert!(matches!(body.instructions()[0], HInstr::CreateCell { .. }));
-/// assert!(matches!(body.instructions()[1], HInstr::WriteCell { .. }));
-/// assert!(matches!(body.instructions()[2], HInstr::ReadCell { .. }));
+/// })
+/// .build()
+/// .unwrap();
+/// let body = root.view();
+/// let instrs: Vec<_> = body.instrs().collect();
+/// assert!(matches!(instrs[0], HInstr::CreateCell { .. }));
+/// assert!(matches!(instrs[1], HInstr::WriteCell { .. }));
+/// assert!(matches!(instrs[2], HInstr::ReadCell { .. }));
 /// assert_eq!(body.to_string(), concat!(
-///     "|captured[:]: 0; value: 0| => {\n",
-///     "  local[:] = value;\n",
-///     "  captured[:] <- value;\n",
-///     "  result <- captured[:];\n",
-///     "  in (result, local[:])\n}",
+///     "|a[:]: 0; b: 0| => {\n",
+///     "  c[:] = b;\n",
+///     "  a[:] <- b;\n",
+///     "  d <- a[:];\n",
+///     "  in (d, c[:])\n}",
 /// ));
 /// ```
 /// ```compile_fail

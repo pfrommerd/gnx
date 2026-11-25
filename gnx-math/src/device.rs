@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::io;
 
-use gnx_expr::{ConcreteValue, Expr, Value, Var, VarInfo};
+use std::sync::Arc;
+
+use gnx_expr::{ConcreteValue, Expr, ExprBuilder, Param, RootExpr, Value, Var};
 
 use crate::buffer::TransferPolicy;
 
@@ -19,7 +21,7 @@ pub trait Device: Send + Sync {
 
     fn execute(
         &self,
-        expr: Expr,
+        expr: Arc<RootExpr>,
         args: impl IntoIterator<Item = Value>,
         opts: ExecOpts,
     ) -> impl Future<Output = io::Result<Self::Outputs>> + Send;
@@ -41,15 +43,14 @@ enum ResultSlot {
 }
 
 impl ExecutionBoundary {
-    pub fn project(expr: &Expr) -> io::Result<(Option<Expr>, Self)> {
+    pub fn project(expr: Expr<'_>) -> io::Result<(Option<Arc<RootExpr>>, Self)> {
         expr.check()
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
         let parameters: HashMap<_, _> = expr
-            .closure()
-            .iter()
+            .closure_inputs()
             .chain(expr.inputs())
             .enumerate()
-            .map(|(i, (var, _))| (*var, i))
+            .map(|(i, param)| (param.var(), i))
             .collect();
         let mut outputs = Vec::new();
         let mut computed = HashMap::<Var, usize>::new();
@@ -71,29 +72,36 @@ impl ExecutionBoundary {
         } else {
             let mut used: HashSet<_> = outputs.iter().copied().collect();
             let mut eqns = Vec::new();
-            for eqn in expr.eqns().iter().rev() {
-                if eqn.outputs().iter().any(|(var, _)| used.contains(var)) {
+            for eqn in expr.eqns().rev() {
+                if eqn.outputs().any(|output| used.contains(&output.var())) {
                     used.extend(eqn.inputs().iter().copied());
-                    used.extend(eqn.subexprs().iter().flat_map(|sub| sub.closure()).copied());
-                    eqns.push(eqn.clone());
+                    used.extend(eqn.subexprs().flat_map(|sub| sub.provided_vars()).copied());
+                    eqns.push(eqn.to_source());
                 }
             }
             eqns.reverse();
-            let mut pick = |(var, info): &(Var, VarInfo)| {
-                (used.contains(var) || !info.symbols().is_empty()).then(|| {
-                    argument_indices.push(parameters[var]);
-                    (*var, info.clone())
+            let mut pick = |param: Param<'_>| {
+                let var = param.var();
+                (used.contains(&var) || !param.info().symbols().is_empty()).then(|| {
+                    argument_indices.push(parameters[&var]);
+                    (var, param.info_ref().to_owned())
                 })
             };
-            let closure = expr.closure().iter().filter_map(&mut pick).collect();
-            let inputs = expr.inputs().iter().filter_map(&mut pick).collect();
-            let mut program = Expr::new(closure, inputs, eqns, outputs).with_symbols(
-                expr.symbol_closure().to_vec(),
-                expr.symbol_inputs().to_vec(),
+            let closure = expr.closure_inputs().filter_map(&mut pick).collect();
+            let inputs = expr.inputs().filter_map(&mut pick).collect();
+            let mut program = ExprBuilder::from_parts(
+                expr.closure_symbols().to_vec(),
+                closure,
+                inputs,
+                eqns,
+                outputs,
             );
             if let Some(name) = expr.name_hint() {
                 program = program.with_name_hint(name.to_owned());
             }
+            let program = program
+                .build()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
             Some(program)
         };
         Ok((
@@ -106,23 +114,21 @@ impl ExecutionBoundary {
         ))
     }
 
-    pub fn validate_arguments(expr: &Expr, args: &[Value]) -> io::Result<()> {
-        let count = expr.closure().len() + expr.inputs().len();
+    pub fn validate_arguments(expr: Expr<'_>, args: &[Value]) -> io::Result<()> {
+        let count = expr.closure_inputs().len() + expr.inputs().len();
         if args.len() != count {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("expression expects {count} arguments, got {}", args.len()),
             ));
         }
-        for (i, ((_, expected), value)) in expr
-            .closure()
-            .iter()
-            .chain(expr.inputs())
+        for (i, (param, value)) in (expr.closure_inputs().chain(expr.inputs()))
             .zip(args)
             .enumerate()
         {
+            let expected = param.info_ref();
             let actual = value.to_info();
-            if actual != *expected {
+            if expected != actual {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("argument {i}: expected {expected}, got {actual}"),

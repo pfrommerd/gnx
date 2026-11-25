@@ -1,15 +1,14 @@
-
 use futures_executor::block_on;
 use gnx::Eval;
 use gnx_expr::{
-    Capture, Dialect, Eqn, Expr, Invocation, ObjectTracer, Op, Operation, SubExpr, Trace,
-    TraceContext, Value, VarInfo, VarScope,
+    Capture, Eqn, EqnSource, ExprBuilder, Invocation, ObjectTracer, Op, Operation, SubExprBuilder,
+    Trace, TraceContext, Value, VarInfo, VarScope,
 };
 use gnx_math::{
     ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, HostId, LocalAllocations, MemoryLocation,
     Shape, ShardStorage, TransferPolicy, ops::add_op,
 };
-use gnx_transforms::{cond, cf::call_op, scan, switch, while_loop};
+use gnx_transforms::{cf::call_op, cond, scan, switch, while_loop};
 use gnx_xla::{LoweringContext, XlaDevice, XlaLowering, XlaOp, register_xla_lowering};
 
 const COPY: ExecOpts = ExecOpts {
@@ -45,14 +44,30 @@ fn array_arithmetic_broadcasts_and_evaluates_lazily() {
     let device = XlaDevice::cpu().unwrap();
     let a = Array::from_data(floats(&[2, 1], &[-5., 8.]));
     let b = Array::from_data(floats(&[2], &[2., 4.]));
-    let results = vec![&a + &b, a.clone() - &b, &a * b.clone(), a.clone() / b.clone(), a % b];
-    assert!(results.iter().all(|v| v.data().is_none() && v.shape() == &Shape::fixed([2, 2])));
+    let results = vec![
+        &a + &b,
+        a.clone() - &b,
+        &a * b.clone(),
+        a.clone() / b.clone(),
+        a % b,
+    ];
+    assert!(
+        results
+            .iter()
+            .all(|v| v.data().is_none() && v.shape() == Shape::fixed([2, 2]))
+    );
     block_on(device.eval(&results, COPY)).unwrap();
     for (result, expected) in results.iter().zip([
-        [-3., -1., 10., 12.], [-7., -9., 6., 4.], [-10., -20., 16., 32.],
-        [-2.5, -1.25, 4., 2.], [-1., -1., 0., 0.],
+        [-3., -1., 10., 12.],
+        [-7., -9., 6., 4.],
+        [-10., -20., 16., 32.],
+        [-2.5, -1.25, 4., 2.],
+        [-1., -1., 0., 0.],
     ]) {
-        assert_eq!(unpack(&device, &Value::new(result.data().unwrap().clone())), expected);
+        assert_eq!(
+            unpack(&device, &Value::new(result.data().unwrap().clone())),
+            expected
+        );
     }
 }
 
@@ -63,27 +78,36 @@ fn compile_nested_call_reuse_outputs_and_forward_remote_refs() {
     let ty = VarInfo::new(array.clone());
     let mut vars = VarScope::new();
     let [a, b, r, sum] = std::array::from_fn(|_| vars.create_var());
-    let child = Expr::new(
+    let child = ExprBuilder::from_parts(
+        vec![],
         vec![(a, ty.clone())],
         vec![(b, ty.clone())],
-        vec![Eqn::new(add_op(), vec![a, b], vec![(sum, ty.clone())])],
+        vec![EqnSource::new(
+            add_op(),
+            vec![],
+            vec![a, b],
+            vec![(sum, ty.clone())],
+        )],
         vec![sum, sum],
     );
     let [c, d, dead] = std::array::from_fn(|_| vars.create_var());
-    let program = Expr::new(
+    let program = ExprBuilder::from_parts(
+        vec![],
         vec![(a, ty.clone())],
         vec![(b, ty.clone()), (r, ty.clone())],
         vec![
-            Eqn::new_with_subexprs(
+            EqnSource::new(
                 call_op(),
-                vec![SubExpr::new(child.into(), vec![a])],
+                vec![SubExprBuilder::new(child).with_vars([a])],
                 vec![b],
                 vec![(c, ty.clone()), (d, ty.clone())],
             ),
-            Eqn::new(add_op(), vec![r, r], vec![(dead, ty)]),
+            EqnSource::new(add_op(), vec![], vec![r, r], vec![(dead, ty)]),
         ],
         vec![d, r, c, d],
-    );
+    )
+    .build()
+    .unwrap();
     let compiled = device.compile(&program).unwrap();
     let foreign = LocalAllocations::new();
     let reference = foreign.insert(());
@@ -159,33 +183,18 @@ fn region(infos: &[VarInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Capt
     .unwrap()
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct LessThan;
-struct TestDialect;
-impl Dialect for TestDialect {
-    fn name(&self) -> &'static str {
-        "xla_test"
-    }
+gnx_common::unit_operations! {
+    struct LessThan;
 }
-impl std::fmt::Display for LessThan {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
-    }
-}
-
-impl Operation for LessThan {
-    fn name(&self) -> &'static str {
-        "less_than"
-    }
-    fn dialect(&self) -> &'static dyn Dialect {
-        &TestDialect
-    }
+impl Operation for LessThan {}
+gnx_expr::dialect! {
+    dyn Operation, "xla_test" => { "less_than" => LessThan }
 }
 impl XlaLowering for LessThan {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         operands: &[XlaOp],
     ) -> std::io::Result<Vec<XlaOp>> {
         Ok(vec![
@@ -278,14 +287,13 @@ fn generic_reducers_execute_with_mixed_results_and_windows() {
             },
         )
         .unwrap();
-    let mut out = reduction::reduce(
-        &mut b,
-        &[input, input],
-        &[high, low],
-        &[0],
-        combine.expr().clone(),
-    )
-    .unwrap();
+    // The reducer is closed, so it can be stored as a root of its own.
+    let gnx_expr::ExprRef::Internal(combine) = combine.expr().clone() else {
+        unreachable!("a region is built in place")
+    };
+    let combine = (*combine).clone().build().unwrap().handle();
+    let mut out =
+        reduction::reduce(&mut b, &[input, input], &[high, low], &[0], combine.clone()).unwrap();
     let window = reduction::Window {
         dimensions: vec![2],
         strides: vec![1],
@@ -299,12 +307,12 @@ fn generic_reducers_execute_with_mixed_results_and_windows() {
             &[input, input],
             &[high, low],
             window,
-            combine.expr().clone(),
+            combine.clone(),
         )
         .unwrap(),
     );
     let result = device
-        .compile(&b.finish(out))
+        .compile(&b.finish(out).build().unwrap())
         .unwrap()
         .run(&[Value::new(floats(&[5], &[5., 3., 7., 9., 6.]))], COPY)
         .unwrap();
@@ -334,7 +342,7 @@ fn differentiates_and_batches_axis_and_window_reductions() {
         let lhs = combine.input(scalar.clone());
         let rhs = combine.input(scalar.clone());
         let result = combine.emit1(op, &[lhs, rhs], scalar.clone());
-        combine.finish(vec![result]).into()
+        combine.finish(vec![result]).build().unwrap().handle()
     };
     let mut axis_reduce = |op, identity| {
         let initial = b.emit1(identity, &[], scalar.clone());
@@ -352,18 +360,9 @@ fn differentiates_and_batches_axis_and_window_reductions() {
         base_dilation: vec![1],
         window_dilation: vec![1],
     };
-    let windows = reduction::reduce_window(
-        &mut b,
-        &[x],
-        &[initial],
-        window,
-        combiner(add_op()),
-    )
-    .unwrap()[0];
-    let body = SubExpr::new(
-        b.finish(vec![sum, product, min, max, windows]).into(),
-        vec![],
-    );
+    let windows =
+        reduction::reduce_window(&mut b, &[x], &[initial], window, combiner(add_op())).unwrap()[0];
+    let body = SubExprBuilder::new(b.finish(vec![sum, product, min, max, windows]));
 
     let mut b = Builder::new();
     let x = b.input(vector.clone());
@@ -398,7 +397,7 @@ fn differentiates_and_batches_axis_and_window_reductions() {
 
     let device = XlaDevice::cpu().unwrap();
     let output = device
-        .compile(&b.finish(results))
+        .compile(&b.finish(results).build().unwrap())
         .unwrap()
         .run(
             &[
@@ -448,7 +447,7 @@ fn popcount_uses_the_operand_width() {
     let x = builder.input(info.clone());
     let y = builder.emit1(population_count(), &[x], info);
     let result = device
-        .compile(&builder.finish(vec![y]))
+        .compile(&builder.finish(vec![y]).build().unwrap())
         .unwrap()
         .run(
             &[Value::new(host(&[4], DType::I8, vec![255, 128, 13, 0]))],
@@ -473,7 +472,7 @@ fn lapack_factorizations_execute_on_the_local_device() {
     let mut out = builder.emit(lu(), &[x], [matrix, pivot.clone(), pivot], vec![]);
     out.push(builder.emit1(svd(false, false), &[x], singular));
     let result = device
-        .compile(&builder.finish(out))
+        .compile(&builder.finish(out).build().unwrap())
         .unwrap()
         .run(&[Value::new(floats(&[2, 2], &[0., 2., 3., 0.]))], COPY)
         .unwrap();
@@ -511,7 +510,7 @@ fn window_vjp_accumulates_overlapping_winners_and_additive_windows() {
         let left = reducer.input(scalar_info.clone());
         let right = reducer.input(scalar_info.clone());
         let result = reducer.emit1(op, &[left, right], scalar_info.clone());
-        let reducer = reducer.finish(vec![result]);
+        let reducer = reducer.finish(vec![result]).build().unwrap().handle();
 
         let mut body = Builder::new();
         let x = body.input(input_info.clone());
@@ -523,13 +522,12 @@ fn window_vjp_accumulates_overlapping_winners_and_additive_windows() {
             base_dilation: vec![1],
             window_dilation: vec![1],
         };
-        let result =
-            reduction::reduce_window(&mut body, &[x], &[init], window, reducer.into()).unwrap();
+        let result = reduction::reduce_window(&mut body, &[x], &[init], window, reducer).unwrap();
 
         let mut main = Builder::new();
         let x = main.input(input_info.clone());
         let cotangent = main.input(output_info.clone());
-        let region = SubExpr::new(body.finish(result).into(), vec![]);
+        let region = SubExprBuilder::new(body.finish(result));
         let outputs = main.emit(
             gnx_transforms::ops::ad::vjp(&[0], &[0]),
             &[x, cotangent],
@@ -538,7 +536,7 @@ fn window_vjp_accumulates_overlapping_winners_and_additive_windows() {
         );
 
         let outputs = device
-            .compile(&main.finish(outputs))
+            .compile(&main.finish(outputs).build().unwrap())
             .unwrap()
             .run(
                 &[
@@ -597,10 +595,10 @@ fn convolution_vjp_uses_the_forward_window_geometry() {
         gnx_transforms::ops::ad::vjp(&[0, 1], &[0]),
         &[x, k, ct],
         [output, input, kernel],
-        vec![SubExpr::new(body.finish(vec![out]).into(), vec![])],
+        vec![SubExprBuilder::new(body.finish(vec![out]))],
     );
     let result = device
-        .compile(&b.finish(results))
+        .compile(&b.finish(results).build().unwrap())
         .unwrap()
         .run(
             &[
@@ -642,7 +640,7 @@ fn real_fft_and_top_k_return_the_expected_values_and_dtypes() {
     );
     out.push(spectrum);
     let outputs = device
-        .compile(&b.finish(out))
+        .compile(&b.finish(out).build().unwrap())
         .unwrap()
         .run(&[Value::new(floats(&[4], &[1., 2., 3., 4.]))], COPY)
         .unwrap();
@@ -677,7 +675,7 @@ fn sort_treats_signed_zeros_as_ties_and_stably_orders_integer_keys() {
         .flat_map(i32::to_le_bytes)
         .collect();
     let outputs = device
-        .compile(&b.finish(out))
+        .compile(&b.finish(out).build().unwrap())
         .unwrap()
         .run(
             &[
@@ -710,7 +708,7 @@ fn qr_and_cholesky_jvps_run_on_cpu() {
     let l = b.emit1(cholesky(true), &[a], meta.clone());
     let mut results = b.emit(qr(false, false), &[a], [meta.clone(), meta.clone()], vec![]);
     results.insert(0, l);
-    let body = SubExpr::new(b.finish(results).into(), vec![]);
+    let body = SubExprBuilder::new(b.finish(results));
     let mut b = Builder::new();
     let a = b.input(meta.clone());
     let t = b.input(meta.clone());
@@ -721,7 +719,7 @@ fn qr_and_cholesky_jvps_run_on_cpu() {
         vec![body],
     );
     let output = device
-        .compile(&b.finish(out))
+        .compile(&b.finish(out).build().unwrap())
         .unwrap()
         .run(
             &[

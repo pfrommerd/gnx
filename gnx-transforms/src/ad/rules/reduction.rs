@@ -15,32 +15,36 @@ pub trait ReduceJvpRule {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         axes: &[usize],
         inputs: &[Dual],
-        body: &Expr,
+        body: Expr<'_>,
     ) -> TransformResult<Vec<Dual>>;
 }
 
-pub fn reducer_body(eqn: &Eqn) -> TransformResult<&Expr> {
-    let [region] = eqn.subexprs() else {
+pub fn reducer_body<'a>(eqn: Eqn<'a>) -> TransformResult<Expr<'a>> {
+    let mut regions = eqn.subexprs();
+    let (Some(region), None) = (regions.next(), regions.next()) else {
         return Err(TransformError::invalid("expected one reducer region"));
     };
     Ok(region.expr())
 }
 
-pub fn additive_reducer(reducer: &Expr) -> bool {
-    let [eqn] = reducer.eqns() else {
+pub fn additive_reducer(reducer: Expr<'_>) -> bool {
+    let mut eqns = reducer.eqns();
+    let (Some(eqn), None) = (eqns.next(), eqns.next()) else {
         return false;
     };
-    reducer.inputs().len() == 2
-        && eqn.inputs() == [reducer.inputs()[0].0, reducer.inputs()[1].0]
+    let inputs: Vec<Var> = reducer.inputs().map(|param| param.var()).collect();
+    let outputs: Vec<Var> = eqn.outputs().map(|param| param.var()).collect();
+    inputs.len() == 2
+        && eqn.inputs() == inputs
         && eqn.op().downcast_ref::<AddOperation>().is_some()
-        && eqn.outputs().len() == 1
-        && reducer.outputs() == [eqn.outputs()[0].0]
+        && outputs.len() == 1
+        && reducer.outputs() == outputs
 }
 
-pub fn copy_reduction_primal(b: &mut Builder, eqn: &Eqn, inputs: &[Dual]) -> Vec<Var> {
+pub fn copy_reduction_primal(b: &mut Builder, eqn: Eqn<'_>, inputs: &[Dual]) -> Vec<Var> {
     copy_eqn(
         b,
         eqn,
@@ -53,7 +57,7 @@ impl JvpRule for ReduceOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -68,13 +72,13 @@ impl JvpRule for ReduceOperation {
             let primal = copy_reduction_primal(b, eqn, inputs)[0];
             let tangent = match operands[0].tangent {
                 Tangent::Zero => Tangent::Zero,
-                Tangent::Var(tangent) => Tangent::Var(reduce_add(b, tangent, self.axes())?),
+                Tangent::Var(tangent) => Tangent::Var(reduce_add(b, tangent, &self.axes())?),
             };
             return Ok(vec![Dual { primal, tangent }]);
         }
         eqn.op()
             .interface::<dyn ReduceJvpRule>()?
-            .jvp(b, eqn, self.axes(), inputs, reducer)
+            .jvp(b, eqn, &self.axes(), inputs, reducer)
     }
 }
 
@@ -82,7 +86,7 @@ impl TransposeRule for ReduceOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         operands: &[Operand],
         _: &[Vec<Var>],
         cotangents: &[Tangent],
@@ -97,7 +101,7 @@ impl TransposeRule for ReduceOperation {
                 "expected an additive linear reduction",
             ));
         }
-        let mapping = retained_axes(dims(input)?.len(), self.axes());
+        let mapping = retained_axes(dims(input)?.len(), &self.axes());
         let result = b.emit1(broadcast_in_dim_op(&mapping), &[*ct], input.clone());
         Ok(vec![Tangent::Var(result), Tangent::Zero])
     }
@@ -109,7 +113,7 @@ fn retained_axes(rank: usize, reduced: &[usize]) -> Vec<usize> {
 
 deflinear!(ReduceAddOperation, |cx, ct, [input]| {
     let axes = cx.operation::<ReduceAddOperation>()?.axes();
-    let mapping = retained_axes(input.dims()?.len(), axes);
+    let mapping = retained_axes(input.dims()?.len(), &axes);
     Ok(cx.emit(broadcast_in_dim_op(&mapping), &[ct], input.info()))
 });
 

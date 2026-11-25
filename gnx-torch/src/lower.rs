@@ -1,8 +1,8 @@
 use super::{invalid, unsupported};
 use gnx_common::ops::reduction::ReduceAddOperation;
-use gnx_expr::{Eqn, Expr, VarInfo};
+use gnx_expr::{Eqn, Expr, ExprBuilder, VarInfoRef};
 use gnx_math::{
-    ArrayInfo, DType, Dim,
+    ArrayInfo, ArrayInfoData, DType, Dim,
     ops::{
         BroadcastInDimOperation, OnesOperation, ReshapeOperation, TransposeOperation,
         ZerosOperation,
@@ -29,13 +29,13 @@ impl Drop for TraceScope {
 /// Emit traceable, pure tensor operations. A rule may inspect static metadata,
 /// but must not read operand data or mutate its inputs.
 pub trait TorchLowering {
-    fn lower_torch(&self, eqn: &Eqn, inputs: &[Tensor]) -> io::Result<Vec<Tensor>>;
+    fn lower_torch(&self, eqn: Eqn<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>>;
 
     /// Lower an equation with child regions. Each slice holds one region's
     /// captures in closure order; explicit operands are supplied separately.
     fn lower_torch_regions(
         &self,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Tensor],
         _captures: &[Vec<Tensor>],
     ) -> io::Result<Vec<Tensor>> {
@@ -50,9 +50,10 @@ macro_rules! register_torch_lowering {
     };
 }
 
-fn metadata(info: &VarInfo) -> io::Result<&ArrayInfo> {
-    info.downcast()
-        .map_err(|_| unsupported("Torch requires array values"))
+fn metadata(info: VarInfoRef<'_>) -> io::Result<ArrayInfo> {
+    info.downcast::<ArrayInfoData>()
+        .map(ArrayInfoData::to_native)
+        .ok_or_else(|| unsupported("Torch requires array values"))
 }
 
 pub(super) fn layout(info: &ArrayInfo) -> io::Result<(Vec<i64>, Kind)> {
@@ -93,25 +94,24 @@ pub(super) fn check(t: &Tensor, info: &ArrayInfo, device: tch::Device) -> io::Re
     Ok(())
 }
 
-fn emit(body: &Expr, inputs: &[Tensor]) -> io::Result<Tensor> {
+fn emit(body: Expr<'_>, inputs: &[Tensor]) -> io::Result<Tensor> {
     let [output] = emit_results(body, inputs)?
         .try_into()
         .map_err(|_| invalid("expected one region result"))?;
     Ok(output)
 }
 
-fn emit_results(body: &Expr, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
-    if inputs.len() != body.closure().len() + body.inputs().len() {
+fn emit_results(body: Expr<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    if inputs.len() != body.closure_inputs().len() + body.inputs().len() {
         return Err(invalid("region input arity mismatch"));
     }
     let mut values: HashMap<_, _> = body
-        .closure()
-        .iter()
+        .closure_inputs()
         .chain(body.inputs())
         .zip(inputs)
-        .map(|((v, _), t)| (*v, t.shallow_clone()))
+        .map(|(p, t)| (p.var(), t.shallow_clone()))
         .collect();
-    for (i, eqn) in body.eqns().iter().enumerate() {
+    for (i, eqn) in body.eqns().enumerate() {
         let op = eqn.op();
         let rule = op
             .interface::<dyn TorchLowering>()
@@ -123,10 +123,9 @@ fn emit_results(body: &Expr, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
             .collect();
         let captures = eqn
             .subexprs()
-            .iter()
             .map(|region| {
                 region
-                    .closure()
+                    .provided_vars()
                     .iter()
                     .map(|v| values[v].shallow_clone())
                     .collect()
@@ -138,9 +137,9 @@ fn emit_results(body: &Expr, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
         if results.len() != eqn.outputs().len() {
             return Err(invalid(format!("{op}: wrong result count")));
         }
-        for ((v, info), t) in eqn.outputs().iter().zip(results) {
-            check(&t, metadata(info)?, tracing_device())?;
-            values.insert(*v, t);
+        for (p, t) in eqn.outputs().zip(results) {
+            check(&t, &metadata(p.info_ref())?, tracing_device())?;
+            values.insert(p.var(), t);
         }
     }
     Ok(body
@@ -150,14 +149,13 @@ fn emit_results(body: &Expr, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
         .collect())
 }
 
-pub(super) fn trace(expr: &Expr, device: tch::Device) -> io::Result<Vec<(CModule, ArrayInfo)>> {
+pub(super) fn trace(expr: Expr<'_>, device: tch::Device) -> io::Result<Vec<(CModule, ArrayInfo)>> {
     let _scope = TraceScope(TRACE_DEVICE.replace(device));
     let examples = expr
-        .closure()
-        .iter()
+        .closure_inputs()
         .chain(expr.inputs())
-        .map(|(_, info)| {
-            let (dims, kind) = layout(metadata(info)?)?;
+        .map(|p| {
+            let (dims, kind) = layout(&metadata(p.info_ref())?)?;
             Tensor::f_zeros(&dims, (kind, tracing_device())).map_err(io::Error::other)
         })
         .collect::<io::Result<Vec<_>>>()?;
@@ -166,15 +164,20 @@ pub(super) fn trace(expr: &Expr, device: tch::Device) -> io::Result<Vec<(CModule
     expr.outputs()
         .iter()
         .map(|v| {
-            let body = gnx_expr::pass::dce(&Expr::new(
-                expr.closure().to_vec(),
-                expr.inputs().to_vec(),
-                expr.eqns().to_vec(),
+            let params = |p: gnx_expr::Param<'_>| (p.var(), p.info_ref().to_owned());
+            let body = ExprBuilder::from_parts(
+                expr.closure_symbols().to_vec(),
+                expr.closure_inputs().map(params).collect(),
+                expr.inputs().map(params).collect(),
+                expr.eqns().map(|e| e.to_source()).collect(),
                 vec![*v],
-            ));
+            )
+            .build()
+            .map_err(invalid)?;
+            let body = gnx_expr::pass::dce(body.view()).build().map_err(invalid)?;
             let mut error = None;
             let module = CModule::create_by_tracing("Gnx", "forward", &examples, &mut |inputs| {
-                match emit(&body, inputs) {
+                match emit(body.view(), inputs) {
                     Ok(t) => vec![t],
                     // Always return to tch so it can close the active trace.
                     Err(e) => {
@@ -188,17 +191,18 @@ pub(super) fn trace(expr: &Expr, device: tch::Device) -> io::Result<Vec<(CModule
             }
             Ok((
                 module.map_err(io::Error::other)?,
-                metadata(expr.value_info(v).expect("checked output"))?.clone(),
+                metadata(expr.value_info(*v).expect("checked output"))?,
             ))
         })
         .collect()
 }
 
-fn result_layout(eqn: &Eqn) -> io::Result<(Vec<i64>, Kind)> {
-    let [(_, info)] = eqn.outputs() else {
+fn result_layout(eqn: Eqn<'_>) -> io::Result<(Vec<i64>, Kind)> {
+    let mut outputs = eqn.outputs();
+    let (Some(output), None) = (outputs.next(), outputs.next()) else {
         return Err(invalid("expected one result"));
     };
-    layout(metadata(info)?)
+    layout(&metadata(output.info_ref())?)
 }
 fn axes(a: &[usize]) -> io::Result<Vec<i64>> {
     a.iter()
@@ -210,7 +214,7 @@ fn axes(a: &[usize]) -> io::Result<Vec<i64>> {
 macro_rules! rule {
     ($ty:ty, |$op:ident, $eqn:ident, [$($arg:ident),*]| $body:block) => {
         impl TorchLowering for $ty {
-            fn lower_torch(&self, $eqn: &Eqn, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
+            fn lower_torch(&self, $eqn: Eqn<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
                 let $op = self;
                 let [$($arg),*] = inputs else { return Err(invalid("incorrect Torch operand count")) };
                 Ok(vec![$body.map_err(io::Error::other)?])
@@ -249,7 +253,7 @@ rule!(ReshapeOperation, |_op, eqn, [x]| {
     x.f_reshape(result_layout(eqn)?.0)
 });
 rule!(TransposeOperation, |op, _eqn, [x]| {
-    x.f_permute(axes(op.perm())?)
+    x.f_permute(axes(&op.perm())?)
 });
 rule!(BroadcastInDimOperation, |op, eqn, [x]| {
     let (target, _) = result_layout(eqn)?;
@@ -268,7 +272,7 @@ rule!(BroadcastInDimOperation, |op, eqn, [x]| {
     x.f_reshape(shape).and_then(|t| t.f_expand(target, false))
 });
 rule!(ReduceAddOperation, |op, _eqn, [x]| {
-    let dims = axes(op.axes())?;
+    let dims = axes(&op.axes())?;
     if dims.is_empty() {
         return Ok(vec![x.shallow_clone()]);
     }

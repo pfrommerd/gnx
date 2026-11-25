@@ -123,7 +123,7 @@ impl Window<'_> {
     }
 }
 impl TorchLowering for GatherOperation {
-    fn lower_torch(&self, e: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, e: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [x, ix, fill @ ..] = args else {
             return Err(invalid("missing gather input"));
         };
@@ -154,7 +154,7 @@ impl TorchLowering for GatherOperation {
     }
 }
 impl TorchLowering for ScatterOperation {
-    fn lower_torch(&self, e: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, e: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [x, ix, updates] = args else {
             return Err(invalid("expected scatter operands"));
         };
@@ -190,7 +190,7 @@ impl TorchLowering for ScatterOperation {
         let u = updates.f_reshape([-1]).map_err(io::Error::other)?;
         flat = match self.update() {
             ScatterUpdate::Apply => {
-                let body = e.subexprs()[0].expr();
+                let body = super::control_flow::region(e, 0)?;
                 for i in 0..pos.size()[0] {
                     let idx = pos.f_narrow(0, i, 1).map_err(io::Error::other)?;
                     let original = flat

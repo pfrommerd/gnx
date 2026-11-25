@@ -5,18 +5,18 @@ use gnx_common::ops::{
 };
 use gnx_common::{ArrayInfo, DType, Shape, fixed_dims};
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, SubExpr, Var, VarInfo};
+use gnx_expr::{Eqn, ExprHandle, Ref, SubExprBuilder, Var, VarInfo};
 
 use crate::{TransformError, TransformResult};
 
-pub fn array(info: &VarInfo) -> TransformResult<&ArrayInfo> {
-    info.downcast::<ArrayInfo>().map_err(|_| {
+pub fn array(info: &VarInfo) -> TransformResult<ArrayInfo> {
+    ArrayInfo::from_info(info).ok_or_else(|| {
         TransformError::invalid(format!("transformations only support arrays, found {info}"))
     })
 }
 
 pub fn dims(info: &VarInfo) -> TransformResult<Vec<usize>> {
-    Ok(fixed_dims(array(info)?)?)
+    Ok(fixed_dims(&array(info)?)?)
 }
 
 pub fn dtype(info: &VarInfo) -> TransformResult<DType> {
@@ -129,29 +129,49 @@ pub fn broadcast_axis(b: &mut Builder, x: Var, axis: usize, size: usize) -> Tran
 }
 
 /// Re-emit `eqn` unchanged except for its operands and region captures.
-pub fn copy_eqn(b: &mut Builder, eqn: &Eqn, inputs: &[Var], captures: &[Vec<Var>]) -> Vec<Var> {
+pub fn copy_eqn(b: &mut Builder, eqn: Eqn<'_>, inputs: &[Var], captures: &[Vec<Var>]) -> Vec<Var> {
     let subexprs = eqn
         .subexprs()
-        .iter()
         .zip(captures)
         .map(|(sub, captures)| {
-            SubExpr::new(sub.expr().clone(), captures.clone())
-                .with_symbol_captures(sub.symbol_captures.clone())
+            SubExprBuilder::new(sub.to_ref())
+                .with_vars(captures.iter().copied())
+                .with_symbols(sub.provided_symbols().iter().copied())
         })
         .collect();
-    b.emit(
-        eqn.op().clone(),
-        inputs,
-        eqn.outputs().iter().map(|(_, value)| value.clone()),
-        subexprs,
-    )
+    b.emit(eqn.op().to_owned(), inputs, output_infos(eqn), subexprs)
 }
 
-pub fn output_infos(eqn: &Eqn) -> Vec<VarInfo> {
+pub fn output_infos(eqn: Eqn<'_>) -> Vec<VarInfo> {
     eqn.outputs()
-        .iter()
-        .map(|(_, value)| value.clone())
+        .map(|param| param.info_ref().to_owned())
         .collect()
+}
+
+/// The only region of an equation, if it has exactly one.
+pub fn single_region(eqn: Eqn<'_>) -> Option<gnx_expr::SubExpr<'_>> {
+    let mut regions = eqn.subexprs();
+    match (regions.next(), regions.next()) {
+        (Some(region), None) => Some(region),
+        _ => None,
+    }
+}
+
+/// The metadata of the explicit inputs of an expression.
+pub fn input_infos(expr: gnx_expr::Expr<'_>) -> Vec<VarInfo> {
+    expr.inputs()
+        .map(|param| param.info_ref().to_owned())
+        .collect()
+}
+
+/// A readable handle to the body of a region of an equation under
+/// construction. A body that is itself still under construction is built
+/// into a root of its own.
+pub fn region_body(sub: &SubExprBuilder) -> TransformResult<ExprHandle> {
+    Ok(match sub.expr() {
+        Ref::Internal(expr) => gnx_expr::ExprBuilder::clone(expr).build()?.handle(),
+        Ref::External(handle) => handle.clone(),
+    })
 }
 
 /// The metadata of variables bound in `b`.
@@ -175,4 +195,33 @@ pub fn union(lhs: &mut [bool], rhs: &[bool]) -> bool {
 
 pub fn is_inexact(value: &VarInfo) -> bool {
     is_float(value) || matches!(dtype(value), Ok(DType::C64 | DType::C128))
+}
+
+/// The value metadata of the inputs and results of a traced body.
+pub(crate) fn value_signature(
+    body: gnx_expr::HExpr<'_>,
+) -> Result<(Vec<VarInfo>, Vec<VarInfo>), gnx_expr::LoweringError> {
+    Ok((
+        crate::cf::value_infos(body.inputs())?,
+        crate::cf::value_results(body)?,
+    ))
+}
+
+/// The metadata of the inputs and results of the one region of an equation.
+pub(crate) fn region_signature(
+    eqn: Eqn<'_>,
+) -> Result<(Vec<VarInfo>, Vec<VarInfo>), gnx_expr::LoweringError> {
+    use gnx_expr::LoweringError;
+    let body = single_region(eqn)
+        .ok_or(LoweringError::RegionSignature(
+            "transformations take exactly one body",
+        ))?
+        .expr();
+    let outputs = (body.outputs().iter())
+        .map(|&var| {
+            (body.value_info(var).map(|info| info.to_owned()))
+                .ok_or(LoweringError::UndefinedVariable(var))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok((input_infos(body), outputs))
 }

@@ -1,8 +1,7 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use super::Builder;
-use crate::{Eqn, Expr, SubExpr, Var};
+use crate::{EqnSource, Expr, ExprBuilder, SubExprBuilder, Var};
 
 /// Copy `expr` into a fresh namespace, letting `hook` replace equations.
 ///
@@ -11,65 +10,72 @@ use crate::{Eqn, Expr, SubExpr, Var};
 /// are builder variables, its regions are rewritten, and its results are fresh.
 /// Returning `Ok(None)` keeps the equation; `Ok(Some(results))` replaces it
 /// with whatever the hook emitted, one result per original output.
-pub fn rewrite<E, F>(expr: &Expr, hook: &mut F) -> Result<Expr, E>
+pub fn rewrite<E, F>(expr: Expr<'_>, hook: &mut F) -> Result<ExprBuilder, E>
 where
-    F: FnMut(&mut Builder, &Eqn) -> Result<Option<Vec<Var>>, E>,
+    F: FnMut(&mut Builder, &EqnSource) -> Result<Option<Vec<Var>>, E>,
 {
     let mut builder = Builder::new();
     builder.inherit_symbols(expr);
-    builder.set_name_hint(expr.name_hint.clone());
+    builder.set_name_hint(expr.name_hint().map(str::to_owned));
     let mut map = HashMap::new();
-    for (var, info) in &expr.closure {
-        map.insert(*var, builder.closure_like(*var, info.clone()));
+    for param in expr.closure_inputs() {
+        map.insert(param.var(), builder.closure(param.info_ref().to_owned()));
     }
-    for (var, info) in &expr.inputs {
-        map.insert(*var, builder.input_like(*var, info.clone()));
+    for param in expr.inputs() {
+        map.insert(param.var(), builder.input(param.info_ref().to_owned()));
     }
     let lookup = |map: &HashMap<Var, Var>, vars: &[Var]| -> Vec<Var> {
         vars.iter().map(|var| map[var]).collect()
     };
-    for eqn in &expr.eqns {
+    for eqn in expr.eqns() {
         let subexprs = eqn
-            .subexprs
-            .iter()
+            .subexprs()
             .map(|sub| {
-                Ok(SubExpr::new(
-                    Arc::new(rewrite(&sub.expr, hook)?),
-                    lookup(&map, &sub.captures),
-                )
-                .with_symbol_captures(sub.symbol_captures.clone()))
+                Ok(SubExprBuilder::new(rewrite(sub.expr(), hook)?)
+                    .with_vars(lookup(&map, sub.provided_vars()))
+                    .with_symbols(sub.provided_symbols().iter().copied()))
             })
             .collect::<Result<Vec<_>, E>>()?;
         let outputs = eqn
-            .outputs
-            .iter()
-            .map(|(var, info)| (builder.fresh_like(Some(*var), info.clone()), info.clone()))
+            .outputs()
+            .map(|param| {
+                let info = param.info_ref().to_owned();
+                if param.var().is_hole() {
+                    return (Var::hole(), info);
+                }
+                (builder.fresh(info.clone()), info)
+            })
             .collect();
-        let translated =
-            Eqn::new_with_subexprs(eqn.op.clone(), subexprs, lookup(&map, &eqn.inputs), outputs);
+        let translated = EqnSource::new(
+            eqn.op().to_owned(),
+            subexprs,
+            lookup(&map, eqn.inputs()),
+            outputs,
+        );
         let results = match hook(&mut builder, &translated)? {
             Some(results) => {
                 assert_eq!(
                     results.len(),
-                    eqn.outputs.len(),
+                    eqn.outputs().len(),
                     "rewrite of {} returned the wrong number of results",
-                    eqn.op
+                    eqn.op()
                 );
-                for ((_, expected), &var) in eqn.outputs.iter().zip(&results) {
-                    debug_assert_eq!(
-                        builder.info(var),
-                        expected,
+                for (expected, &var) in eqn.outputs().zip(&results) {
+                    debug_assert!(
+                        var.is_hole() || expected.info_ref() == *builder.info(var),
                         "rewrite of {} changed result metadata",
-                        eqn.op
+                        eqn.op()
                     );
                 }
                 results
             }
             None => builder.push(translated),
         };
-        for ((var, _), result) in eqn.outputs.iter().zip(results) {
-            map.insert(*var, result);
+        for (param, result) in eqn.outputs().zip(results) {
+            if !param.var().is_hole() {
+                map.insert(param.var(), result);
+            }
         }
     }
-    Ok(builder.finish(lookup(&map, &expr.outputs)))
+    Ok(builder.finish(lookup(&map, expr.outputs())))
 }

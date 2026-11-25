@@ -9,7 +9,7 @@ use std::task::{Context, Poll, Waker};
 
 use gnx::array::{ArrayInfo, ArrayRef, DType, Shape};
 use gnx::buffer::{DataHandle, HostBuffer};
-use gnx::expr::{Expr, Invocation, Value};
+use gnx::expr::{Invocation, RootExpr, Value};
 use gnx::{Array, Device, Eval, EvalError, EvalPlanError, ExecOpts, Graph};
 
 fn array(n: i32) -> Array {
@@ -57,10 +57,11 @@ impl Device for MockDevice {
 
     fn execute(
         &self,
-        expr: Expr,
+        expr: std::sync::Arc<RootExpr>,
         args: impl IntoIterator<Item = Value>,
         _: ExecOpts,
     ) -> impl Future<Output = io::Result<Self::Outputs>> + Send {
+        let expr = expr.view();
         self.calls
             .lock()
             .unwrap()
@@ -69,18 +70,17 @@ impl Device for MockDevice {
             return ready(Err(io::Error::other("device refused to execute")));
         }
         let mut values: BTreeMap<_, _> = expr
-            .closure()
-            .iter()
+            .closure_inputs()
             .chain(expr.inputs())
             .zip(args)
-            .map(|((var, _), value)| (*var, number(value.downcast::<DataHandle>().unwrap())))
+            .map(|(param, value)| (param.var(), number(value.downcast::<DataHandle>().unwrap())))
             .collect();
         for eqn in expr.eqns() {
             let [left, right] = eqn.inputs() else {
                 panic!("expected two add operands");
             };
             let result = values[left] + values[right];
-            values.insert(eqn.outputs()[0].0, result);
+            values.insert(eqn.outputs().next().unwrap().var(), result);
         }
         let outputs = expr
             .outputs()

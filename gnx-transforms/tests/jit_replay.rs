@@ -1,18 +1,14 @@
+use gnx_common::{Array, ArrayInfo, ArrayRef, DType, Shape};
 use gnx_expr::{
     Capture, CellKey, HInstr, Invocation, ObjectTracer, TraceContext, Tracer, TracerKey, VarInfo,
 };
-use gnx_common::{Array, ArrayInfo, ArrayRef, DType, Shape};
 use gnx_transforms::{Callable, TryCallable, jit};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 
 fn array() -> Array {
-    Tracer::<Array>::placeholder(VarInfo::new(ArrayInfo::new(
-        Shape::fixed([4]),
-        DType::F32,
-    )))
-    .into()
+    Tracer::<Array>::placeholder(VarInfo::new(ArrayInfo::new(Shape::fixed([4]), DType::F32))).into()
 }
 fn same(a: &Array, b: &Array) {
     assert_eq!(
@@ -86,8 +82,9 @@ fn inspecting_a_trace_populates_the_cache_without_replaying_writes() {
     );
     assert_eq!(function.name_hint(), Some("write_once"));
     let trace = function.try_trace((target.clone(), array())).unwrap();
-    assert_eq!(trace.name_hint(), function.name_hint());
-    assert!(matches!(trace.instructions(), [HInstr::WriteCell { .. }]));
+    assert_eq!(trace.view().name_hint(), function.name_hint());
+    let instrs: Vec<_> = trace.view().instrs().collect();
+    assert!(matches!(instrs[..], [HInstr::WriteCell { .. }]));
     same(&initial, &target.get());
     function.try_invoke((target, array())).unwrap();
     let again = function
@@ -116,12 +113,16 @@ fn jit_attribute_names_shared_bodies_and_the_printer_hoists_large_ones() {
     let c = generic_step::<1>(b.clone());
     let a_call = call(&a);
     let b_call = call(&b);
+    assert_eq!(a_call.regions()[0].body, b_call.regions()[0].body);
     assert!(Arc::ptr_eq(
-        &a_call.regions()[0].body,
-        &b_call.regions()[0].body
+        a_call.regions()[0].body.root(),
+        b_call.regions()[0].body.root()
     ));
-    assert_eq!(a_call.regions()[0].body.name_hint(), Some("step"));
-    assert_eq!(call(&c).regions()[0].body.name_hint(), Some("generic_step"));
+    assert_eq!(a_call.regions()[0].body.view().name_hint(), Some("step"));
+    assert_eq!(
+        call(&c).regions()[0].body.view().name_hint(),
+        Some("generic_step")
+    );
     let capture = Capture::from_context(
         guard.context(),
         &[x.into_tracer().into()],
@@ -139,8 +140,9 @@ fn jit_attribute_names_shared_bodies_and_the_printer_hoists_large_ones() {
             capture.inputs(),
         ))
         .unwrap();
+    let eqn = lowered.expr.view().eqns().next().unwrap();
     assert_eq!(
-        lowered.expr.eqns()[0].subexprs()[0].expr().name_hint(),
+        eqn.subexprs().next().unwrap().expr().name_hint(),
         Some("step")
     );
 }
@@ -229,14 +231,14 @@ fn nested_jit_records_a_high_level_call_in_the_enclosing_capture() {
         &[ObjectTracer::Ref(result.into_tracer().into_trace_ref())],
     )
     .unwrap();
-    assert_eq!(capture.expr().instructions().len(), 1);
-    let eqn = capture.expr().instructions()[0].as_apply().unwrap();
-    assert_eq!(eqn.op(), &gnx_transforms::cf::call_op());
-    let nested = eqn.subexprs()[0].expr().instructions()[0]
-        .as_apply()
-        .unwrap();
+    assert_eq!(capture.expr().instrs().len(), 1);
+    let eqn = capture.expr().instrs().next().unwrap().as_apply().unwrap();
+    assert_eq!(eqn.op(), gnx_transforms::cf::call_op());
+    let body = eqn.subexprs().next().unwrap().expr();
+    let nested = body.instrs().next().unwrap().as_apply().unwrap();
+    let nested_body = nested.subexprs().next().unwrap().expr();
     assert!(matches!(
-        nested.subexprs()[0].expr().instructions()[0],
+        nested_body.instrs().next().unwrap(),
         HInstr::WriteCell { .. }
     ));
 }
@@ -270,38 +272,20 @@ fn nested_call_resolves_capture_and_input_aliases_when_the_caller_lowers() {
     };
     let distinct = lower([a.clone(), b, x.clone()]);
     let aliased = lower([a.clone(), a, x]);
-    assert_eq!(distinct.expr.outputs()[0], distinct.expr.inputs()[1].0);
-    assert_eq!(aliased.expr.outputs()[0], aliased.expr.inputs()[1].0);
+    for program in [&distinct, &aliased] {
+        let expr = program.expr.view();
+        assert_eq!(expr.outputs()[0], expr.inputs().nth(1).unwrap().var());
+    }
     assert_eq!(distinct.inputs[1], gnx_expr::InputId::Input(1));
     assert_eq!(aliased.inputs[1], gnx_expr::InputId::Input(2));
 }
 
-struct TestDialect;
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct TestOperation;
-impl gnx_expr::Dialect for TestDialect {
-    fn name(&self) -> &'static str {
-        "jit_test"
-    }
+gnx_common::unit_operations! {
+    struct TestOperation;
 }
-impl std::fmt::Display for TestOperation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}::{}",
-            gnx_expr::Operation::dialect(self).name(),
-            gnx_expr::Operation::name(self)
-        )
-    }
-}
-
-impl gnx_expr::Operation for TestOperation {
-    fn name(&self) -> &'static str {
-        "identity"
-    }
-    fn dialect(&self) -> &'static dyn gnx_expr::Dialect {
-        &TestDialect
-    }
+impl gnx_expr::Operation for TestOperation {}
+gnx_expr::dialect! {
+    dyn gnx_expr::Operation, "jit_test" => { "identity" => TestOperation }
 }
 
 fn compute(value: Array) -> Array {
@@ -320,10 +304,10 @@ fn compute(value: Array) -> Array {
 struct Call(Arc<Invocation>);
 
 impl std::ops::Deref for Call {
-    type Target = gnx_expr::DeferredApply;
+    type Target = gnx_expr::Apply;
 
     fn deref(&self) -> &Self::Target {
-        let Invocation::DeferredApply(call) = self.0.as_ref() else {
+        let Invocation::Apply(call) = self.0.as_ref() else {
             panic!("expected a high-level call")
         };
         assert_eq!(call.op(), &gnx_transforms::cf::call_op());
@@ -335,7 +319,7 @@ fn call(value: &Array) -> Call {
     Call(value.tracer().trace_ref().producer_with_index().unwrap().0)
 }
 
-fn argument(call: &gnx_expr::DeferredApply, index: usize) -> Array {
+fn argument(call: &gnx_expr::Apply, index: usize) -> Array {
     let ObjectTracer::Ref(value) = &call.inputs()[index] else {
         panic!("expected value argument")
     };
@@ -401,7 +385,10 @@ fn threads_share_a_cold_trace_across_alias_patterns() {
             .collect::<Vec<_>>()
     });
     assert_eq!(traces.load(Ordering::Relaxed), 1);
-    assert!(bodies.iter().all(|body| Arc::ptr_eq(body, &bodies[0])));
+    assert!(
+        (bodies.iter())
+            .all(|body| Arc::ptr_eq(body.root(), bodies[0].root()) && body == &bodies[0])
+    );
 }
 
 #[test]
@@ -425,9 +412,10 @@ fn high_level_call_preserves_aliases_between_captures_and_inputs() {
         cell_key(&second_call.regions()[0].captures.as_slice()[0]),
         cell_key(&second_call.inputs()[0])
     );
+    assert_eq!(first_call.regions()[0].body, second_call.regions()[0].body);
     assert!(Arc::ptr_eq(
-        &first_call.regions()[0].body,
-        &second_call.regions()[0].body
+        first_call.regions()[0].body.root(),
+        second_call.regions()[0].body.root()
     ));
     assert_eq!(calls.get(), 1);
 }
@@ -448,10 +436,9 @@ fn nested_jit_threads_local_cell_state_and_retains_update_only_calls() {
     assert_same_call(&first.get(), &local_value);
     assert_same_call(&external.get(), &local_value);
     let local_call = call(&local_value);
-    let body = &local_call.regions()[0].body;
+    let body = local_call.regions()[0].body.view();
     assert_eq!(
-        body.instructions()
-            .iter()
+        body.instrs()
             .filter(|instr| instr.as_apply().is_some())
             .count(),
         2
@@ -461,11 +448,8 @@ fn nested_jit_threads_local_cell_state_and_retains_update_only_calls() {
 #[test]
 fn trace_cache_distinguishes_static_fields_and_ordered_leaf_metadata() {
     fn sized(n: usize) -> Array {
-        Tracer::<Array>::placeholder(VarInfo::new(ArrayInfo::new(
-            Shape::fixed([n]),
-            DType::F32,
-        )))
-        .into()
+        Tracer::<Array>::placeholder(VarInfo::new(ArrayInfo::new(Shape::fixed([n]), DType::F32)))
+            .into()
     }
     let calls = Cell::new(0);
     let f = jit(|a: Array, b: Array, label: u32| {
@@ -474,8 +458,8 @@ fn trace_cache_distinguishes_static_fields_and_ordered_leaf_metadata() {
     });
     let invoke = |a, b, label| {
         let (out_a, out_b, out_label) = f.invoke((sized(a), sized(b), label));
-        assert_eq!(out_a.shape(), &Shape::fixed([a]));
-        assert_eq!(out_b.shape(), &Shape::fixed([b]));
+        assert_eq!(out_a.shape(), Shape::fixed([a]));
+        assert_eq!(out_b.shape(), Shape::fixed([b]));
         assert_eq!(out_label, label);
     };
     invoke(2, 3, 1);
@@ -549,9 +533,10 @@ fn operation_results_are_replayed_with_actual_inputs_not_placeholders() {
         let trace = result.tracer().trace_ref();
         assert!(trace.context_id().is_current());
         let invocation = call(&result);
-        let body = &invocation.regions()[0].body;
+        let body = invocation.regions()[0].body.view();
+        let first = body.instrs().next().unwrap();
         assert_eq!(
-            body.instructions()[0].as_apply().unwrap().op().to_string(),
+            first.as_apply().unwrap().op().to_string(),
             "jit_test::identity"
         );
         let [ObjectTracer::Ref(captured)] = invocation.regions()[0].captures.as_slice() else {
@@ -585,26 +570,14 @@ fn nested_computation_calls_keep_both_function_boundaries() {
     let outer = jit(|value: Array| inner.invoke((value,)));
     let result = outer.invoke((input.clone(),));
     let outer_call = call(&result);
-    let outer_body = &outer_call.regions()[0].body;
-    assert_eq!(outer_body.instructions().len(), 1);
-    assert_eq!(
-        outer_body.instructions()[0]
-            .as_apply()
-            .unwrap()
-            .op()
-            .to_string(),
-        "cf::call"
-    );
-    let inner_body = outer_body.instructions()[0].as_apply().unwrap().subexprs()[0].expr();
-    assert_eq!(inner_body.instructions().len(), 1);
-    assert_eq!(
-        inner_body.instructions()[0]
-            .as_apply()
-            .unwrap()
-            .op()
-            .to_string(),
-        "jit_test::identity"
-    );
+    let outer_body = outer_call.regions()[0].body.view();
+    assert_eq!(outer_body.instrs().len(), 1);
+    let outer_eqn = outer_body.instrs().next().unwrap().as_apply().unwrap();
+    assert_eq!(outer_eqn.op().to_string(), "cf::call");
+    let inner_body = outer_eqn.subexprs().next().unwrap().expr();
+    assert_eq!(inner_body.instrs().len(), 1);
+    let inner_eqn = inner_body.instrs().next().unwrap().as_apply().unwrap();
+    assert_eq!(inner_eqn.op().to_string(), "jit_test::identity");
     same(&argument(&outer_call, 0), &input);
 }
 
@@ -631,8 +604,8 @@ fn update_only_computations_retain_the_call_and_update_the_original_cell() {
     assert!(
         update.regions()[0]
             .body
-            .instructions()
-            .iter()
+            .view()
+            .instrs()
             .any(|instr| matches!(instr, HInstr::WriteCell { .. }))
     );
     same(&argument(&update, 1), &input);

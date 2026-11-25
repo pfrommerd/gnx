@@ -1,6 +1,11 @@
-use super::{Dialect, Eqn, Op, Operation, Result, arity, fmt, result_rank, signature};
+use super::{Op, arity, result_rank, signature};
+use gnx_common::ops::{indices, stored_indices};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Portable,
+)]
+#[rkyv(as = Self)]
+#[repr(u8)]
 pub enum FftKind {
     Fft,
     Ifft,
@@ -8,17 +13,18 @@ pub enum FftKind {
     Irfft,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct FftOperation {
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = FftOperation)]
+pub struct Fft {
     kind: FftKind,
-    lengths: Vec<usize>,
+    lengths: Vec<u32>,
 }
 impl FftOperation {
     pub fn kind(&self) -> FftKind {
         self.kind
     }
-    pub fn lengths(&self) -> &[usize] {
-        &self.lengths
+    pub fn lengths(&self) -> Vec<usize> {
+        indices(&self.lengths)
     }
 }
 gnx_common::array_operation!(
@@ -34,8 +40,8 @@ gnx_common::array_operation!(
     lengths
 );
 pub fn fft(kind: FftKind, lengths: &[usize]) -> Op {
-    Op::new(FftOperation {
+    Op::new(Fft {
         kind,
-        lengths: lengths.to_vec(),
+        lengths: stored_indices(lengths),
     })
 }

@@ -9,7 +9,7 @@ impl XlaLowering for CumulativeOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let x = unary("cumulative", inputs)?;
@@ -95,7 +95,7 @@ impl XlaLowering for SortOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let cb = XlaBuilder::new("sort_comparator");
@@ -149,7 +149,7 @@ impl XlaLowering for TopKOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let result = native(unary("top_k", inputs)?.top_k(indices(&[self.k()])?[0], true))?;
@@ -161,7 +161,7 @@ impl XlaLowering for ApproxTopKOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let params = indices(&[self.k(), self.axis()])?;

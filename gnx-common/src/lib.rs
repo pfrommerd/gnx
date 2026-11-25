@@ -1,5 +1,5 @@
-pub mod array;
 mod arithmetic;
+pub mod array;
 pub mod buffer;
 mod context;
 pub mod des;
@@ -16,3 +16,7 @@ pub use des::*;
 pub use error::Error;
 pub use path::{GraphId, Key, KeyRef, Path};
 pub use ser::*;
+
+// Used by the exported macros
+#[doc(hidden)]
+pub use {gnx_expr, rkyv};

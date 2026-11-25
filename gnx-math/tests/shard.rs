@@ -1,4 +1,4 @@
-use gnx_expr::{Eqn, Expr, VarInfo, VarScope};
+use gnx_expr::{EqnSource, ExprBuilder, VarInfo, VarScope};
 use gnx_math::{
     ArrayInfo, DType, Shape,
     shard::{Sharding, constraint_op, replicate_op},
@@ -24,17 +24,21 @@ fn sharding_is_a_checked_metadata_preserving_ssa_annotation() {
     assert!(Sharding::new(vec![vec!["invalid\"axis".into()]]).is_err());
 
     let expr = |spec| {
-        Expr::new(
+        ExprBuilder::from_parts(
+            vec![],
             vec![],
             vec![(input, info.clone())],
-            vec![Eqn::new(
+            vec![EqnSource::new(
                 constraint_op(spec),
+                vec![],
                 vec![input],
                 vec![(output, info.clone())],
             )],
             vec![output],
         )
+        .build()
+        .unwrap()
     };
-    assert!(expr(spec).check().is_ok());
-    assert!(expr(Sharding::replicated(1)).check().is_err());
+    assert!(expr(spec).view().check().is_ok());
+    assert!(expr(Sharding::replicated(1)).view().check().is_err());
 }

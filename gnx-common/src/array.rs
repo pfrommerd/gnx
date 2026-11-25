@@ -5,7 +5,9 @@ use gnx_expr::{CellTracer, ConcreteValue, LoweringError, Trace, Traceable, Trace
 
 pub use crate::buffer::DataHandle;
 
-#[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(
+    Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, rkyv::Archive, rkyv::Serialize,
+)]
 pub enum Dim {
     Fixed(usize),
     // unknown size, can be converted
@@ -28,7 +30,7 @@ impl Display for Dim {
     }
 }
 
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, rkyv::Archive, rkyv::Serialize)]
 pub struct Shape(Vec<Dim>);
 
 impl Shape {
@@ -68,6 +70,9 @@ impl std::fmt::Debug for Shape {
 
 #[rustfmt::skip]
 #[derive(Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Portable)]
+#[rkyv(as = Self)]
+#[repr(u8)]
 pub enum DType {
     Bool,
     U8, U16, U32, U64,
@@ -250,13 +255,60 @@ impl std::fmt::Display for DType {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+/// The metadata of an array: its shape and element type. This is the form
+/// it is constructed and inspected in; stored in an expression it is an
+/// [`ArrayInfoData`].
+#[derive(Clone, Debug, Hash, PartialEq, Eq, rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = ArrayInfoData)]
 pub struct ArrayInfo {
     shape: Shape,
     dtype: DType,
 }
 
-impl gnx_expr::Info for ArrayInfo {}
+impl ArrayInfoData {
+    pub fn shape(&self) -> Shape {
+        (self.shape.0.iter())
+            .map(|dim| match dim {
+                ArchivedDim::Fixed(n) => Dim::Fixed(n.to_native() as usize),
+                ArchivedDim::Dynamic => Dim::Dynamic,
+                ArchivedDim::Jagged(i) => Dim::Jagged(i.to_native() as usize),
+            })
+            .collect()
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    /// The metadata in the form it is constructed and inspected in.
+    pub fn to_native(&self) -> ArrayInfo {
+        ArrayInfo::new(self.shape(), self.dtype())
+    }
+}
+
+impl gnx_expr::Info for ArrayInfoData {
+    fn display(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.to_native(), f)
+    }
+}
+
+gnx_expr::dialect! {
+    dyn gnx_expr::Info, "array" => { "info" => ArrayInfoData }
+}
+
+impl Display for ArrayInfoData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.to_native(), f)
+    }
+}
+
+impl ArrayInfo {
+    /// The array metadata `info` holds, if that is what it is.
+    pub fn from_info(info: &gnx_expr::VarInfo) -> Option<Self> {
+        info.downcast::<ArrayInfoData>()
+            .map(ArrayInfoData::to_native)
+    }
+}
 
 impl ArrayInfo {
     pub fn new(shape: Shape, dtype: DType) -> Self {
@@ -322,7 +374,7 @@ impl From<Tracer<Array>> for Array {
 
 impl Traceable for Array {
     type Concrete = DataHandle;
-    type Info = ArrayInfo;
+    type Info = ArrayInfoData;
 }
 
 impl Array {
@@ -339,10 +391,10 @@ impl Array {
     }
 
     pub fn dtype(&self) -> DType {
-        self.0.info().dtype
+        self.0.info().dtype()
     }
-    pub fn shape(&self) -> &Shape {
-        &self.0.info().shape
+    pub fn shape(&self) -> Shape {
+        self.0.info().shape()
     }
 
     /// Reshape to fixed dimensions while preserving element order and dtype.
@@ -390,11 +442,11 @@ impl ArrayRef {
     }
 
     pub fn dtype(&self) -> DType {
-        self.0.get().info().dtype
+        self.0.get().info().dtype()
     }
 
     pub fn shape(&self) -> Shape {
-        self.0.get().info().shape.clone()
+        self.0.get().info().shape()
     }
 
     pub fn tracer(&self) -> &CellTracer<Array> {

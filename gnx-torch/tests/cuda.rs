@@ -33,7 +33,7 @@ fn cuda_import_compile_replay_and_readback() {
     let x = b.input(ty.clone());
     let idx = b.emit1(iota(0), &[], ty.clone());
     let result = b.emit1(add_op(), &[x, idx], ty);
-    let p = d.compile(&b.finish(vec![result])).unwrap();
+    let p = d.compile(&b.finish(vec![result]).build().unwrap()).unwrap();
     let input = DataHandle::new(
         HostBuffer::copy_from_slice(
             info,

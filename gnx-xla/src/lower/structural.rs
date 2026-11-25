@@ -12,7 +12,7 @@ impl XlaLowering for SliceOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let mut value = unary("slice", inputs)?.clone();
@@ -28,7 +28,7 @@ impl XlaLowering for ConcatenateOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let (first, rest) = inputs
@@ -44,7 +44,7 @@ impl XlaLowering for PadOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [input, fill] = inputs else {
@@ -63,13 +63,13 @@ impl XlaLowering for IotaOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         _: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let info = result_info(eqn)?;
         Ok(vec![native(ctx.builder().iota(
             element(info.dtype()),
-            &dimensions(info)?,
+            &dimensions(&info)?,
             indices(&[self.axis()])?[0],
         ))?])
     }
@@ -79,12 +79,12 @@ impl XlaLowering for FullOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let fill = unary("full", inputs)?;
         Ok(vec![native(
-            fill.broadcast_in_dim(&dimensions(result_info(eqn)?)?, &[]),
+            fill.broadcast_in_dim(&dimensions(&result_info(eqn)?)?, &[]),
         )?])
     }
 }
@@ -121,16 +121,17 @@ impl XlaLowering for DynamicSliceOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [operand, starts @ ..] = inputs else {
             return Err(invalid("dynamic_slice signature"));
         };
         let starts = wrap_starts(operand, starts)?;
-        Ok(vec![native(
-            operand.dynamic_slice(&starts, &dimensions(result_info(eqn)?)?),
-        )?])
+        Ok(vec![native(operand.dynamic_slice(
+            &starts,
+            &dimensions(&result_info(eqn)?)?,
+        ))?])
     }
 }
 
@@ -138,7 +139,7 @@ impl XlaLowering for DynamicUpdateSliceOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [operand, update, starts @ ..] = inputs else {
@@ -153,7 +154,7 @@ impl XlaLowering for SelectNOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [selector, first, rest @ ..] = inputs else {
@@ -198,7 +199,7 @@ impl XlaLowering for ConstantOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         _: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let scalar = native(ctx.builder().c0(self.value()))?;
@@ -213,7 +214,7 @@ impl XlaLowering for ScalarBoundOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         _: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let ty = element(result_info(eqn)?.dtype());

@@ -3,16 +3,13 @@
 //! Each operation lives in its own submodule; this module holds the dialect
 //! registration and the region/state helpers shared between them.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
-use std::sync::Arc;
 
 use gnx_common::{ArrayInfo, DType, Shape};
 use gnx_expr::lower::{FixedRegion, LoweringContext, RegionCell, StructuredRegion};
 use gnx_expr::{
-    Capture, CellAccess, CellKey, DeferredApplyPlan, DeferredLocal, DeferredProjection,
-    DeferredRegion, Dialect, Eqn, Expr, HEqn, HExpr, Invocation, Kind, LoweringError, ObjectTracer,
-    Op, Trace, Var, VarInfo,
+    Eqn, Expr, HEqn, HExpr, HParam, Kind, LoweringError, ObjectTracer, Op, Operation, Var, VarInfo,
 };
 
 mod branch;
@@ -28,14 +25,24 @@ pub use call::{
 pub use scan::{ScanOperation, ScanParameters, scan, scan_op};
 pub use while_loop::{WhileOperation, while_loop, while_op};
 
-pub struct ControlFlowDialect;
-
-static CONTROL_FLOW: ControlFlowDialect = ControlFlowDialect;
-
-impl Dialect for ControlFlowDialect {
-    fn name(&self) -> &'static str {
-        "cf"
+gnx_expr::dialect! {
+    dyn Operation, "cf" => {
+        "call" => CallOperation,
+        "cond" => CondOperation,
+        "switch" => SwitchOperation,
+        "scan" => ScanOperation,
+        "while_loop" => WhileOperation,
     }
+}
+
+/// A count in the form it is stored in an operation.
+fn stored(count: usize) -> u64 {
+    count as u64
+}
+
+/// A count stored in an operation.
+fn count(stored: rkyv::rend::u64_le) -> usize {
+    usize::try_from(stored.to_native()).expect("count exceeds usize::MAX")
 }
 
 type RegionResult<T> = std::result::Result<T, LoweringError>;
@@ -74,11 +81,11 @@ fn scalar(dtype: DType) -> VarInfo {
     VarInfo::new(ArrayInfo::new(Shape::fixed([]), dtype))
 }
 
-pub(crate) fn value_results(body: &HExpr) -> RegionResult<Vec<VarInfo>> {
+pub(crate) fn value_results(body: HExpr<'_>) -> RegionResult<Vec<VarInfo>> {
     body.outputs()
         .iter()
-        .map(|var| match body.definition(var) {
-            Some((Kind::Value, info)) => Ok(info.clone()),
+        .map(|&var| match body.definition(var) {
+            Some(param) if param.kind() == Kind::Value => Ok(param.info_ref().to_owned()),
             _ => Err(signature(
                 "control flow must return values, not cell handles",
             )),
@@ -87,13 +94,12 @@ pub(crate) fn value_results(body: &HExpr) -> RegionResult<Vec<VarInfo>> {
 }
 
 pub(crate) fn expect_inputs(
-    body: &HExpr,
+    body: HExpr<'_>,
     expected: impl IntoIterator<Item = (Kind, VarInfo)>,
 ) -> RegionResult<()> {
     if body
         .inputs()
-        .iter()
-        .map(|(_, kind, info)| (*kind, info.clone()))
+        .map(|param| (param.kind(), param.info_ref().to_owned()))
         .eq(expected)
     {
         Ok(())
@@ -109,79 +115,17 @@ fn object_kind(object: &ObjectTracer) -> (Kind, VarInfo) {
     }
 }
 
-pub(crate) struct BoundRegion<'a> {
-    pub(crate) capture: &'a Capture,
-    pub(crate) inputs: &'a [ObjectTracer],
-    pub(crate) read_only: bool,
-}
-
-pub(crate) fn defer_regions(
-    op: Op,
-    regions: Vec<BoundRegion<'_>>,
-    inputs: Vec<ObjectTracer>,
-    infos: Vec<VarInfo>,
-) -> RegionResult<Vec<Trace>> {
-    let mut locals = BTreeMap::<CellKey, DeferredLocal>::new();
-    let mut external_access = CellAccess::Unused;
-    for bound in &regions {
-        let capture = bound.capture;
-        let body = capture.expr();
-        for ((var, ..), object) in body
-            .closure()
-            .iter()
-            .zip(capture.closure())
-            .chain(body.inputs().iter().zip(bound.inputs))
-        {
-            if let ObjectTracer::Cell(cell) = object {
-                let access = body.cell_access(var).unwrap_or(CellAccess::Unused);
-                let writes = matches!(access, CellAccess::Write | CellAccess::ReadWrite);
-                if bound.read_only && writes {
-                    return Err(signature("while predicate cannot write a captured cell"));
-                }
-                if cell.is_maybe_aliased() {
-                    external_access = external_access.combine(access);
-                } else {
-                    locals
-                        .entry(CellKey::from(cell))
-                        .or_insert_with(|| DeferredLocal {
-                            cell: cell.clone(),
-                            written: false,
-                        })
-                        .written |= writes;
-                }
-            }
-        }
-    }
-    Ok(Invocation::defer_apply(
-        op,
-        DeferredApplyPlan {
-            regions: regions
-                .into_iter()
-                .map(|region| DeferredRegion {
-                    symbol_captures: region.capture.expr().symbol_closure().to_vec(),
-                    body: Arc::new(region.capture.expr().clone()),
-                    captures: region.capture.closure().to_vec(),
-                })
-                .collect(),
-            inputs,
-            projections: (0..infos.len()).map(DeferredProjection::Value).collect(),
-            outputs: infos.into_iter().map(|info| (Kind::Value, info)).collect(),
-            locals: locals.into_values().collect(),
-            external_access,
-        },
-    ))
-}
-
 // ---------------------------------------------------------------------------
 // Lowering helpers
 // ---------------------------------------------------------------------------
 
-fn value_infos(outputs: &[(Var, Kind, VarInfo)]) -> RegionResult<Vec<VarInfo>> {
+pub(crate) fn value_infos<'a>(
+    outputs: impl Iterator<Item = HParam<'a>>,
+) -> RegionResult<Vec<VarInfo>> {
     outputs
-        .iter()
-        .map(|(var, kind, info)| match kind {
-            Kind::Value => Ok(info.clone()),
-            Kind::Cell => Err(LoweringError::ExpectedValue(*var)),
+        .map(|param| match param.kind() {
+            Kind::Value => Ok(param.info_ref().to_owned()),
+            Kind::Cell => Err(LoweringError::ExpectedValue(param.var())),
         })
         .collect()
 }
@@ -219,7 +163,7 @@ impl StateLayout {
     fn emit(
         self,
         ctx: &mut LoweringContext<'_>,
-        eqn: &HEqn,
+        eqn: HEqn<'_>,
         op: Op,
         mut inputs: Vec<Var>,
         positions: (usize, usize),
@@ -248,27 +192,29 @@ impl StateLayout {
 // Expression checking helpers
 // ---------------------------------------------------------------------------
 
-fn parameters(expr: &Expr) -> impl Iterator<Item = &VarInfo> {
-    expr.inputs().iter().map(|(_, info)| info)
+fn parameters<'a>(expr: Expr<'a>) -> impl Iterator<Item = VarInfo> + 'a {
+    expr.inputs().map(|param| param.info_ref().to_owned())
 }
 
 fn check_child(
-    expr: &Expr,
+    expr: Expr<'_>,
     inputs: impl IntoIterator<Item = VarInfo>,
     outputs: &[VarInfo],
 ) -> RegionResult<()> {
-    if !parameters(expr).cloned().eq(inputs)
+    if !parameters(expr).eq(inputs)
         || !expr
             .outputs()
             .iter()
-            .map(|var| expr.value_info(var))
-            .eq(outputs.iter().map(Some))
+            .map(|&var| expr.value_info(var).map(|info| info.to_owned()))
+            .eq(outputs.iter().cloned().map(Some))
     {
         return Err(signature("fixed region signature"));
     }
     Ok(())
 }
 
-fn expr_output_infos(eqn: &Eqn) -> Vec<VarInfo> {
-    eqn.outputs().iter().map(|(_, info)| info.clone()).collect()
+fn expr_output_infos(eqn: Eqn<'_>) -> Vec<VarInfo> {
+    eqn.outputs()
+        .map(|param| param.info_ref().to_owned())
+        .collect()
 }

@@ -6,11 +6,14 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::eval::EVAL_DAG;
-use crate::{HEqn, HExpr, HInstr, HSubExpr, Kind, Var, VarInfo, VarScope};
+use crate::{
+    HEqnSource, HExpr, HExprBuilder, HInstrSource, HRootExpr, HSubExprBuilder, Kind, Symbol, Var,
+    VarInfo, VarScope,
+};
 
 use super::{
     CellKey, CellTrace, ContextID, Generic, Invocation, ObjectTracer, ObjectTracerRef, Trace,
-    TraceContext, Tracer, deferred::Projection,
+    TraceContext, Tracer, apply::Projection,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -22,15 +25,18 @@ pub enum CaptureError {
     Cycle,
     #[error("capture roots and deferred dependencies must belong to the same scope")]
     MixedScopes,
-    UndefinedSymbol(crate::Symbol),
-    UnboundSymbolInput(crate::Symbol),
+    UndefinedSymbol(Symbol),
+    UnboundSymbolInput(Symbol),
+    /// The captured expression is not well formed.
+    #[error("invalid capture: {0}")]
+    Invalid(String),
 }
 
 /// A captured DAG slice and its bindings in expression order.
 /// `from_context` preserves trace effects; `from_roots` selects the live results
 /// of a slice for evaluation.
 pub struct Capture {
-    expr: HExpr,
+    expr: Arc<HRootExpr>,
     closure: Vec<ObjectTracer>,
     inputs: Vec<ObjectTracer>,
     outputs: Vec<ObjectTracer>,
@@ -39,7 +45,7 @@ pub struct Capture {
 // Show the IR and its boundary metadata, not the retained runtime values.
 impl fmt::Display for Capture {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.expr, f)
+        fmt::Display::fmt(&self.expr.view(), f)
     }
 }
 
@@ -72,44 +78,7 @@ impl Capture {
             ObjectTracerRef::Cell(_) => None,
         });
         let slice = emitter.discover(roots, ctx.last_aliased_write())?;
-        let mut capture = emitter.emit(&slice, outputs)?;
-        capture.declare_symbols(Some(ctx), true)?;
-        Ok(capture)
-    }
-
-    fn declare_symbols(
-        &mut self,
-        ctx: Option<&TraceContext>,
-        traced: bool,
-    ) -> Result<(), CaptureError> {
-        let e = &mut self.expr;
-        let mut seen = BTreeSet::new();
-        let mut declare = |s: crate::Symbol, decls: &mut Vec<_>| -> Result<(), CaptureError> {
-            if seen.insert(s) {
-                if !ctx.is_some_and(|c| c.has_symbol(s)) {
-                    return Err(CaptureError::UndefinedSymbol(s));
-                }
-                decls.push(s);
-            }
-            Ok(())
-        };
-        for (_, _, info) in &e.inputs {
-            for &s in info.symbols() {
-                declare(s, &mut e.symbol_inputs)?;
-            }
-        }
-        let mut free = Vec::new();
-        for &s in e.body_symbols() {
-            declare(s, &mut free)?;
-        }
-        e.symbol_closure = free;
-        if traced
-            && let Some(ctx) = ctx
-            && let Some(s) = e.symbol_closure.iter().find(|s| ctx.owns_symbol(**s))
-        {
-            return Err(CaptureError::UnboundSymbolInput(*s));
-        }
-        Ok(())
+        emitter.emit(&slice, outputs)?.finish(Some(ctx), true)
     }
 
     /// Snapshot cell home values without recording a cell read. The home
@@ -152,12 +121,15 @@ impl Capture {
             let outputs = slice.eval_outputs(&roots, &pinned);
             emitter.emit(&slice, outputs)
         };
-        let mut capture = capture?;
-        capture.declare_symbols(TraceContext::current().as_ref(), false)?;
-        Ok(capture)
+        capture?.finish(TraceContext::current().as_ref(), false)
     }
 
-    pub fn expr(&self) -> &HExpr {
+    pub fn expr(&self) -> HExpr<'_> {
+        self.expr.view()
+    }
+
+    /// The root the captured expression is stored in.
+    pub fn root(&self) -> &Arc<HRootExpr> {
         &self.expr
     }
 
@@ -179,7 +151,7 @@ impl Capture {
     pub fn into_parts(
         self,
     ) -> (
-        HExpr,
+        Arc<HRootExpr>,
         Vec<ObjectTracer>,
         Vec<ObjectTracer>,
         Vec<ObjectTracer>,
@@ -188,7 +160,7 @@ impl Capture {
     }
 }
 
-impl From<Capture> for (HExpr, Vec<ObjectTracer>) {
+impl From<Capture> for (Arc<HRootExpr>, Vec<ObjectTracer>) {
     fn from(capture: Capture) -> Self {
         (capture.expr, capture.closure)
     }
@@ -297,7 +269,7 @@ struct Emitter {
     bindings: BTreeMap<BindingKey, Var>,
     inputs: Vec<BoundParam>,
     closure: Vec<BoundParam>,
-    instructions: Vec<HInstr>,
+    instructions: Vec<HInstrSource>,
 }
 
 impl Emitter {
@@ -391,23 +363,25 @@ impl Emitter {
         Ok(slice)
     }
 
-    fn emit(mut self, slice: &Slice, outputs: Vec<ObjectTracer>) -> Result<Capture, CaptureError> {
+    fn emit(
+        mut self,
+        slice: &Slice,
+        outputs: Vec<ObjectTracer>,
+    ) -> Result<Unfinished, CaptureError> {
         for inv in &slice.ordered {
             self.emit_invocation(inv)?;
         }
         let output_vars = self.object_args(&outputs)?;
         let (closure_params, closure) = self.closure.into_iter().unzip();
         let (input_params, inputs) = self.inputs.into_iter().unzip();
-        Ok(Capture {
-            expr: HExpr {
-                symbol_inputs: vec![],
-                symbol_closure: vec![],
-                closure: closure_params,
-                inputs: input_params,
-                instructions: self.instructions,
-                outputs: output_vars,
-                name_hint: None,
-            },
+        Ok(Unfinished {
+            expr: HExprBuilder::from_parts(
+                vec![],
+                closure_params,
+                input_params,
+                self.instructions,
+                output_vars,
+            ),
             closure,
             inputs,
             outputs,
@@ -464,16 +438,12 @@ impl Emitter {
         let initial = self.value(&cell.read_home())?;
         let var = self.vars.create_var();
         self.bindings.insert(key, var);
-        self.instructions.push(HInstr::CreateCell {
+        self.instructions.push(HInstrSource::CreateCell {
             cell: var,
             initial,
             info: cell.type_info().clone(),
         });
         Ok(var)
-    }
-
-    fn value_args(&mut self, values: &[Trace]) -> Result<Vec<Var>, CaptureError> {
-        values.iter().map(|value| self.value(value)).collect()
     }
 
     fn object_args(&mut self, objects: &[ObjectTracer]) -> Result<Vec<Var>, CaptureError> {
@@ -499,37 +469,16 @@ impl Emitter {
 
     fn emit_invocation(&mut self, inv: &Arc<Invocation>) -> Result<(), CaptureError> {
         let instr = match inv.as_ref() {
-            Invocation::Apply {
-                op,
-                inputs,
-                subexprs,
-                ..
-            } => {
-                let inputs = self.value_args(inputs)?;
-                let subexprs = subexprs
-                    .iter()
-                    .map(|(expr, captures, symbols)| {
-                        Ok(HSubExpr::new(expr.clone(), self.value_args(captures)?)
-                            .with_symbol_captures(symbols.clone()))
-                    })
-                    .collect::<Result<_, CaptureError>>()?;
-                HInstr::Apply(HEqn::new(
-                    op.clone(),
-                    subexprs,
-                    inputs,
-                    self.define_results(inv),
-                ))
-            }
-            Invocation::DeferredApply(apply) => return self.emit_deferred(inv.into(), apply),
+            Invocation::Apply(apply) => return self.emit_apply(inv.into(), apply),
             Invocation::ReadCell { cell, .. } => {
                 let cell = self.cell(cell)?;
                 let (output, _, info) = self
                     .define_results(inv)
                     .pop()
                     .expect("cell read has one result");
-                HInstr::ReadCell { cell, output, info }
+                HInstrSource::ReadCell { cell, output, info }
             }
-            Invocation::WriteCell { cell, value, .. } => HInstr::WriteCell {
+            Invocation::WriteCell { cell, value, .. } => HInstrSource::WriteCell {
                 cell: self.cell(cell)?,
                 value: self.value(value)?,
             },
@@ -538,20 +487,15 @@ impl Emitter {
         Ok(())
     }
 
-    fn emit_deferred(
-        &mut self,
-        key: InvKey,
-        apply: &super::DeferredApply,
-    ) -> Result<(), CaptureError> {
-        use super::DeferredProjection::{CellContents, Value};
+    fn emit_apply(&mut self, key: InvKey, apply: &super::Apply) -> Result<(), CaptureError> {
+        use super::ApplyProjection::{CellContents, Value};
         let regions = apply
             .regions
             .iter()
             .map(|region| {
-                Ok(
-                    HSubExpr::new(region.body.clone(), self.object_args(&region.captures)?)
-                        .with_symbol_captures(region.symbol_captures.clone()),
-                )
+                Ok(HSubExprBuilder::new(region.body.clone())
+                    .with_vars(self.object_args(&region.captures)?)
+                    .with_symbols(region.symbol_captures.iter().copied()))
             })
             .collect::<Result<_, CaptureError>>()?;
         let inputs = self.object_args(&apply.inputs)?;
@@ -560,7 +504,7 @@ impl Emitter {
             .iter()
             .map(|(kind, info)| (self.vars.create_var(), *kind, info.clone()))
             .collect();
-        self.instructions.push(HInstr::Apply(HEqn::new(
+        self.instructions.push(HInstrSource::Apply(HEqnSource::new(
             apply.op.clone(),
             regions,
             inputs,
@@ -576,7 +520,7 @@ impl Emitter {
                         Projection::Output(Value(_)) => unreachable!(),
                     };
                     let output = self.vars.create_var();
-                    self.instructions.push(HInstr::ReadCell {
+                    self.instructions.push(HInstrSource::ReadCell {
                         cell,
                         output,
                         info: apply.outputs[index].clone(),
@@ -584,8 +528,88 @@ impl Emitter {
                     output
                 }
             };
-            self.bindings.insert(BindingKey::Result(key, index), var);
+            // A result already bound as an input keeps that binding.
+            self.bindings
+                .entry(BindingKey::Result(key, index))
+                .or_insert(var);
         }
         Ok(())
     }
+}
+
+// A captured expression whose symbols are yet to be declared.
+struct Unfinished {
+    expr: HExprBuilder,
+    closure: Vec<ObjectTracer>,
+    inputs: Vec<ObjectTracer>,
+    outputs: Vec<ObjectTracer>,
+}
+
+impl Unfinished {
+    // Declares the symbols the expression takes from its context: those it
+    // uses that its inputs do not bind.
+    fn finish(mut self, ctx: Option<&TraceContext>, traced: bool) -> Result<Capture, CaptureError> {
+        let e = &mut self.expr;
+        let mut seen = BTreeSet::new();
+        let mut declare = |s: Symbol| -> Result<bool, CaptureError> {
+            if !seen.insert(s) {
+                return Ok(false);
+            }
+            if !ctx.is_some_and(|c| c.has_symbol(s)) {
+                return Err(CaptureError::UndefinedSymbol(s));
+            }
+            Ok(true)
+        };
+        for (_, _, info) in &e.inputs {
+            for &s in info.symbols() {
+                declare(s)?;
+            }
+        }
+        let mut free = Vec::new();
+        for s in body_symbols(e) {
+            if declare(s)? {
+                free.push(s);
+            }
+        }
+        e.closure_symbols = free;
+        if traced
+            && let Some(ctx) = ctx
+            && let Some(s) = e.closure_symbols.iter().find(|s| ctx.owns_symbol(**s))
+        {
+            return Err(CaptureError::UnboundSymbolInput(*s));
+        }
+        e.reserve();
+        let expr = (self.expr.build()).map_err(|error| CaptureError::Invalid(error.to_string()))?;
+        Ok(Capture {
+            expr,
+            closure: self.closure,
+            inputs: self.inputs,
+            outputs: self.outputs,
+        })
+    }
+}
+
+// Symbols used by closure metadata, instructions and nested attachments.
+fn body_symbols(expr: &HExprBuilder) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+    for (_, _, info) in &expr.closure_inputs {
+        symbols.extend(info.symbols());
+    }
+    for instr in &expr.instrs {
+        match instr {
+            HInstrSource::ReadCell { info, .. } | HInstrSource::CreateCell { info, .. } => {
+                symbols.extend(info.symbols())
+            }
+            HInstrSource::Apply(eqn) => {
+                for (_, _, info) in eqn.outputs() {
+                    symbols.extend(info.symbols());
+                }
+                for region in eqn.subexprs() {
+                    symbols.extend(region.provided_symbols());
+                }
+            }
+            HInstrSource::WriteCell { .. } => {}
+        }
+    }
+    symbols
 }

@@ -9,7 +9,7 @@ impl XlaLowering for DotGeneralOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [lhs, rhs] = inputs else {
@@ -32,7 +32,7 @@ impl XlaLowering for ConvGeneralDilatedOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [lhs, rhs] = inputs else {
@@ -66,7 +66,7 @@ impl XlaLowering for FftOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let operand = unary("fft", inputs)?;
@@ -79,7 +79,7 @@ impl XlaLowering for FftOperation {
             FftKind::Rfft => 2,
             FftKind::Irfft => 3,
         };
-        Ok(vec![native(operand.fft(mode, &indices(self.lengths())?))?])
+        Ok(vec![native(operand.fft(mode, &indices(&self.lengths())?))?])
     }
 }
 crate::register_xla_lowering!(
@@ -127,7 +127,7 @@ impl XlaLowering for ScaledDotOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [lhs, rhs, scales @ ..] = inputs else {
@@ -153,11 +153,11 @@ impl XlaLowering for ScaledDotOperation {
             },
             &d.rhs_contracting,
         )?;
-        lower_dot(&lhs, &rhs, d, eqn)
+        lower_dot(&lhs, &rhs, &d, eqn)
     }
 }
 
-fn lower_dot(lhs: &XlaOp, rhs: &XlaOp, d: &DotDimensions, eqn: &Eqn) -> io::Result<Vec<XlaOp>> {
+fn lower_dot(lhs: &XlaOp, rhs: &XlaOp, d: &DotDimensions, eqn: Eqn<'_>) -> io::Result<Vec<XlaOp>> {
     let output = element(result_info(eqn)?.dtype()).primitive_type();
     Ok(vec![native(lhs.dot_general_with_type(
         rhs,
@@ -243,7 +243,7 @@ impl XlaLowering for RaggedDotGeneralOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [lhs, rhs, groups] = inputs else {

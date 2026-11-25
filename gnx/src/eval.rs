@@ -43,7 +43,7 @@ impl<D: Device + ?Sized> Eval for D {
         let prepared = (|| Ok::<_, EvalError>(expr(roots)?.prepare()?))();
         async move {
             let (expr, args, commit) = prepared?.into_parts();
-            if expr.outputs().is_empty() {
+            if expr.view().outputs().is_empty() {
                 return Ok(commit.publish([])?);
             }
             let outputs = self

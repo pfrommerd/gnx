@@ -3,11 +3,11 @@
 use std::collections::{HashMap, HashSet};
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Expr, Var, VarInfo};
+use gnx_expr::{Eqn, EqnSource, Expr, Var, VarInfo};
 
 use super::DiffParameters;
 use super::jvp::{Dual, Tangent, accumulate, instantiate, jvp_expr};
-use crate::util::copy_eqn;
+use crate::util::{copy_eqn, region_body};
 use crate::{TransformError, TransformResult};
 
 /// An operand of a linear equation: a residual (constant) bound in the output
@@ -33,7 +33,7 @@ pub trait TransposeRule: Sync {
     fn transpose(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         operands: &[Operand],
         captures: &[Vec<Var>],
         cotangents: &[Tangent],
@@ -48,17 +48,19 @@ pub trait TransposeRule: Sync {
 /// cotangent per binding (zero for residuals).
 pub fn transpose_expr(
     b: &mut Builder,
-    expr: &Expr,
+    expr: Expr<'_>,
     bindings: &[Option<Var>],
     cotangents: &[Tangent],
 ) -> TransformResult<(Vec<Option<Var>>, Vec<Tangent>)> {
-    let params: Vec<_> = expr.closure().iter().chain(expr.inputs()).collect();
+    let params: Vec<Var> = (expr.closure_inputs().chain(expr.inputs()))
+        .map(|param| param.var())
+        .collect();
     if params.len() != bindings.len() || cotangents.len() != expr.outputs().len() {
         return Err(TransformError::invalid("transpose binding arity"));
     }
     let mut env = HashMap::new();
     let mut linear = HashSet::new();
-    for ((var, _), binding) in params.iter().zip(bindings) {
+    for (var, binding) in params.iter().zip(bindings) {
         match binding {
             Some(value) => {
                 env.insert(*var, *value);
@@ -69,25 +71,24 @@ pub fn transpose_expr(
         }
     }
     let mut linear_eqns = Vec::new();
-    for (index, eqn) in expr.eqns().iter().enumerate() {
+    for (index, eqn) in expr.eqns().enumerate() {
         let is_linear = eqn
             .inputs()
             .iter()
-            .chain(eqn.subexprs().iter().flat_map(|sub| sub.closure()))
+            .chain(eqn.subexprs().flat_map(|sub| sub.provided_vars()))
             .any(|var| linear.contains(var));
         if is_linear {
-            linear.extend(eqn.outputs().iter().map(|(var, _)| *var));
+            linear.extend(eqn.outputs().map(|param| param.var()));
             linear_eqns.push((index, eqn));
         } else {
             let inputs: Vec<_> = eqn.inputs().iter().map(|var| env[var]).collect();
             let captures: Vec<Vec<_>> = eqn
                 .subexprs()
-                .iter()
-                .map(|sub| sub.closure().iter().map(|var| env[var]).collect())
+                .map(|sub| sub.provided_vars().iter().map(|var| env[var]).collect())
                 .collect();
             let outputs = copy_eqn(b, eqn, &inputs, &captures);
-            for ((var, _), output) in eqn.outputs().iter().zip(outputs) {
-                env.insert(*var, output);
+            for (param, output) in eqn.outputs().zip(outputs) {
+                env.insert(param.var(), output);
             }
         }
     }
@@ -101,8 +102,7 @@ pub fn transpose_expr(
     for (index, eqn) in linear_eqns.into_iter().rev() {
         let output_cts: Vec<_> = eqn
             .outputs()
-            .iter()
-            .map(|(var, _)| cts.remove(var).unwrap_or(Tangent::Zero))
+            .map(|param| cts.remove(&param.var()).unwrap_or(Tangent::Zero))
             .collect();
         if output_cts.iter().all(|ct| ct.is_zero()) {
             continue;
@@ -113,7 +113,7 @@ pub fn transpose_expr(
                 .iter()
                 .map(|var| {
                     if linear.contains(var) {
-                        Operand::Linear(expr.value_info(var).expect("defined operand").clone())
+                        Operand::Linear(expr.value_info(*var).expect("defined operand").to_owned())
                     } else {
                         Operand::Residual(env[var])
                     }
@@ -121,9 +121,8 @@ pub fn transpose_expr(
                 .collect();
             let captures = eqn
                 .subexprs()
-                .iter()
                 .map(|sub| {
-                    sub.closure()
+                    sub.provided_vars()
                         .iter()
                         .map(|var| {
                             env.get(var).copied().ok_or_else(|| {
@@ -174,7 +173,7 @@ pub fn transpose_expr(
     let param_cts = params
         .iter()
         .zip(bindings)
-        .map(|((var, _), binding)| match binding {
+        .map(|(var, binding)| match binding {
             Some(_) => Tangent::Zero,
             None => cts.remove(var).unwrap_or(Tangent::Zero),
         })
@@ -186,28 +185,31 @@ pub fn transpose_expr(
 /// part, and transpose the tangent part.
 pub(super) fn expand_vjp(
     b: &mut Builder,
-    eqn: &Eqn,
+    eqn: &EqnSource,
     parameters: &DiffParameters,
 ) -> TransformResult<Vec<Var>> {
     let [sub] = eqn.subexprs() else {
         return Err(TransformError::invalid("vjp takes one body"));
     };
-    let body = sub.expr();
+    let body = region_body(sub)?;
+    let body = body.view();
     let (primals, cotangents) = eqn.inputs().split_at(body.inputs().len());
+    let input_infos: Vec<VarInfo> = body
+        .inputs()
+        .map(|param| param.info_ref().to_owned())
+        .collect();
 
     let mut joint = Builder::new();
     let closure: Vec<_> = body
-        .closure()
-        .iter()
-        .map(|(_, info)| Dual::constant(joint.closure(info.clone())))
+        .closure_inputs()
+        .map(|param| Dual::constant(joint.closure(param.info_ref().to_owned())))
         .collect();
-    let mut inputs: Vec<_> = body
-        .inputs()
+    let mut inputs: Vec<_> = input_infos
         .iter()
-        .map(|(_, info)| Dual::constant(joint.input(info.clone())))
+        .map(|info| Dual::constant(joint.input(info.clone())))
         .collect();
     for &index in &parameters.wrt {
-        let info = body.inputs()[index].1.clone();
+        let info = input_infos[index].clone();
         inputs[index].tangent = Tangent::Var(joint.input(info));
     }
     let results = jvp_expr(&mut joint, body, &closure, &inputs)?;
@@ -216,10 +218,10 @@ pub(super) fn expand_vjp(
         let info = joint.info(results[index].primal).clone();
         outputs.push(instantiate(&mut joint, results[index].tangent, &info));
     }
-    let joint = joint.finish(outputs);
+    let joint = joint.finish(outputs).build()?;
 
     let bindings: Vec<_> = sub
-        .closure()
+        .provided_vars()
         .iter()
         .chain(primals)
         .map(|&var| Some(var))
@@ -228,7 +230,7 @@ pub(super) fn expand_vjp(
     let output_cts: Vec<_> = std::iter::repeat_n(Tangent::Zero, results.len())
         .chain(cotangents.iter().map(|&var| Tangent::Var(var)))
         .collect();
-    let (values, cts) = transpose_expr(b, &joint, &bindings, &output_cts)?;
+    let (values, cts) = transpose_expr(b, joint.view(), &bindings, &output_cts)?;
     let mut outputs = values[..results.len()]
         .iter()
         .map(|value| {
@@ -239,10 +241,10 @@ pub(super) fn expand_vjp(
             })
         })
         .collect::<TransformResult<Vec<_>>>()?;
-    let first_tangent = body.closure().len() + body.inputs().len();
+    let first_tangent = body.closure_inputs().len() + input_infos.len();
     for (k, &index) in parameters.wrt.iter().enumerate() {
-        let info = body.inputs()[index].1.clone();
-        outputs.push(instantiate(b, cts[first_tangent + k], &info));
+        let info = &input_infos[index];
+        outputs.push(instantiate(b, cts[first_tangent + k], info));
     }
     Ok(outputs)
 }

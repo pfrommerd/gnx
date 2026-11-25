@@ -15,7 +15,7 @@ fn program(op: Op, args: &[VarInfo], out: VarInfo) -> gnx_torch::TorchExecutable
     let out = b.emit1(op, &args, out);
     TorchDevice::cpu()
         .unwrap()
-        .compile(&b.finish(vec![out]))
+        .compile(&b.finish(vec![out]).build().unwrap())
         .unwrap()
 }
 fn run(op: Op, args: &[(&Tensor, DType)], shape: &[usize], dtype: DType) -> Tensor {
@@ -53,7 +53,7 @@ fn single_cpu_accepts_replicated_but_not_named_sharding() {
     assert_eq!(
         TorchDevice::cpu()
             .unwrap()
-            .compile(&b.finish(vec![y]))
+            .compile(&b.finish(vec![y]).build().unwrap())
             .err()
             .unwrap()
             .kind(),
@@ -214,7 +214,10 @@ fn scan_replays_live_carry_and_stacks_outputs() {
         [s, row],
         vec![body],
     );
-    let p = TorchDevice::cpu().unwrap().compile(&b.finish(ys)).unwrap();
+    let p = TorchDevice::cpu()
+        .unwrap()
+        .compile(&b.finish(ys).build().unwrap())
+        .unwrap();
     let args = [Tensor::from(3f32), Tensor::from_slice(&[2f32, -1., 5.])];
     let vals = p
         .modules()
@@ -277,7 +280,7 @@ fn cholesky_lower_factor_and_pivoted_qr_reconstruct_inputs() {
     );
     let p = TorchDevice::cpu()
         .unwrap()
-        .compile(&b.finish(outputs))
+        .compile(&b.finish(outputs).build().unwrap())
         .unwrap();
     let out = p
         .modules()
@@ -345,7 +348,7 @@ fn stable_lexicographic_sort_permutates_payloads() {
     );
     let p = TorchDevice::cpu()
         .unwrap()
-        .compile(&b.finish(vec![outputs[2]]))
+        .compile(&b.finish(vec![outputs[2]]).build().unwrap())
         .unwrap();
     let args = [[1, 0, 1, 0, 0], [4, 2, 1, 2, 1], [0, 1, 2, 3, 4]]
         .map(|v: [i32; 5]| Tensor::from_slice(&v));

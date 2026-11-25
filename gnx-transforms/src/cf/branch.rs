@@ -5,35 +5,41 @@ use std::fmt;
 use gnx_common::DType;
 use gnx_expr::lower::{LoweringContext, RegionArgument};
 use gnx_expr::{
-    Capture, CellAccess, Dialect, Eqn, HEqn, Kind, ObjectTracer, Op, Operation, Trace, Var,
+    ApplyRegion, Capture, CellAccess, Eqn, HEqn, Invocation, Kind, ObjectTracer, Op, Operation,
+    Trace, Var,
 };
+use rkyv::{Archive, Serialize};
 
 use super::{
-    BoundRegion, CONTROL_FLOW, RegionResult, StateLayout, add_state, check_child, check_state_len,
-    defer_regions, expect_inputs, expr_output_infos, fmt_control_flow, object_kind, parameters,
-    scalar, signature, value_infos, value_results,
+    RegionResult, StateLayout, add_state, check_child, check_state_len, count, expect_inputs,
+    expr_output_infos, fmt_control_flow, object_kind, parameters, scalar, signature, stored,
+    value_infos, value_results,
 };
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct CondOperation {
-    state_len: usize,
+/// Builds a `cf::cond`, stored as a [`CondOperation`].
+#[derive(Archive, Serialize)]
+#[rkyv(archived = CondOperation)]
+pub struct Cond {
+    state_len: u64,
 }
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct SwitchOperation {
-    state_len: usize,
+/// Builds a `cf::switch`, stored as a [`SwitchOperation`].
+#[derive(Archive, Serialize)]
+#[rkyv(archived = SwitchOperation)]
+pub struct Switch {
+    state_len: u64,
 }
 
 pub fn cond_op() -> Op {
-    Op::new(CondOperation { state_len: 0 })
+    Op::new(Cond { state_len: 0 })
 }
 
 pub fn switch_op() -> Op {
-    Op::new(SwitchOperation { state_len: 0 })
+    Op::new(Switch { state_len: 0 })
 }
 
 /// A fresh `cond` or `switch` (without private state) of the same kind as
 /// `eqn`, for transformation rules that emit a new branch operation.
-pub(crate) fn branch_op(eqn: &Eqn) -> Op {
+pub(crate) fn branch_op(eqn: Eqn<'_>) -> Op {
     if eqn.op().downcast_ref::<CondOperation>().is_some() {
         cond_op()
     } else {
@@ -90,25 +96,21 @@ fn record_branch(
             return Err(signature("branch result signatures must match"));
         }
     }
-    defer_regions(
+    Ok(Invocation::apply(
         op,
         branches
             .iter()
-            .map(|branch| BoundRegion {
-                capture: branch,
-                inputs,
-                read_only: false,
-            })
+            .map(|&branch| ApplyRegion::from(branch).with_arguments(inputs.iter().cloned()))
             .collect(),
         std::iter::once(selector.into())
             .chain(inputs.iter().cloned())
             .collect(),
         infos,
-    )
+    ))
 }
 
 fn lower_branch(
-    eqn: &HEqn,
+    eqn: HEqn<'_>,
     ctx: &mut LoweringContext<'_>,
     dtype: DType,
     state_len: usize,
@@ -124,7 +126,7 @@ fn lower_branch(
     check_state_len(state_len, operands.len(), eqn.outputs().len())?;
     let first = eqn
         .subexprs()
-        .first()
+        .next()
         .ok_or_else(|| signature("missing branch"))?;
     if first.expr().inputs().len() != operands.len() {
         return Err(signature("branch operand arity"));
@@ -132,8 +134,8 @@ fn lower_branch(
     let mut values = vec![selector];
     let mut infos = Vec::new();
     let mut args = Vec::new();
-    for (&operand, (_, kind, _)) in operands.iter().zip(first.expr().inputs()) {
-        match kind {
+    for (&operand, param) in operands.iter().zip(first.expr().inputs()) {
+        match param.kind() {
             Kind::Value => {
                 let (value, info) = ctx.value_operand(operand)?;
                 values.push(value);
@@ -145,7 +147,6 @@ fn lower_branch(
     }
     let regions = eqn
         .subexprs()
-        .iter()
         .map(|sub| ctx.lower_structured_region(sub, &args, &infos))
         .collect::<RegionResult<Vec<_>>>()?;
     let state = StateLayout::new(ctx, &regions)?;
@@ -167,10 +168,10 @@ fn lower_branch(
     state.emit(ctx, eqn, op, values, (input_len, outputs.len()), &fixed)
 }
 
-fn check_branches(eqn: &Eqn, state_len: usize) -> RegionResult<()> {
+fn check_branches(eqn: Eqn<'_>, state_len: usize) -> RegionResult<()> {
     let first = eqn
         .subexprs()
-        .first()
+        .next()
         .ok_or_else(|| signature("missing branch"))?
         .expr();
     let outputs = expr_output_infos(eqn);
@@ -179,51 +180,50 @@ fn check_branches(eqn: &Eqn, state_len: usize) -> RegionResult<()> {
     }
     check_state_len(state_len, first.inputs().len(), outputs.len())?;
     for sub in eqn.subexprs() {
-        check_child(sub.expr(), parameters(first).cloned(), &outputs)?;
+        check_child(sub.expr(), parameters(first), &outputs)?;
     }
     Ok(())
 }
 
 macro_rules! branch_op {
-    ($ty:ident, $name:literal, $dtype:expr, $arity:expr) => {
-        impl fmt::Display for $ty {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                fmt_control_flow(f, $name, self.state_len)
+    ($ty:ident, $builder:ident, $name:literal, $dtype:expr, $arity:expr) => {
+        impl $ty {
+            /// Number of private cell-state slots threaded through the operation.
+            pub fn state_len(&self) -> usize {
+                count(self.state_len)
             }
         }
 
         impl Operation for $ty {
-            fn name(&self) -> &'static str {
-                $name
-            }
-            fn dialect(&self) -> &'static dyn Dialect {
-                &CONTROL_FLOW
+            fn display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt_control_flow(f, $name, self.state_len())
             }
 
-            fn cell_access(&self, eqn: &HEqn, cell: Var) -> CellAccess {
+            fn cell_access(&self, eqn: HEqn<'_>, cell: Var) -> CellAccess {
                 let operands = eqn.inputs().get(1..).unwrap_or_default();
                 eqn.subexprs()
-                    .iter()
                     .fold(eqn.captured_cell_access(cell), |access, body| {
                         access.combine(body.input_cell_access(operands, cell))
                     })
             }
-            fn lower(&self, eqn: &HEqn, ctx: &mut LoweringContext<'_>) -> RegionResult<()> {
+            fn lower(&self, eqn: HEqn<'_>, ctx: &mut LoweringContext<'_>) -> RegionResult<()> {
                 if !($arity)(eqn.subexprs().len()) {
                     return Err(signature("branch count"));
                 }
-                lower_branch(eqn, ctx, $dtype, self.state_len, |state_len| {
-                    Op::new($ty { state_len })
+                lower_branch(eqn, ctx, $dtype, self.state_len(), |state_len| {
+                    Op::new($builder {
+                        state_len: stored(state_len),
+                    })
                 })
             }
-            fn check_expr(&self, eqn: &Eqn) -> RegionResult<()> {
+            fn check_expr(&self, eqn: Eqn<'_>) -> RegionResult<()> {
                 if !($arity)(eqn.subexprs().len()) {
                     return Err(signature("branch count"));
                 }
-                check_branches(eqn, self.state_len)
+                check_branches(eqn, self.state_len())
             }
         }
     };
 }
-branch_op!(CondOperation, "cond", DType::Bool, |n| n == 2);
-branch_op!(SwitchOperation, "switch", DType::I32, |n| n > 0);
+branch_op!(CondOperation, Cond, "cond", DType::Bool, |n| n == 2);
+branch_op!(SwitchOperation, Switch, "switch", DType::I32, |n| n > 0);

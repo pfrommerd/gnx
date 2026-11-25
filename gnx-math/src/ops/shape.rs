@@ -1,17 +1,18 @@
-use super::{Dialect, Eqn, Op, Operation, Result, arity, fmt, result_rank, signature};
+use super::{Op, Result, arity, count, result_rank, signature};
 
 pub use super::{
     broadcast_in_dim_op as broadcast_in_dim, reshape_op as reshape, rev_op as rev,
     transpose_op as transpose,
 };
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ConcatenateOperation {
-    axis: usize,
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = ConcatenateOperation)]
+pub struct Concatenate {
+    axis: u64,
 }
 impl ConcatenateOperation {
     pub fn axis(&self) -> usize {
-        self.axis
+        count(self.axis)
     }
 }
 gnx_common::array_operation!(
@@ -22,7 +23,7 @@ gnx_common::array_operation!(
             return Err(signature("concatenate needs an operand"));
         }
         arity(eqn, eqn.inputs().len())?;
-        if op.axis >= result_rank(eqn)? {
+        if op.axis() >= result_rank(eqn)? {
             return Err(signature("concatenate axis is out of range"));
         }
         Ok(())
@@ -30,16 +31,26 @@ gnx_common::array_operation!(
     axis
 );
 pub fn concatenate(axis: usize) -> Op {
-    Op::new(ConcatenateOperation { axis })
+    Op::new(Concatenate { axis: axis as u64 })
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct PadOperation {
-    padding: Vec<(i64, i64, usize)>,
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = PadOperation)]
+pub struct Pad {
+    low: Vec<i64>,
+    high: Vec<i64>,
+    interior: Vec<u64>,
 }
 impl PadOperation {
-    pub fn padding(&self) -> &[(i64, i64, usize)] {
-        &self.padding
+    /// The `(low, high, interior)` padding of every axis.
+    pub fn padding(&self) -> Vec<(i64, i64, usize)> {
+        (self
+            .low
+            .iter()
+            .zip(self.high.iter())
+            .zip(self.interior.iter()))
+        .map(|((low, high), &interior)| (low.to_native(), high.to_native(), count(interior)))
+        .collect()
     }
 }
 gnx_common::array_operation!(
@@ -47,7 +58,7 @@ gnx_common::array_operation!(
     "pad",
     |op, eqn| {
         arity(eqn, 2)?;
-        if op.padding.len() != result_rank(eqn)? {
+        if op.low.len() != result_rank(eqn)? {
             return Err(signature("padding must have result rank"));
         }
         Ok(())
@@ -55,8 +66,10 @@ gnx_common::array_operation!(
     padding
 );
 pub fn pad(padding: &[(i64, i64, usize)]) -> Op {
-    Op::new(PadOperation {
-        padding: padding.to_vec(),
+    Op::new(Pad {
+        low: padding.iter().map(|p| p.0).collect(),
+        high: padding.iter().map(|p| p.1).collect(),
+        interior: padding.iter().map(|p| p.2 as u64).collect(),
     })
 }
 
@@ -65,12 +78,10 @@ use gnx_expr::pass::Builder;
 use gnx_expr::{Var, VarInfo};
 
 fn metadata(b: &Builder, operand: Var) -> Result<(Vec<usize>, DType)> {
-    let info = b
-        .info(operand)
-        .downcast::<ArrayInfo>()
-        .map_err(|_| signature("expected array operand"))?;
+    let info =
+        ArrayInfo::from_info(b.info(operand)).ok_or_else(|| signature("expected array operand"))?;
     Ok((
-        fixed_dims(info).map_err(|_| signature("operation requires fixed dimensions"))?,
+        fixed_dims(&info).map_err(|_| signature("operation requires fixed dimensions"))?,
         info.dtype(),
     ))
 }

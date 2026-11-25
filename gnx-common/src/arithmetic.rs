@@ -39,7 +39,8 @@ fn binary(lhs: &Array, rhs: &Array, op: Op) -> Result<Array, LoweringError> {
             &ArrayInfo::new(lhs.shape().clone(), dtype),
         ));
     }
-    let (a, b) = (lhs.shape().dims(), rhs.shape().dims());
+    let (lhs_shape, rhs_shape) = (lhs.shape(), rhs.shape());
+    let (a, b) = (lhs_shape.dims(), rhs_shape.dims());
     let rank = a.len().max(b.len());
     let mut dims = vec![1; rank];
     for operand in [a, b] {
@@ -60,7 +61,7 @@ fn binary(lhs: &Array, rhs: &Array, op: Op) -> Result<Array, LoweringError> {
     }
     let info = ArrayInfo::new(Shape::fixed(dims), dtype);
     let expand = |x: &Array| {
-        if x.shape() == info.shape() {
+        if &x.shape() == info.shape() {
             return x.clone();
         }
         let axes = (rank - x.shape().dims().len()..rank).collect::<Vec<_>>();

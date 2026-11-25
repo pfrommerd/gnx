@@ -31,7 +31,10 @@ fn reloaded_cond_executes_only_the_selected_branch() {
         );
     }
     let out = b.emit(cond_op(), &[pred, arg], [row], branches);
-    let p = TorchDevice::cpu().unwrap().compile(&b.finish(out)).unwrap();
+    let p = TorchDevice::cpu()
+        .unwrap()
+        .compile(&b.finish(out).build().unwrap())
+        .unwrap();
     assert_eq!(p.modules().len(), 1);
     let m = support::reload(p.modules().next().unwrap());
     let run = |flag: bool, l: i32, r: i32| {
@@ -76,7 +79,10 @@ fn reloaded_switch_clamps_and_executes_only_one_branch() {
         })
         .collect();
     let out = b.emit(switch_op(), &[selector], [row], branches);
-    let p = TorchDevice::cpu().unwrap().compile(&b.finish(out)).unwrap();
+    let p = TorchDevice::cpu()
+        .unwrap()
+        .compile(&b.finish(out).build().unwrap())
+        .unwrap();
     let m = support::reload(p.modules().next().unwrap());
     for (i, which, expected) in [
         (-4, 0, [0, 1, 2]),
@@ -122,7 +128,7 @@ fn reloaded_while_handles_zero_one_and_many_iterations_with_live_captures() {
     let result = b.emit1(elementwise::sub(), &[carry[1], carry[0]], val);
     let p = TorchDevice::cpu()
         .unwrap()
-        .compile(&b.finish(vec![result]))
+        .compile(&b.finish(vec![result]).build().unwrap())
         .unwrap();
     let m = support::reload(p.modules().next().unwrap());
     for (s, l, k) in [(4, 2, 1), (3, 5, 2), (2, 8, 2), (-3, 12, 1)] {
@@ -157,7 +163,7 @@ fn failed_branch_lowering_preserves_error_and_restores_tracer() {
             })
             .unwrap();
         let out = b.emit(cond_op(), &[pred, x], [ty], vec![yes, no]);
-        b.finish(out)
+        b.finish(out).build().unwrap()
     };
     let device = TorchDevice::cpu().unwrap();
     let err = device
@@ -215,7 +221,7 @@ fn nested_cond_preserves_captures_and_forwarded_result_bindings() {
     let out = b.emit1(add_op(), &[delta, x], val);
     let p = TorchDevice::cpu()
         .unwrap()
-        .compile(&b.finish(vec![out]))
+        .compile(&b.finish(vec![out]).build().unwrap())
         .unwrap();
     let m = support::reload(p.modules().next().unwrap());
     for (outer, inner, expected) in [

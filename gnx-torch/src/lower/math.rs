@@ -190,7 +190,7 @@ rule!(ComplexOperation, |_op, _eqn, [x, y]| {
     Tensor::f_complex(x, y)
 });
 impl TorchLowering for PolynomialOperation {
-    fn lower_torch(&self, _: &Eqn, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, _: Eqn<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [x, coeffs @ ..] = inputs else {
             return Err(invalid("missing polynomial argument"));
         };

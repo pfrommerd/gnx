@@ -1,5 +1,6 @@
+use gnx_common::{Array, ArrayInfo, ArrayRef, DType, Shape};
 use gnx_expr::{
-    Capture, CellKey, HInstr, CellTrace, TraceContext, ObjectTracer, ObjectTracerRef, Trace,
+    Capture, CellKey, CellTrace, HInstr, ObjectTracer, ObjectTracerRef, Trace, TraceContext,
     Tracer, TracerKey, VarInfo,
 };
 use gnx_graph::util::GraphExt;
@@ -7,7 +8,6 @@ use gnx_graph::{
     Bound, Builder, Filter, Graph, GraphConsumer, GraphContext, GraphId, GraphSource, Leaf, Node,
     Nothing, NullSource, Of, SourceError, TypedGraph, View,
 };
-use gnx_common::{Array, ArrayInfo, ArrayRef, DType, Shape};
 
 fn info() -> VarInfo {
     VarInfo::new(ArrayInfo::new(Shape::fixed([4]), DType::F32))
@@ -332,8 +332,7 @@ fn selective_replacement_keeps_unmatched_cells_static() {
     let builder = original
         .builder::<Trace, _, SourceError>(Of::<Trace>::filter(), &mut GraphContext::new())
         .unwrap();
-    let rebuilt =
-        Builder::<Trace>::build(builder, NullSource, &mut GraphContext::new()).unwrap();
+    let rebuilt = Builder::<Trace>::build(builder, NullSource, &mut GraphContext::new()).unwrap();
     assert_same(&original, &rebuilt);
     let builder = original
         .builder::<ObjectTracer, _, SourceError>(
@@ -417,9 +416,9 @@ fn visiting_and_rebuilding_cells_records_no_reads_or_writes() {
     let assigned = trace();
     mutable.set(assigned.clone());
     let captured = Capture::from_context(guard.context(), &[object, assigned.into()], &[]).unwrap();
-    assert_eq!(captured.expr().instructions().len(), 1);
+    assert_eq!(captured.expr().instrs().len(), 1);
     assert!(matches!(
-        captured.expr().instructions()[0],
+        captured.expr().instrs().next().unwrap(),
         HInstr::WriteCell { .. }
     ));
 }

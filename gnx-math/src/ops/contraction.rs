@@ -1,6 +1,6 @@
-use super::{Dialect, Eqn, Op, Operation, Result, arity, fmt, signature};
+use super::{Op, arity, native, signature, stored_exactly};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct DotDimensions {
     pub lhs_contracting: Vec<usize>,
     pub rhs_contracting: Vec<usize>,
@@ -8,13 +8,14 @@ pub struct DotDimensions {
     pub rhs_batch: Vec<usize>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct DotGeneralOperation {
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = DotGeneralOperation)]
+pub struct DotGeneral {
     dimensions: DotDimensions,
 }
 impl DotGeneralOperation {
-    pub fn dimensions(&self) -> &DotDimensions {
-        &self.dimensions
+    pub fn dimensions(&self) -> DotDimensions {
+        native(&self.dimensions)
     }
 }
 gnx_common::array_operation!(
@@ -33,24 +34,30 @@ gnx_common::array_operation!(
     dimensions
 );
 pub fn dot_general(dimensions: DotDimensions) -> Op {
-    Op::new(DotGeneralOperation { dimensions })
+    let op = Op::new(DotGeneral {
+        dimensions: dimensions.clone(),
+    });
+    stored_exactly(
+        (op.downcast_ref::<DotGeneralOperation>()).is_some_and(|op| op.dimensions() == dimensions),
+    );
+    op
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ConvAxes {
     pub batch: usize,
     pub feature: usize,
     pub spatial: Vec<usize>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ConvKernelAxes {
     pub input_feature: usize,
     pub output_feature: usize,
     pub spatial: Vec<usize>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct ConvParameters {
     pub input: ConvAxes,
     pub kernel: ConvKernelAxes,
@@ -63,13 +70,14 @@ pub struct ConvParameters {
     pub batch_groups: usize,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ConvGeneralDilatedOperation {
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = ConvGeneralDilatedOperation)]
+pub struct ConvGeneralDilated {
     parameters: ConvParameters,
 }
 impl ConvGeneralDilatedOperation {
-    pub fn parameters(&self) -> &ConvParameters {
-        &self.parameters
+    pub fn parameters(&self) -> ConvParameters {
+        native(&self.parameters)
     }
 }
 gnx_common::array_operation!(
@@ -77,7 +85,7 @@ gnx_common::array_operation!(
     "conv_general_dilated",
     |op, eqn| {
         arity(eqn, 2)?;
-        let p = &op.parameters;
+        let p = &op.parameters();
         let rank = p.input.spatial.len();
         if [
             p.kernel.spatial.len(),
@@ -106,18 +114,26 @@ gnx_common::array_operation!(
     parameters
 );
 pub fn conv_general_dilated(parameters: ConvParameters) -> Op {
-    Op::new(ConvGeneralDilatedOperation { parameters })
+    let op = Op::new(ConvGeneralDilated {
+        parameters: parameters.clone(),
+    });
+    stored_exactly(
+        (op.downcast_ref::<ConvGeneralDilatedOperation>())
+            .is_some_and(|op| op.parameters() == parameters),
+    );
+    op
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ScaledDotOperation {
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = ScaledDotOperation)]
+pub struct ScaledDot {
     dimensions: DotDimensions,
     lhs_scaled: bool,
     rhs_scaled: bool,
 }
 impl ScaledDotOperation {
-    pub fn dimensions(&self) -> &DotDimensions {
-        &self.dimensions
+    pub fn dimensions(&self) -> DotDimensions {
+        native(&self.dimensions)
     }
     pub fn lhs_scaled(&self) -> bool {
         self.lhs_scaled
@@ -138,26 +154,31 @@ gnx_common::array_operation!(
     dimensions
 );
 pub fn scaled_dot(dimensions: DotDimensions, lhs_scaled: bool, rhs_scaled: bool) -> Op {
-    Op::new(ScaledDotOperation {
-        dimensions,
+    let op = Op::new(ScaledDot {
+        dimensions: dimensions.clone(),
         lhs_scaled,
         rhs_scaled,
-    })
+    });
+    stored_exactly(
+        (op.downcast_ref::<ScaledDotOperation>()).is_some_and(|op| op.dimensions() == dimensions),
+    );
+    op
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct RaggedDotDimensions {
     pub dot: DotDimensions,
     pub lhs_ragged: usize,
     pub rhs_group: Option<usize>,
 }
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct RaggedDotGeneralOperation {
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = RaggedDotGeneralOperation)]
+pub struct RaggedDotGeneral {
     dimensions: RaggedDotDimensions,
 }
 impl RaggedDotGeneralOperation {
-    pub fn dimensions(&self) -> &RaggedDotDimensions {
-        &self.dimensions
+    pub fn dimensions(&self) -> RaggedDotDimensions {
+        native(&self.dimensions)
     }
 }
 gnx_common::array_operation!(
@@ -167,5 +188,12 @@ gnx_common::array_operation!(
     dimensions
 );
 pub fn ragged_dot_general(dimensions: RaggedDotDimensions) -> Op {
-    Op::new(RaggedDotGeneralOperation { dimensions })
+    let op = Op::new(RaggedDotGeneral {
+        dimensions: dimensions.clone(),
+    });
+    stored_exactly(
+        (op.downcast_ref::<RaggedDotGeneralOperation>())
+            .is_some_and(|op| op.dimensions() == dimensions),
+    );
+    op
 }

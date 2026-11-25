@@ -6,44 +6,34 @@ use std::sync::Arc;
 
 use gnx_expr::lower::LoweringContext;
 use gnx_expr::{
-    CallError, Capture, CellAccess, CellKey, CellTrace, DeferredApplyPlan, DeferredLocal,
-    DeferredProjection, DeferredRegion, Dialect, Eqn, HEqn, HExpr, Invocation, Kind, LoweredExpr,
-    LoweringError, ObjectTracer, Op, Operation, Trace, TraceInput, Var, VarInfo,
+    ApplyPlan, ApplyProjection, ApplyRegion, CallError, Capture, CellAccess, CellTrace, Eqn, HEqn,
+    HExprHandle, HRootExpr, Invocation, Kind, LoweredExpr, LoweringError, ObjectTracer, Op,
+    Operation, Trace, TraceInput, Var, VarInfo,
 };
 
-use super::CONTROL_FLOW;
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct CallOperation;
-
-impl fmt::Display for CallOperation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("cf::call")
-    }
+gnx_common::unit_operations! {
+    pub struct CallOperation;
 }
 
 impl Operation for CallOperation {
-    fn name(&self) -> &'static str {
-        "call"
+    fn display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("cf::call")
     }
 
-    fn dialect(&self) -> &'static dyn Dialect {
-        &CONTROL_FLOW
-    }
-
-    fn cell_access(&self, eqn: &HEqn, cell: Var) -> CellAccess {
-        let explicit = eqn.subexprs().first().map_or(CellAccess::Unused, |body| {
+    fn cell_access(&self, eqn: HEqn<'_>, cell: Var) -> CellAccess {
+        let explicit = (eqn.subexprs().next()).map_or(CellAccess::Unused, |body| {
             body.input_cell_access(eqn.inputs(), cell)
         });
         eqn.captured_cell_access(cell).combine(explicit)
     }
 
-    fn lower(&self, eqn: &HEqn, ctx: &mut LoweringContext<'_>) -> Result<(), LoweringError> {
-        let [sub] = eqn.subexprs() else {
+    fn lower(&self, eqn: HEqn<'_>, ctx: &mut LoweringContext<'_>) -> Result<(), LoweringError> {
+        let mut subexprs = eqn.subexprs();
+        let (Some(sub), None) = (subexprs.next(), subexprs.next()) else {
             return Err(LoweringError::CallArity);
         };
         let body = sub.expr();
-        if sub.closure().len() != body.closure().len()
+        if sub.provided_vars().len() != body.closure_inputs().len()
             || eqn.inputs().len() != body.inputs().len()
             || eqn.outputs().len() != body.outputs().len()
         {
@@ -53,9 +43,9 @@ impl Operation for CallOperation {
         let physical = ctx.allocate_results(region.output_infos());
         ctx.bind_region_results(eqn.outputs(), &region, &physical)?;
         ctx.apply_region_updates(&region, &physical)?;
-        if !region.program().expr.eqns().is_empty() || !physical.is_empty() {
+        if region.program().expr.view().eqns().len() != 0 || !physical.is_empty() {
             ctx.emit(
-                eqn.op().clone(),
+                eqn.op().to_owned(),
                 region.inputs(),
                 physical,
                 vec![region.subexpr()],
@@ -64,8 +54,9 @@ impl Operation for CallOperation {
         Ok(())
     }
 
-    fn check_expr(&self, eqn: &Eqn) -> Result<(), LoweringError> {
-        let [sub] = eqn.subexprs() else {
+    fn check_expr(&self, eqn: Eqn<'_>) -> Result<(), LoweringError> {
+        let mut subexprs = eqn.subexprs();
+        let (Some(sub), None) = (subexprs.next(), subexprs.next()) else {
             return Err(LoweringError::CallArity);
         };
         if eqn.inputs().len() != sub.expr().inputs().len()
@@ -83,12 +74,12 @@ pub fn call_op() -> Op {
 
 /// Bind a captured function without specializing potentially aliased cells.
 pub fn call(capture: &Capture, inputs: &[ObjectTracer]) -> Vec<ObjectTracer> {
-    defer_call(Arc::new(capture.expr().clone()), capture.closure(), inputs)
+    defer_call(capture.root().clone().handle(), capture.closure(), inputs)
 }
 
 /// Record a call with a value-only boundary in the trace.
 pub fn call_immutable<C, I>(
-    body: Arc<HExpr>,
+    body: Arc<HRootExpr>,
     captures: C,
     inputs: I,
     outputs: Vec<VarInfo>,
@@ -99,30 +90,30 @@ where
     I: IntoIterator,
     I::Item: Into<TraceInput>,
 {
+    let view = body.view();
     assert!(
-        body.closure()
-            .iter()
-            .chain(body.inputs())
-            .all(|(_, kind, _)| matches!(kind, Kind::Value))
+        view.closure_inputs()
+            .chain(view.inputs())
+            .all(|param| matches!(param.kind(), Kind::Value))
     );
     assert!(
-        body.outputs()
+        view.outputs()
             .iter()
-            .all(|var| matches!(body.kind(var), Some(Kind::Value)))
+            .all(|&var| matches!(view.kind(var), Some(Kind::Value)))
     );
     let captures: Vec<_> = captures.into_iter().map(Into::into).collect();
     let inputs: Vec<_> = inputs.into_iter().map(Into::into).collect();
     assert_eq!(
         inputs.len(),
-        body.inputs().len(),
+        view.inputs().len(),
         "call input arity mismatch"
     );
     assert_eq!(
         outputs.len(),
-        body.outputs().len(),
+        view.outputs().len(),
         "call output arity mismatch"
     );
-    Invocation::invoke(call_op(), vec![(body, captures)], inputs, outputs)
+    Invocation::invoke(call_op(), vec![(body.handle(), captures)], inputs, outputs)
         .into_iter()
         .map(|tracer| tracer.into_trace_ref())
         .collect()
@@ -140,20 +131,21 @@ pub fn call_lowered(
 /// Bind a high-level body and explicit captures without lowering the call.
 /// The caller's alias specialization is applied later, during lowering.
 pub fn defer_call(
-    body: Arc<HExpr>,
+    body: HExprHandle,
     captures: &[ObjectTracer],
     inputs: &[ObjectTracer],
 ) -> Vec<ObjectTracer> {
-    let symbol_captures = body.symbol_closure().to_vec();
+    let symbol_captures = body.view().closure_symbols().to_vec();
     defer_call_with_symbols(body, symbol_captures, captures, inputs)
 }
 /// Record a call binding the child’s symbol closure explicitly in caller order.
 pub fn defer_call_with_symbols(
-    body: Arc<HExpr>,
+    handle: HExprHandle,
     symbol_captures: Vec<gnx_expr::Symbol>,
     captures: &[ObjectTracer],
     inputs: &[ObjectTracer],
 ) -> Vec<ObjectTracer> {
+    let body = handle.view();
     let metas = |args: &[ObjectTracer]| {
         args.iter()
             .map(|obj| match obj {
@@ -167,33 +159,14 @@ pub fn defer_call_with_symbols(
             gnx_expr::TraceContext::current().is_some_and(|c| c.has_symbol(s))
         })
         .expect("invalid call symbol bindings");
-    assert_eq!(captures.len(), body.closure().len());
+    assert_eq!(captures.len(), body.closure_inputs().len());
     assert_eq!(inputs.len(), body.inputs().len());
     let bindings: BTreeMap<_, _> = body
-        .closure()
-        .iter()
+        .closure_inputs()
         .chain(body.inputs())
-        .map(|(var, ..)| *var)
+        .map(|param| param.var())
         .zip(captures.iter().chain(inputs))
         .collect();
-    let mut locals = BTreeMap::<CellKey, DeferredLocal>::new();
-    let mut external_access = CellAccess::Unused;
-    for (var, object) in &bindings {
-        if let ObjectTracer::Cell(cell) = object {
-            let access = body.cell_access(var).unwrap_or(CellAccess::Unused);
-            if cell.is_maybe_aliased() {
-                external_access = external_access.combine(access);
-            } else {
-                let local = locals
-                    .entry(CellKey::from(cell))
-                    .or_insert_with(|| DeferredLocal {
-                        cell: cell.clone(),
-                        written: false,
-                    });
-                local.written |= matches!(access, CellAccess::Write | CellAccess::ReadWrite);
-            }
-        }
-    }
 
     enum ResultSlot<'a> {
         Passthrough(&'a ObjectTracer),
@@ -203,9 +176,12 @@ pub fn defer_call_with_symbols(
     let outputs: Vec<_> = body
         .outputs()
         .iter()
-        .map(|var| {
+        .map(|&var| {
             body.definition(var)
-                .map(|(kind, info)| (kind, info.remap_symbols(|s| symbols[&s])))
+                .map(|param| {
+                    let info = param.info_ref().to_owned();
+                    (param.kind(), info.remap_symbols(|s| symbols[&s]))
+                })
                 .expect("undefined deferred call output")
         })
         .collect();
@@ -223,29 +199,32 @@ pub fn defer_call_with_symbols(
             match kind {
                 Kind::Value => {
                     let slot = projections.len();
-                    projections.push(DeferredProjection::Value(index));
+                    projections.push(ApplyProjection::Value(index));
                     ResultSlot::Value(slot)
                 }
                 Kind::Cell => ResultSlot::FreshCell(*fresh.entry(*var).or_insert_with(|| {
                     let slot = projections.len();
-                    projections.push(DeferredProjection::CellContents(index));
+                    projections.push(ApplyProjection::CellContents(index));
                     slot
                 })),
             }
         })
         .collect();
-    let results = Invocation::defer_apply(
+    let region = ApplyRegion {
+        symbol_captures,
+        body: handle.clone(),
+        captures: captures.to_vec(),
+        arguments: inputs.to_vec(),
+    };
+    let (locals, external_access) = ApplyPlan::classify(std::slice::from_ref(&region));
+    let results = Invocation::apply_plan(
         call_op(),
-        DeferredApplyPlan {
-            regions: vec![DeferredRegion {
-                symbol_captures,
-                body,
-                captures: captures.to_vec(),
-            }],
+        ApplyPlan {
+            regions: vec![region],
             inputs: inputs.to_vec(),
             outputs,
             projections,
-            locals: locals.into_values().collect(),
+            locals,
             external_access,
         },
     );

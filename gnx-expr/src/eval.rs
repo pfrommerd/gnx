@@ -3,10 +3,9 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::{
-    Capture, ConcreteValue, Expr, InputId, InputSpec, LoweringError, ObjectTracer, Trace, Value,
-    VarInfo,
-};
+use crate::lower::{InputId, InputSpec, LoweringError};
+use crate::trace::{Capture, ObjectTracer, Trace};
+use crate::{ConcreteValue, RootExpr, Value, VarInfo};
 
 // Capture and publication share this gate so a capture sees a consistent
 // set of pending producers. Never hold it across execution or await.
@@ -48,7 +47,7 @@ impl Capture {
             .map(value_trace)
             .collect::<Result<Vec<_>, _>>()?;
         let spec = InputSpec::from_args(&closure, &inputs);
-        let program = crate::lower::lower(&expr, &spec)?;
+        let program = crate::lower::lower(expr.view(), &spec)?;
         if !program.updates.is_empty() {
             return Err(EvalPlanError::CellEffect);
         }
@@ -99,12 +98,7 @@ impl Capture {
             expected: program.output_infos,
             writes: outputs.into_iter().zip(sources).collect(),
         };
-        drop(program.expr);
-        Ok(PreparedEval {
-            expr: Arc::unwrap_or_clone(expr),
-            args,
-            commit,
-        })
+        Ok(PreparedEval { expr, args, commit })
     }
 }
 
@@ -144,13 +138,13 @@ fn snapshot(input: InputId, object: &ObjectTracer) -> Result<Value, EvalPlanErro
 }
 
 pub struct PreparedEval {
-    expr: Expr,
+    expr: Arc<RootExpr>,
     args: Vec<Value>,
     commit: EvalCommit,
 }
 
 impl PreparedEval {
-    pub fn into_parts(self) -> (Expr, Vec<Value>, EvalCommit) {
+    pub fn into_parts(self) -> (Arc<RootExpr>, Vec<Value>, EvalCommit) {
         (self.expr, self.args, self.commit)
     }
 }

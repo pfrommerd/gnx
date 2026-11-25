@@ -20,7 +20,8 @@ pub use gnx_math::{array, buffer, device, shard};
 ///     y: output = array::transpose<&[1, 0]> x;
 ///     in (y)
 /// });
-/// body.check().unwrap();
+/// let body = body.build().unwrap();
+/// body.view().check().unwrap();
 /// ```
 pub mod ops {
     pub use gnx_math::ops::*;

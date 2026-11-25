@@ -5,7 +5,7 @@ use futures_executor::block_on;
 use gnx::Eval;
 use gnx_expr::pass::Builder;
 use gnx_expr::{
-    Capture, Dialect, Eqn, ObjectTracer, Op, Operation, Trace, TraceContext, Value, VarInfo,
+    Capture, Eqn, ObjectTracer, Op, Operation, Trace, TraceContext, Value, VarInfo,
     register_op_interface,
 };
 use gnx_math::ops::{add_op, mul_op};
@@ -116,33 +116,18 @@ fn close(actual: &[f32], expected: &[f32]) {
 }
 
 // A user-defined comparison with its own XLA lowering and batching rule.
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct LessThan;
-struct TestDialect;
-impl Dialect for TestDialect {
-    fn name(&self) -> &'static str {
-        "transform_test"
-    }
+gnx_common::unit_operations! {
+    struct LessThan;
 }
-impl std::fmt::Display for LessThan {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}::{}", Operation::dialect(self).name(), Operation::name(self))
-    }
-}
-
-impl Operation for LessThan {
-    fn name(&self) -> &'static str {
-        "less_than"
-    }
-    fn dialect(&self) -> &'static dyn Dialect {
-        &TestDialect
-    }
+impl Operation for LessThan {}
+gnx_expr::dialect! {
+    dyn Operation, "transform_test" => { "less_than" => LessThan }
 }
 impl XlaLowering for LessThan {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         operands: &[XlaOp],
     ) -> std::io::Result<Vec<XlaOp>> {
         Ok(vec![
@@ -157,7 +142,7 @@ impl BatchRule for LessThan {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         _: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
@@ -165,9 +150,10 @@ impl BatchRule for LessThan {
             .iter()
             .map(|&value| materialize(b, value, size, 0))
             .collect::<TransformResult<Vec<_>>>()?;
-        let info = with_axis(&eqn.outputs()[0].1, 0, size)?;
+        let output = eqn.outputs().next().unwrap().info_ref().to_owned();
+        let info = with_axis(&output, 0, size)?;
         Ok(vec![Batched::at(
-            b.emit1(eqn.op().clone(), &operands, info),
+            b.emit1(eqn.op().to_owned(), &operands, info),
             0,
         )])
     }
@@ -415,15 +401,16 @@ fn transformations_through_a_call() {
     let device = XlaDevice::cpu().unwrap();
     let vector = info(&[2], DType::F32);
     // g(x, y) = x * y behind a call; f(x, y) = g(x, y) * x + y.
-    let g = region(&[vector.clone(), vector.clone()], |a| vec![mul(&a[0], &a[1])]);
+    let g = region(&[vector.clone(), vector.clone()], |a| {
+        vec![mul(&a[0], &a[1])]
+    });
     let f = region(&[vector.clone(), vector.clone()], |a| {
         let inner = gnx_transforms::call(&g, &[a[0].clone().into(), a[1].clone().into()]);
         vec![add(&mul(&inner[0].resolve(), &a[0]), &a[1])]
     });
     let (x, y) = (floats(&[2], &[2., 3.]), floats(&[2], &[5., 7.]));
     let (tx, ty) = (floats(&[2], &[1., 0.5]), floats(&[2], &[-1., 2.]));
-    let (out, tangent) =
-        jvp(&f, &[x.clone(), y.clone()], &[tx, ty], &[0, 1], &[0]).unwrap();
+    let (out, tangent) = jvp(&f, &[x.clone(), y.clone()], &[tx, ty], &[0, 1], &[0]).unwrap();
     let ct = floats(&[2], &[1., 2.]);
     let (_, grads) = vjp(&f, &[x.clone(), y.clone()], &[ct], &[0, 1], &[0]).unwrap();
     let values = eval(
@@ -469,13 +456,19 @@ fn transformations_with_operand_free_operations() {
         let zeros = apply(gnx_math::ops::zeros_op(), &[], matrix.clone());
         vec![add(&add(&mul(&a[0], &eye), &ones), &zeros)]
     });
-    let xs = floats(&[3, 2, 2], &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.]);
+    let xs = floats(
+        &[3, 2, 2],
+        &[1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11., 12.],
+    );
     let mapped = map(&f, &[xs], &[0], &[0]).unwrap();
     let x = floats(&[2, 2], &[1., 2., 3., 4.]);
     let t = floats(&[2, 2], &[1., 1., 1., 1.]);
     let (_, tangent) = jvp(&f, &[x.clone()], &[t.clone()], &[0], &[0]).unwrap();
     let (_, grad) = vjp(&f, &[x], &[t], &[0], &[0]).unwrap();
-    let values = eval(&device, &[mapped[0].clone(), tangent[0].clone(), grad[0].clone()]);
+    let values = eval(
+        &device,
+        &[mapped[0].clone(), tangent[0].clone(), grad[0].clone()],
+    );
     close(
         &values[0],
         &[2., 1., 1., 5., 6., 1., 1., 9., 10., 1., 1., 13.],

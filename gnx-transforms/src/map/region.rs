@@ -3,10 +3,10 @@
 //!
 //! [`map`]: super::map
 
-use gnx_expr::{Kind, LoweringError, Trace};
+use gnx_common::ops::signature;
+use gnx_expr::{ApplyRegion, Invocation, Kind, LoweringError, Trace};
 
 use super::MapParameters;
-use crate::body::{Body, BodySignature, record, reject_cell_writes, signature, trace_infos};
 use crate::cf::expect_inputs;
 use crate::util;
 
@@ -14,16 +14,20 @@ use crate::util;
 /// `out_axes[j]`. Captured values are shared by every instance. The size is
 /// inferred from the inputs; it is required when there are none.
 pub fn map(
-    body: impl Into<Body>,
+    body: impl Into<ApplyRegion>,
     inputs: &[Trace],
     in_axes: &[usize],
     out_axes: &[usize],
     size: Option<usize>,
 ) -> Result<Vec<Trace>, LoweringError> {
     let body = body.into();
-    reject_cell_writes(&body)?;
-    let signature_ = BodySignature::of_hexpr(&body.expr)?;
-    if in_axes.len() != inputs.len() || out_axes.len() != signature_.outputs.len() {
+    if body.body.view().writes_parameters() {
+        return Err(signature(
+            "transformed functions cannot write captured cells",
+        ));
+    }
+    let (body_inputs, body_outputs) = util::value_signature(body.body.view())?;
+    if in_axes.len() != inputs.len() || out_axes.len() != body_outputs.len() {
         return Err(signature("map arity"));
     }
     let mut size = size;
@@ -40,19 +44,22 @@ pub fn map(
         out_axes: out_axes.to_vec(),
     };
     expect_inputs(
-        &body.expr,
-        signature_
-            .inputs
-            .iter()
-            .cloned()
-            .map(|info| (Kind::Value, info)),
+        body.body.view(),
+        (body_inputs.iter().cloned()).map(|info| (Kind::Value, info)),
     )?;
-    let outputs = parameters.mapped(&signature_.outputs, out_axes)?;
+    let outputs = parameters.mapped(&body_outputs, out_axes)?;
+    let input_infos: Vec<_> = inputs.iter().map(|trace| trace.info().clone()).collect();
     parameters.check(
-        &signature_,
-        Some(&trace_infos(inputs)),
+        &body_inputs,
+        &body_outputs,
+        Some(&input_infos),
         inputs.len(),
         &outputs,
     )?;
-    Ok(record(parameters.to_op(), &body, inputs, outputs))
+    Ok(Invocation::apply(
+        parameters.to_op(),
+        vec![body],
+        inputs.iter().cloned().map(Into::into).collect(),
+        outputs,
+    ))
 }

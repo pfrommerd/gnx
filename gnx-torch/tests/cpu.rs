@@ -1,6 +1,6 @@
 use futures_executor::block_on;
 use gnx_common::ops::reduction::reduce_add_op;
-use gnx_expr::{Eqn, Expr, Value, VarInfo, VarScope};
+use gnx_expr::{EqnSource, ExprBuilder, Value, VarInfo, VarScope};
 use gnx_math::{
     ArrayInfo, DType, DataHandle, Device, ExecOpts, HostBuffer, Shape, TransferPolicy, ops::*,
 };
@@ -53,15 +53,18 @@ fn replay_with_fresh_captures_and_inputs() {
     let mut vars = VarScope::new();
     let [x, y, s, p] = std::array::from_fn(|_| vars.create_var());
     let t = ty(&[2]);
-    let body = Expr::new(
+    let body = ExprBuilder::from_parts(
+        vec![],
         vec![(x, t.clone())],
         vec![(y, t.clone())],
         vec![
-            Eqn::new(add_op(), vec![x, y], vec![(s, t.clone())]),
-            Eqn::new(mul_op(), vec![s, x], vec![(p, t)]),
+            EqnSource::new(add_op(), vec![], vec![x, y], vec![(s, t.clone())]),
+            EqnSource::new(mul_op(), vec![], vec![s, x], vec![(p, t)]),
         ],
         vec![p, x, s, p],
-    );
+    )
+    .build()
+    .unwrap();
     let compiled = d.compile(&body).unwrap();
     for (xs, ys, product, sum) in [
         ([1., 2.], [3., 4.], [4., 12.], [4., 6.]),
@@ -87,17 +90,30 @@ fn device_executes_shape_ops_and_reduction() {
     let d = TorchDevice::cpu().unwrap();
     let mut vars = VarScope::new();
     let [x, t, r, b, s] = std::array::from_fn(|_| vars.create_var());
-    let body = Expr::new(
+    let body = ExprBuilder::from_parts(
+        vec![],
         vec![],
         vec![(x, ty(&[2, 2]))],
         vec![
-            Eqn::new(transpose_op(&[1, 0]), vec![x], vec![(t, ty(&[2, 2]))]),
-            Eqn::new(reshape_op(), vec![t], vec![(r, ty(&[4]))]),
-            Eqn::new(broadcast_in_dim_op(&[0]), vec![r], vec![(b, ty(&[4, 3]))]),
-            Eqn::new(reduce_add_op(&[1]), vec![b], vec![(s, ty(&[4]))]),
+            EqnSource::new(
+                transpose_op(&[1, 0]),
+                vec![],
+                vec![x],
+                vec![(t, ty(&[2, 2]))],
+            ),
+            EqnSource::new(reshape_op(), vec![], vec![t], vec![(r, ty(&[4]))]),
+            EqnSource::new(
+                broadcast_in_dim_op(&[0]),
+                vec![],
+                vec![r],
+                vec![(b, ty(&[4, 3]))],
+            ),
+            EqnSource::new(reduce_add_op(&[1]), vec![], vec![b], vec![(s, ty(&[4]))]),
         ],
         vec![t, s],
-    );
+    )
+    .build()
+    .unwrap();
     let out = block_on(d.execute(body, [array(&[2, 2], &[1., 2., 3., 4.])], COPY)).unwrap();
     assert_eq!(read(&d, &out[0]), [1., 3., 2., 4.]);
     assert_eq!(read(&d, &out[1]), [3., 9., 6., 12.]);
@@ -107,36 +123,35 @@ fn device_executes_shape_ops_and_reduction() {
 fn unsupported_live_op_fails_but_dead_op_is_pruned() {
     let d = TorchDevice::cpu().unwrap();
     let mut vars = VarScope::new();
-    #[derive(Clone, Hash, PartialEq, Eq)]
-    struct Unknown;
-    impl std::fmt::Display for Unknown {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    gnx_common::unit_operations! {
+        struct Unknown;
+    }
+    impl gnx_expr::Operation for Unknown {
+        fn display(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("unknown")
         }
     }
-    impl gnx_expr::Operation for Unknown {
-        fn name(&self) -> &'static str {
-            "unknown"
-        }
-        fn dialect(&self) -> &'static dyn gnx_expr::Dialect {
-            gnx_common::ops::array_dialect()
-        }
-    }
+    gnx_expr::dialect! { dyn gnx_expr::Operation, "array" => { "unknown" => Unknown } }
+    assert_eq!(gnx_common::ops::array_dialect(), "array");
     let [x, unknown, one] = std::array::from_fn(|_| vars.create_var());
     let body = |result| {
-        Expr::new(
+        ExprBuilder::from_parts(
+            vec![],
             vec![],
             vec![(x, ty(&[2]))],
             vec![
-                Eqn::new(
+                EqnSource::new(
                     gnx_expr::Op::new(Unknown),
+                    vec![],
                     vec![x],
                     vec![(unknown, ty(&[2]))],
                 ),
-                Eqn::new(ones_op(), vec![], vec![(one, ty(&[2]))]),
+                EqnSource::new(ones_op(), vec![], vec![], vec![(one, ty(&[2]))]),
             ],
             vec![result],
         )
+        .build()
+        .unwrap()
     };
     let err = d.compile(&body(unknown)).err().unwrap();
     assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);

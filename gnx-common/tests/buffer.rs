@@ -1,9 +1,9 @@
-use gnx_expr::{ConcreteValue, Value};
 use gnx_common::{
     AllocationId, AllocationRef, Array, ArrayInfo, ByteOrder, DType, DataHandle, DlpackRequest,
     HostBuffer, HostId, Lease, LocalAllocations, MemoryLocation, MemoryView, OwnerId, Shape, Shard,
     ShardStorage, StridedLayout, TransferPolicy,
 };
+use gnx_expr::{ConcreteValue, Value};
 
 #[test]
 fn host_buffer_separates_storage_metadata_from_array_info() {
@@ -19,7 +19,7 @@ fn host_buffer_separates_storage_metadata_from_array_info() {
 
     let data = DataHandle::new(HostBuffer::new(info.clone(), bytes.clone()).unwrap());
     let value = Value::new(data);
-    assert_eq!(value.to_info().downcast::<ArrayInfo>(), Ok(&info));
+    assert_eq!(ArrayInfo::from_info(&value.to_info()), Some(info));
     assert_eq!(
         value
             .downcast_into::<DataHandle>()

@@ -10,7 +10,7 @@ use gnx_transforms::{TransformError, TransformResult};
 fn batch_indices(
     b: &mut Builder,
     size: usize,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     inputs: &[Batched],
     op: Op,
     array_count: usize,
@@ -26,9 +26,9 @@ fn batch_indices(
         .map(|&x| materialize(b, x, size, 0))
         .collect::<TransformResult<Vec<_>>>()?;
     args.extend(rest.iter().map(|x| x.var));
-    let metadata = with_axis(&eqn.outputs()[0].1, 0, size)?;
+    let metadata = with_axis(&gnx_transforms::util::output_infos(eqn)[0], 0, size)?;
     Ok(vec![Batched::at(
-        b.emit(op, &args, [metadata], eqn.subexprs().to_vec())[0],
+        b.emit(op, &args, [metadata], crate::rules::copy_regions(eqn))[0],
         0,
     )])
 }
@@ -38,7 +38,7 @@ impl BatchRule for GatherOperation {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         _: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
@@ -59,7 +59,7 @@ impl BatchRule for ScatterOperation {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         _: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {

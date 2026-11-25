@@ -8,7 +8,7 @@ use super::*;
 pub struct RegionCell(pub(super) CellBinding);
 
 /// An explicit region parameter is either a distinct runtime argument or a
-/// statically bound cell. Captures are bound separately by HSubExpr.
+/// statically bound cell. Captures are bound separately by the subexpression.
 #[derive(Clone, Copy)]
 pub enum RegionArgument {
     Value,
@@ -23,16 +23,16 @@ enum Slot {
 }
 
 pub struct StructuredRegion {
-    symbol_captures: Vec<crate::Symbol>,
+    symbol_captures: Vec<Symbol>,
     program: LoweredExpr,
     slots: BTreeMap<InputId, Slot>,
     num_arguments: usize,
 }
 
 pub struct FixedRegion {
-    symbol_captures: Vec<crate::Symbol>,
-    expr: Arc<Expr>,
-    trace_body: Arc<HExpr>,
+    symbol_captures: Vec<Symbol>,
+    expr: ExprRef,
+    trace_body: HExprRef,
     captures: Vec<Var>,
 }
 
@@ -58,7 +58,7 @@ impl LoweringContext<'_> {
                     .eqns
                     .iter()
                     .rev()
-                    .flat_map(Eqn::outputs)
+                    .flat_map(EqnSource::outputs)
                     .find_map(|(v, info)| (*v == var).then(|| info.clone()))
             })
             .ok_or(LoweringError::UndefinedVariable(var))
@@ -78,12 +78,14 @@ impl LoweringContext<'_> {
     /// dynamic arguments even if their initial SSA values happen to be equal.
     pub fn lower_structured_region(
         &self,
-        sub: &HSubExpr,
+        sub: HSubExpr<'_>,
         arguments: &[RegionArgument],
         argument_infos: &[VarInfo],
     ) -> Result<StructuredRegion, LoweringError> {
         let body = sub.expr();
-        if sub.closure().len() != body.closure().len() || arguments.len() != body.inputs().len() {
+        if sub.provided_vars().len() != body.closure_inputs().len()
+            || arguments.len() != body.inputs().len()
+        {
             return Err(LoweringError::RegionSignature("region binding arity"));
         }
         let mut values = argument_infos.iter();
@@ -95,25 +97,29 @@ impl LoweringContext<'_> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let symbols = self.child_bindings(sub, &actual)?;
+        // Lower the body in the symbol namespace of the caller.
+        let substituted;
         let body = if symbols.is_empty() {
-            Cow::Borrowed(body.as_ref())
+            body
         } else {
-            Cow::Owned(body.substitute_symbols(&symbols))
+            substituted = body.substitute_symbols(&symbols).build()?;
+            substituted.view()
         };
         let mut identities = BTreeMap::new();
         let mut slots = BTreeMap::new();
-        let mut spec_binding = |slot, id, kind: &Kind, info: &VarInfo| {
+        let mut spec_binding = |slot, id, param: HParam<'_>| {
             let id = *identities.entry(slot).or_insert(id);
             slots.insert(id, slot);
-            (id, *kind, info.clone())
+            (id, param.kind(), param.info_ref().to_owned())
         };
         let mut num_arguments = 0;
         let mut inputs = Vec::new();
-        for (index, (argument, (_, kind, info))) in arguments.iter().zip(body.inputs()).enumerate()
-        {
-            let slot = match (argument, kind) {
+        for (index, (argument, param)) in arguments.iter().zip(body.inputs()).enumerate() {
+            let info = param.info_ref();
+            let slot = match (argument, param.kind()) {
                 (RegionArgument::Value, Kind::Value)
-                    if argument_infos.get(num_arguments) == Some(info) =>
+                    if (argument_infos.get(num_arguments))
+                        .is_some_and(|actual| info == *actual) =>
                 {
                     let slot = Slot::Argument(num_arguments);
                     num_arguments += 1;
@@ -121,32 +127,35 @@ impl LoweringContext<'_> {
                 }
                 (RegionArgument::Cell(var), Kind::Cell) => {
                     let cell = RegionCell(self.lowerer.cell(*var)?);
-                    if &self.cell_state(cell)?.1 != info {
+                    if info != self.cell_state(cell)?.1 {
                         return Err(LoweringError::RegionSignature("region cell metadata"));
                     }
                     Slot::Cell(cell)
                 }
                 _ => return Err(LoweringError::RegionSignature("region argument metadata")),
             };
-            inputs.push(spec_binding(slot, InputId::Input(index), kind, info));
+            inputs.push(spec_binding(slot, InputId::Input(index), param));
         }
         if num_arguments != argument_infos.len() {
             return Err(LoweringError::RegionSignature("region argument arity"));
         }
         let mut closure = Vec::new();
-        for (index, (&var, (_, kind, info))) in sub.closure().iter().zip(body.closure()).enumerate()
+        for (index, (&var, param)) in (sub.provided_vars().iter())
+            .zip(body.closure_inputs())
+            .enumerate()
         {
-            let slot = match kind {
+            let info = param.info_ref();
+            let slot = match param.kind() {
                 Kind::Value => {
                     let (var, actual) = self.value_operand(var)?;
-                    if actual != *info {
+                    if info != actual {
                         return Err(LoweringError::RegionSignature("region capture metadata"));
                     }
                     Slot::Capture(var)
                 }
                 Kind::Cell => {
                     let cell = RegionCell(self.lowerer.cell(var)?);
-                    if &self.cell_state(cell)?.1 != info {
+                    if info != self.cell_state(cell)?.1 {
                         return Err(LoweringError::RegionSignature(
                             "region capture cell metadata",
                         ));
@@ -154,11 +163,11 @@ impl LoweringContext<'_> {
                     Slot::Cell(cell)
                 }
             };
-            closure.push(spec_binding(slot, InputId::Closure(index), kind, info));
+            closure.push(spec_binding(slot, InputId::Closure(index), param));
         }
         let program = body.lower(&InputSpec { closure, inputs })?;
         Ok(StructuredRegion {
-            symbol_captures: body.symbol_closure.clone(),
+            symbol_captures: body.closure_symbols().to_vec(),
             program,
             slots,
             num_arguments,
@@ -167,9 +176,9 @@ impl LoweringContext<'_> {
 
     /// Bind a region operation's joined results and advance the chosen parent
     /// cell states. State slots are interleaved at `position` in physical results.
-    pub fn bind_structured_results(
+    pub fn bind_structured_results<'b>(
         &mut self,
-        logical: &[(Var, Kind, VarInfo)],
+        logical: impl ExactSizeIterator<Item = HParam<'b>>,
         cells: &[RegionCell],
         position: usize,
         physical: &[(Var, VarInfo)],
@@ -179,11 +188,11 @@ impl LoweringContext<'_> {
         }
         let (before, rest) = physical.split_at(position);
         let (states, after) = rest.split_at(cells.len());
-        for ((var, kind, info), (value, actual)) in logical.iter().zip(before.iter().chain(after)) {
-            if !matches!(kind, Kind::Value if info == actual) {
+        for (param, (value, actual)) in logical.zip(before.iter().chain(after)) {
+            if param.kind() != Kind::Value || param.info_ref() != *actual {
                 return Err(LoweringError::RegionSignature("structured result metadata"));
             }
-            self.lowerer.values.insert(*var, *value);
+            self.lowerer.values.insert(param.var(), *value);
         }
         for (&cell, (value, info)) in cells.iter().zip(states) {
             if *info != self.cell_state(cell)?.1 {
@@ -218,7 +227,7 @@ impl StructuredRegion {
         output_position: Option<usize>,
         expected_results: &[VarInfo],
     ) -> Result<FixedRegion, LoweringError> {
-        let original = &self.program.expr;
+        let original = &self.program.source;
         if input_position > self.num_arguments
             || expected_results.len() != self.program.results().len()
             || output_position.is_some_and(|p| p > expected_results.len())
@@ -231,34 +240,18 @@ impl StructuredRegion {
                 "incompatible fixed region layout",
             ));
         }
-        let id_params: BTreeMap<_, _> = self
-            .program
-            .closure
-            .iter()
+        let id_params: BTreeMap<_, _> = (self.program.closure.iter())
             .chain(&self.program.inputs)
             .copied()
-            .zip(original.closure().iter().chain(original.inputs()).cloned())
+            .zip((original.closure_inputs.iter().chain(&original.inputs)).cloned())
             .collect();
         let mut slot_params: BTreeMap<_, _> = self
             .slots
             .iter()
             .map(|(id, slot)| (*slot, id_params[id].clone()))
             .collect();
-        let mut scope = VarScope {
-            next_symbol: 0,
-            next_id: id_params
-                .values()
-                .map(|(var, _)| *var)
-                .chain(
-                    original
-                        .eqns()
-                        .iter()
-                        .flat_map(|eqn| eqn.outputs().iter().map(|(var, _)| *var)),
-                )
-                .filter_map(|var| var.id())
-                .max()
-                .map_or(0, |max| max + 1),
-        };
+        // New parameters come after every variable of the lowered region.
+        let mut scope = original.scope.clone();
         let mut inputs: Vec<_> = (0..self.num_arguments)
             .map(|idx| {
                 slot_params
@@ -296,7 +289,7 @@ impl StructuredRegion {
         }
         let source = |output: &Output| match *output {
             Output::Value { result_idx } => original
-                .outputs()
+                .outputs
                 .get(result_idx)
                 .copied()
                 .ok_or(LoweringError::InvalidResultIndex(result_idx)),
@@ -307,7 +300,7 @@ impl StructuredRegion {
         let mut results = Vec::new();
         for (output, expected) in self.program.results().iter().zip(expected_results) {
             let var = source(output)?;
-            if original.value_info(&var) != Some(expected) {
+            if original.value_info(var) != Some(expected) {
                 return Err(LoweringError::RegionSignature(
                     "incompatible region result metadata",
                 ));
@@ -323,11 +316,11 @@ impl StructuredRegion {
             for (cell, info) in states {
                 let var = if let Some(&idx) = updates.get(cell) {
                     let var = original
-                        .outputs()
+                        .outputs
                         .get(idx)
                         .copied()
                         .ok_or(LoweringError::InvalidResultIndex(idx))?;
-                    if original.value_info(&var) != Some(info) {
+                    if original.value_info(var) != Some(info) {
                         return Err(LoweringError::RegionSignature(
                             "incompatible region state result",
                         ));
@@ -347,30 +340,89 @@ impl StructuredRegion {
                 .map(|(var, info)| (*var, Kind::Value, info.clone()))
                 .collect()
         };
-        let trace_body = Arc::new(HExpr {
-            symbol_closure: original.symbol_closure.clone(),
-            symbol_inputs: original.symbol_inputs.clone(),
-            closure: trace_params(&closure),
-            inputs: trace_params(&inputs),
-            instructions: self.program.trace_body.instructions.clone(),
-            outputs: results.clone(),
-            name_hint: original.name_hint.clone(),
-        });
-        let expr = Expr {
-            symbol_closure: original.symbol_closure.clone(),
-            symbol_inputs: original.symbol_inputs.clone(),
+        let name = original.name_hint().map(str::to_owned);
+        let trace_body = HExprBuilder::from_parts(
+            original.closure_symbols.clone(),
+            trace_params(&closure),
+            trace_params(&inputs),
+            self.program.trace_source.instrs.clone(),
+            results.clone(),
+        )
+        .with_name_hint_opt(name.clone())
+        .build()?;
+        let expr = ExprBuilder::from_parts(
+            original.closure_symbols.clone(),
             closure,
             inputs,
-            eqns: original.eqns.clone(),
-            outputs: results,
-            name_hint: original.name_hint.clone(),
-        };
-        expr.check()?;
+            original.eqns.clone(),
+            results,
+        )
+        .with_name_hint_opt(name)
+        .build()?;
+        expr.view().check()?;
         Ok(FixedRegion {
             symbol_captures: self.symbol_captures.clone(),
-            expr: Arc::new(expr),
-            trace_body,
+            expr: expr.handle().into(),
+            trace_body: trace_body.handle().into(),
             captures,
         })
+    }
+}
+
+impl LoweringContext<'_> {
+    /// Lower an operation that has one region, takes values, and yields
+    /// values, emitting it unchanged with the lowered region. The region
+    /// is called with values, one per input; it may read the cells it is
+    /// provided, but not write them.
+    ///
+    /// `check` validates the signature first. It is given the infos of the
+    /// region's inputs and results, and of the equation's operands and
+    /// results.
+    pub fn lower_value_region_apply(
+        &mut self,
+        eqn: HEqn<'_>,
+        check: impl FnOnce(&[VarInfo], &[VarInfo], &[VarInfo], &[VarInfo]) -> Result<(), LoweringError>,
+    ) -> Result<(), LoweringError> {
+        let mut subexprs = eqn.subexprs();
+        let (Some(sub), None) = (subexprs.next(), subexprs.next()) else {
+            return Err(LoweringError::RegionSignature(
+                "expected exactly one region",
+            ));
+        };
+        let value = |param: HParam<'_>| match param.kind() {
+            Kind::Value => Ok(param.info_ref().to_owned()),
+            Kind::Cell => Err(LoweringError::ExpectedValue(param.var())),
+        };
+        let body = sub.expr();
+        let body_inputs = body.inputs().map(value).collect::<Result<Vec<_>, _>>()?;
+        let body_outputs = (body.outputs().iter())
+            .map(|&var| match body.definition(var) {
+                Some(param) => value(param),
+                None => Err(LoweringError::UndefinedVariable(var)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (values, operands): (Vec<_>, Vec<_>) = (eqn.inputs().iter())
+            .map(|&var| self.value_operand(var))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .unzip();
+        let results = eqn.outputs().map(value).collect::<Result<Vec<_>, _>>()?;
+        check(&body_inputs, &body_outputs, &operands, &results)?;
+
+        let region = self.lower_structured_region(
+            sub,
+            &vec![RegionArgument::Value; body_inputs.len()],
+            &body_inputs,
+        )?;
+        if region.writes().next().is_some() {
+            return Err(LoweringError::RegionSignature(
+                "the region cannot write the cells it is provided",
+            ));
+        }
+        let fixed = region.fix(self, &[], body_inputs.len(), None, &body_outputs)?;
+        let physical = self.allocate_results(&results);
+        self.bind_structured_results(eqn.outputs(), &[], 0, &physical)?;
+        self.emit(eqn.op().to_owned(), values, physical, vec![fixed.subexpr()]);
+        Ok(())
     }
 }

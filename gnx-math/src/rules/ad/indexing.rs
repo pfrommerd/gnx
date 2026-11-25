@@ -9,7 +9,7 @@ use gnx_transforms::ad::{Dual, JvpRule, Operand, Tangent, TransposeRule};
 use gnx_transforms::util::{copy_eqn, dims, dtype, info, zeros};
 use gnx_transforms::{TransformError, TransformResult};
 
-fn primal(b: &mut Builder, eqn: &Eqn, inputs: &[Dual]) -> Var {
+fn primal(b: &mut Builder, eqn: Eqn<'_>, inputs: &[Dual]) -> Var {
     let args: Vec<_> = inputs.iter().map(|d| d.primal).collect();
     copy_eqn(b, eqn, &args, &[])[0]
 }
@@ -30,7 +30,7 @@ impl JvpRule for GatherOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -56,7 +56,7 @@ impl TransposeRule for GatherOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        _: &Eqn,
+        _: Eqn<'_>,
         operands: &[Operand],
         _: &[Vec<Var>],
         cts: &[Tangent],
@@ -90,7 +90,7 @@ impl JvpRule for ScatterOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -106,17 +106,19 @@ impl JvpRule for ScatterOperation {
         };
         let ty = b.info(primal).clone();
         if matches!(update, ScatterUpdate::Min | ScatterUpdate::Max) {
-            return extremal(b, primal, *x, *i, *u, self.parameters());
+            return extremal(b, primal, *x, *i, *u, &self.parameters());
         }
         if update == ScatterUpdate::Replace && !self.parameters().unique {
-            return replacement(b, primal, *x, *i, *u, self.parameters());
+            return replacement(b, primal, *x, *i, *u, &self.parameters());
         }
         let tangent = if update == ScatterUpdate::Multiply {
             let dx = match x.tangent {
                 Tangent::Zero => Tangent::Zero,
-                Tangent::Var(dx) => {
-                    Tangent::Var(b.emit1(eqn.op().clone(), &[dx, i.primal, u.primal], ty.clone()))
-                }
+                Tangent::Var(dx) => Tangent::Var(b.emit1(
+                    eqn.op().to_owned(),
+                    &[dx, i.primal, u.primal],
+                    ty.clone(),
+                )),
             };
             let du = match u.tangent {
                 Tangent::Zero => Tangent::Zero,
@@ -134,7 +136,7 @@ impl JvpRule for ScatterOperation {
         } else {
             let dx = tangent(b, *x);
             let du = tangent(b, *u);
-            Tangent::Var(b.emit1(eqn.op().clone(), &[dx, i.primal, du], ty))
+            Tangent::Var(b.emit1(eqn.op().to_owned(), &[dx, i.primal, du], ty))
         };
         Ok(vec![Dual { primal, tangent }])
     }
@@ -186,7 +188,7 @@ impl TransposeRule for ScatterOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         operands: &[Operand],
         _: &[Vec<Var>],
         cts: &[Tangent],
@@ -202,16 +204,18 @@ impl TransposeRule for ScatterOperation {
         if let Operand::Linear(metadata) = x {
             let dx_var = match update {
                 ScatterUpdate::Add | ScatterUpdate::Subtract => *ct,
-                ScatterUpdate::Multiply => {
-                    b.emit1(eqn.op().clone(), &[*ct, i, residual(u)?], metadata.clone())
-                }
+                ScatterUpdate::Multiply => b.emit1(
+                    eqn.op().to_owned(),
+                    &[*ct, i, residual(u)?],
+                    metadata.clone(),
+                ),
                 ScatterUpdate::Replace if p.unique => {
                     let updates = match u {
                         Operand::Residual(var) => b.info(*var).clone(),
                         Operand::Linear(info) => info.clone(),
                     };
                     let zero = zeros(b, &updates);
-                    b.emit1(eqn.op().clone(), &[*ct, i, zero], metadata.clone())
+                    b.emit1(eqn.op().to_owned(), &[*ct, i, zero], metadata.clone())
                 }
                 _ => {
                     return Err(TransformError::invalid(
@@ -231,7 +235,7 @@ impl TransposeRule for ScatterOperation {
                 }
                 update_ct = b.emit1(mul_op(), &[*ct, residual(x)?], b.info(*ct).clone());
             }
-            let delta = gather_updates(b, update_ct, i, metadata, p)?;
+            let delta = gather_updates(b, update_ct, i, metadata, &p)?;
             du = Tangent::Var(if update == ScatterUpdate::Subtract {
                 b.emit1(neg_op(), &[delta], metadata.clone())
             } else {
@@ -249,7 +253,7 @@ impl JvpRule for DynamicUpdateSliceOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -268,7 +272,7 @@ impl TransposeRule for DynamicUpdateSliceOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        _: &Eqn,
+        _: Eqn<'_>,
         operands: &[Operand],
         _: &[Vec<Var>],
         cts: &[Tangent],
@@ -306,7 +310,7 @@ impl JvpRule for SelectNOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -325,7 +329,7 @@ impl TransposeRule for SelectNOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        _: &Eqn,
+        _: Eqn<'_>,
         operands: &[Operand],
         _: &[Vec<Var>],
         cts: &[Tangent],

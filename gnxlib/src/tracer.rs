@@ -15,7 +15,7 @@ pub struct PyArray(pub(crate) Array);
 impl PyArray {
     #[getter]
     fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        shape_tuple(py, self.0.shape())
+        shape_tuple(py, &self.0.shape())
     }
 
     #[getter]
@@ -193,13 +193,8 @@ pub fn new_ref(x: &PyArray) -> PyArrayRef {
 }
 
 impl PyArrayRef {
-    fn info(&self) -> &ArrayInfo {
-        self.0
-            .tracer()
-            .cell_ref()
-            .type_info()
-            .downcast()
-            .expect("typed array cell")
+    fn info(&self) -> ArrayInfo {
+        ArrayInfo::from_info(self.0.tracer().cell_ref().type_info()).expect("typed array cell")
     }
 }
 

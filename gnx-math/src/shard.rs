@@ -3,27 +3,37 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use gnx_expr::{Dialect, Eqn, Invocation, LoweringError, Op, Operation};
+use gnx_expr::{Eqn, Invocation, LoweringError, Op, OpRef, Operation};
 
 use gnx_common::{Array, ArrayInfo};
 
-pub struct ShardDialect;
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Constraint {
-    spec: Sharding,
+/// Builds a `shard::constraint`, stored as a [`Constraint`].
+#[derive(rkyv::Archive, rkyv::Serialize)]
+#[rkyv(archived = Constraint)]
+pub struct ConstraintBuilder {
+    axes: Vec<Vec<String>>,
 }
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Replicate;
 
-static DIALECT: ShardDialect = ShardDialect;
-
-type Result<T> = std::result::Result<T, LoweringError>;
-
-impl Dialect for ShardDialect {
-    fn name(&self) -> &'static str {
-        "shard"
+impl Constraint {
+    /// The mesh axes of every dimension.
+    pub fn spec(&self) -> Sharding {
+        Sharding(
+            (self.axes.iter())
+                .map(|axes| axes.iter().map(|axis| axis.as_str().to_owned()).collect())
+                .collect(),
+        )
     }
 }
+
+gnx_common::unit_operations! {
+    pub struct Replicate;
+}
+
+gnx_expr::dialect! {
+    dyn Operation, "shard" => { "constraint" => Constraint, "replicate" => Replicate }
+}
+
+type Result<T> = std::result::Result<T, LoweringError>;
 
 /// A dimension maps to zero or more mesh axes. An empty list leaves that
 /// dimension unpartitioned. Each mesh axis may appear at most once.
@@ -60,10 +70,19 @@ impl Sharding {
     }
 
     pub fn from_op(op: &Op, rank: usize) -> Result<Self> {
+        Self::from_operation(op.get(), rank)
+    }
+
+    /// Like [`Sharding::from_op`], for an operation read from an expression.
+    pub fn from_op_ref(op: OpRef<'_>, rank: usize) -> Result<Self> {
+        Self::from_operation(op.get(), rank)
+    }
+
+    fn from_operation(op: &dyn Operation, rank: usize) -> Result<Self> {
         let spec = if op.downcast_ref::<Replicate>().is_some() {
             Self::replicated(rank)
         } else if let Some(constraint) = op.downcast_ref::<Constraint>() {
-            constraint.spec.clone()
+            constraint.spec()
         } else {
             return Err(signature());
         };
@@ -78,56 +97,39 @@ fn signature() -> LoweringError {
     LoweringError::RegionSignature("invalid sharding annotation signature")
 }
 
-fn check(eqn: &Eqn) -> Result<()> {
-    let [(_, info)] = eqn.outputs() else {
+fn check(eqn: Eqn<'_>) -> Result<()> {
+    let mut outputs = eqn.outputs();
+    let (Some(output), None) = (outputs.next(), outputs.next()) else {
         return Err(signature());
     };
-    let info = info.downcast::<ArrayInfo>().map_err(|_| signature())?;
-    if eqn.inputs().len() != 1 || !eqn.subexprs().is_empty() {
+    let info = ArrayInfo::from_info(&output.info_ref().to_owned()).ok_or_else(signature)?;
+    if eqn.inputs().len() != 1 || eqn.subexprs().len() != 0 {
         return Err(signature());
     }
-    Sharding::from_op(eqn.op(), info.shape().dims().len())?;
+    Sharding::from_op_ref(eqn.op(), info.shape().dims().len())?;
     Ok(())
 }
 
-impl fmt::Display for Constraint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "shard::constraint<axes: {:?}>", self.spec.axes())
-    }
-}
-
 impl Operation for Constraint {
-    fn name(&self) -> &'static str {
-        "constraint"
+    fn display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "shard::constraint<axes: {:?}>", self.spec().axes())
     }
-    fn dialect(&self) -> &'static dyn Dialect {
-        &DIALECT
-    }
-    fn check_expr(&self, eqn: &Eqn) -> Result<()> {
+    fn check_expr(&self, eqn: Eqn<'_>) -> Result<()> {
         check(eqn)
     }
 }
 
-impl fmt::Display for Replicate {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Operation for Replicate {
+    fn display(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("shard::replicate")
     }
-}
-
-impl Operation for Replicate {
-    fn name(&self) -> &'static str {
-        "replicate"
-    }
-    fn dialect(&self) -> &'static dyn Dialect {
-        &DIALECT
-    }
-    fn check_expr(&self, eqn: &Eqn) -> Result<()> {
+    fn check_expr(&self, eqn: Eqn<'_>) -> Result<()> {
         check(eqn)
     }
 }
 
 pub fn constraint_op(spec: Sharding) -> Op {
-    Op::new(Constraint { spec })
+    Op::new(ConstraintBuilder { axes: spec.0 })
 }
 
 pub fn replicate_op() -> Op {

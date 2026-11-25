@@ -12,7 +12,6 @@ use gnx_graph::util::Dag;
 use gnx_graph::{Graph, GraphEq, GraphHash, Leaf, OwnedGraph};
 
 use super::region;
-use crate::body::{Body, BodySignature};
 use crate::cache::{TraceEntry, TracerBuilder, rebuild_graph};
 use crate::error::ApplyError;
 use crate::spec::resolve;
@@ -29,7 +28,7 @@ struct Prepared<I: Graph, O: Graph> {
     leaves: Leaves<I>,
     differentiate: Vec<bool>,
     entry: Arc<TraceEntry<O>>,
-    body: Body,
+    body: gnx_expr::ApplyRegion,
     primals: Vec<Trace>,
     outputs: Vec<VarInfo>,
 }
@@ -47,11 +46,9 @@ impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
         let selected = resolve(wrt, &leaves.paths, "wrt")?;
         let differentiate = differentiated(&leaves.objects, &leaves.paths, &selected)?;
         let entry = trace(leaves.builder.clone(), leaves.kinds()).map_err(ApplyError::Body)?;
-        let outputs = BodySignature::of_hexpr(&entry.expr)
-            .map_err(TransformError::from)?
-            .outputs;
+        let outputs = crate::cf::value_results(entry.expr.view()).map_err(TransformError::from)?;
         let captured: Vec<_> = differentiate.iter().map(|flag| !flag).collect();
-        let body = body(&entry, &leaves.objects, &captured);
+        let body = body(&entry, &leaves.objects, &captured)?;
         let primals = leaves
             .objects
             .iter()

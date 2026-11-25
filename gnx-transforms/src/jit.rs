@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use gnx_expr::{HExpr, Kind, ObjectTracer, VarInfo};
+use gnx_expr::{HRootExpr, Kind, ObjectTracer, VarInfo};
 use gnx_graph::{Graph, GraphEq, GraphHash};
 
 use crate::cache::{TraceCache, TraceEntry, TracerBuilder};
@@ -116,7 +116,7 @@ where
 {
     /// Return the high-level expression for this input signature without
     /// emitting a call. Uses the same trace cache as `TryCallable::try_invoke`.
-    pub fn try_trace(&self, input: I) -> Result<Arc<HExpr>, F::Error>
+    pub fn try_trace(&self, input: I) -> Result<Arc<HRootExpr>, F::Error>
     where
         F: TryJitable<I>,
     {

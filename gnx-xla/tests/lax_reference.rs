@@ -46,7 +46,7 @@ fn check(
     let body = b.finish(vec![y]);
     let mut arguments: Vec<_> = args.iter().map(input).collect();
     let program = if derivative.is_some() {
-        use gnx_expr::SubExpr;
+        use gnx_expr::SubExprBuilder;
         let mut b = Builder::new();
         let input: Vec<_> = (0..2 * args.len())
             .map(|_| b.input(info(DType::F32)))
@@ -56,7 +56,7 @@ fn check(
             gnx_transforms::ops::ad::jvp(&wrt, &[0]),
             &input,
             [info(ty), info(ty)],
-            vec![SubExpr::new(body.into(), vec![])],
+            vec![SubExprBuilder::new(body)],
         );
         arguments.extend(args.iter().map(|_| self::input(&[1.; 3])));
         b.finish(result)
@@ -64,7 +64,7 @@ fn check(
         body
     };
     let result = device
-        .compile(&program)
+        .compile(&program.build().unwrap())
         .unwrap_or_else(|e| panic!("{name}: {e}"))
         .run(
             &arguments,

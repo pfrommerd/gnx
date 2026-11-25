@@ -126,7 +126,7 @@ fn decompose(a: &Tensor, n: i64, vectors: bool) -> Result<Vec<Tensor>, TchError>
     Ok(out)
 }
 impl TorchLowering for SchurOperation {
-    fn lower_torch(&self, _: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, _: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [a] = args else {
             return Err(invalid("schur requires one operand"));
         };

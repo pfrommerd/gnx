@@ -32,7 +32,7 @@ rule!(CumulativeOperation, |op, _eqn, [x]| {
     })()
 });
 impl TorchLowering for SortOperation {
-    fn lower_torch(&self, _: &Eqn, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, _: Eqn<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
         if self.axis() >= inputs[0].dim() || inputs.iter().any(|v| v.size() != inputs[0].size()) {
             return Err(invalid("invalid sort dimensions"));
         }
@@ -84,7 +84,7 @@ fn top(x: &Tensor, axis: usize, k: i64, largest: bool) -> io::Result<Vec<Tensor>
     .map_err(io::Error::other)
 }
 impl TorchLowering for TopKOperation {
-    fn lower_torch(&self, _: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, _: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let x = &args[0];
         top(
             x,
@@ -95,12 +95,14 @@ impl TorchLowering for TopKOperation {
     }
 }
 impl TorchLowering for ApproxTopKOperation {
-    fn lower_torch(&self, eqn: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, eqn: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let x = &args[0];
         let n = if self.aggregate() {
             i64::try_from(self.k()).map_err(invalid)?
         } else {
-            *layout(metadata(&eqn.outputs()[0].1)?)?
+            let output = eqn.outputs().next();
+            let output = output.ok_or_else(|| invalid("missing approx_top_k result"))?;
+            *layout(&metadata(output.info_ref())?)?
                 .0
                 .get(self.axis())
                 .ok_or_else(|| invalid("invalid approx_top_k axis"))?

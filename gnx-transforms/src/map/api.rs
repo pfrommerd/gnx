@@ -115,7 +115,7 @@ where
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let body = body(&entry, &leaves.objects, &captured);
+        let body = body(&entry, &leaves.objects, &captured)?;
         let results = super::region::map(body, &mapped, &in_axes, &out_axes, self.axis_size)
             .map_err(TransformError::from)?;
         Ok(crate::cache::rebuild_graph(

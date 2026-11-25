@@ -10,7 +10,7 @@ mod xla;
 
 use std::sync::Arc;
 
-use gnx::expr::{Capture, HExpr, ObjectTracer};
+use gnx::expr::{Capture, HRootExpr, ObjectTracer};
 use gnx::{Function, Jit, TryCallable, TryJitable};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::gc::{PyTraverseError, PyVisit};
@@ -137,27 +137,27 @@ impl TryJitable<PyGraph> for PythonFunction {
 
 /// A read-only high-level trace, without live argument or capture bindings.
 #[pyclass(name = "Trace", module = "gnxlib", frozen)]
-pub struct PyTrace(pub(crate) Arc<HExpr>);
+pub struct PyTrace(pub(crate) Arc<HRootExpr>);
 
 #[pymethods]
 impl PyTrace {
     #[getter]
     fn input_count(&self) -> usize {
-        self.0.inputs().len()
+        self.0.view().inputs().len()
     }
 
     #[getter]
     fn output_count(&self) -> usize {
-        self.0.outputs().len()
+        self.0.view().outputs().len()
     }
 
     #[getter]
     fn capture_count(&self) -> usize {
-        self.0.closure().len()
+        self.0.view().closure_inputs().len()
     }
 
     fn __str__(&self) -> String {
-        self.0.to_string()
+        self.0.view().to_string()
     }
 
     fn __repr__(&self) -> String {

@@ -1,4 +1,4 @@
-use gnx_expr::{Eqn, Expr, Op, VarInfo, VarScope};
+use gnx_expr::{EqnSource, ExprBuilder, Op, VarInfo, VarScope};
 use gnx_math::{
     ArrayInfo, DType, Shape,
     ops::{elementwise as ew, select_op},
@@ -16,12 +16,17 @@ fn compile(op: Op, inputs: &[VarInfo], output: VarInfo) -> std::io::Result<Torch
         .map(|info| (vars.create_var(), info.clone()))
         .collect();
     let out = vars.create_var();
-    let eqn = Eqn::new(
+    let eqn = EqnSource::new(
         op,
+        vec![],
         args.iter().map(|(v, _)| *v).collect(),
         vec![(out, output)],
     );
-    TorchDevice::cpu()?.compile(&Expr::new(vec![], args, vec![eqn], vec![out]))
+    TorchDevice::cpu()?.compile(
+        &ExprBuilder::from_parts(vec![], vec![], args, vec![eqn], vec![out])
+            .build()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?,
+    )
 }
 fn binary(op: Op, kind: DType, result: DType, n: usize) -> CModule {
     let ty = info(kind, &[n]);

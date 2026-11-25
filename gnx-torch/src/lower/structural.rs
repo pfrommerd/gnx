@@ -53,7 +53,9 @@ rule!(IotaOperation, |op, eqn, []| {
     Tensor::f_arange(s[op.axis()], (Kind::Int64, tracing_device()))
         .and_then(|v| v.f_to_kind(k)?.f_reshape(shape)?.f_expand(s, false))
 });
-rule!(RevOperation, |op, _eqn, [x]| { x.f_flip(axes(op.axes())?) });
+rule!(RevOperation, |op, _eqn, [x]| {
+    x.f_flip(axes(&op.axes())?)
+});
 rule!(SliceOperation, |op, _eqn, [x]| {
     let mut v = x.shallow_clone();
     for (i, &(start, end, step)) in op.ranges().iter().enumerate() {
@@ -68,7 +70,7 @@ rule!(SliceOperation, |op, _eqn, [x]| {
     Ok::<_, TchError>(v)
 });
 rule!(FftOperation, |op, _eqn, [x]| {
-    let s = axes(op.lengths())?;
+    let s = axes(&op.lengths())?;
     if s.is_empty() {
         return Ok(vec![x.shallow_clone()]);
     }
@@ -86,11 +88,11 @@ rule!(FftOperation, |op, _eqn, [x]| {
 // Map output positions back to input coordinates. The fill stays a tensor:
 // replacing it by a host scalar would specialize replay to the trace example.
 impl TorchLowering for PadOperation {
-    fn lower_torch(&self, eqn: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, eqn: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [x, fill] = args else {
             return Err(invalid("pad expects two operands"));
         };
-        Ok(vec![pad(x, fill, self.padding(), &result_layout(eqn)?.0)?])
+        Ok(vec![pad(x, fill, &self.padding(), &result_layout(eqn)?.0)?])
     }
 }
 crate::register_torch_lowering!(PadOperation);
@@ -148,14 +150,14 @@ pub(super) fn pad(
 }
 rule!(gnx_math::shard::Replicate, |_op, _eqn, [x]| { x.f_alias() });
 rule!(gnx_math::shard::Constraint, |_op, eqn, [x]| {
-    let spec = gnx_math::shard::Sharding::from_op(eqn.op(), x.dim()).map_err(invalid)?;
+    let spec = gnx_math::shard::Sharding::from_op_ref(eqn.op(), x.dim()).map_err(invalid)?;
     if !spec.is_replicated() {
         return Err(unsupported("named sharding axes require a device mesh"));
     }
     x.f_alias()
 });
 impl TorchLowering for ConcatenateOperation {
-    fn lower_torch(&self, _: &Eqn, x: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, _: Eqn<'_>, x: &[Tensor]) -> io::Result<Vec<Tensor>> {
         if x.iter().any(|v| v.kind() != x[0].kind()) {
             return Err(invalid("concatenate dtype mismatch"));
         }
@@ -197,7 +199,7 @@ fn indices(shape: &[i64], slice: &[i64], starts: &[Tensor]) -> io::Result<Tensor
     .map_err(io::Error::other)
 }
 impl TorchLowering for DynamicSliceOperation {
-    fn lower_torch(&self, eqn: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, eqn: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [x, starts @ ..] = args else {
             return Err(invalid("missing slice operand"));
         };
@@ -211,7 +213,7 @@ impl TorchLowering for DynamicSliceOperation {
     }
 }
 impl TorchLowering for DynamicUpdateSliceOperation {
-    fn lower_torch(&self, _: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, _: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [x, u, starts @ ..] = args else {
             return Err(invalid("missing update operand"));
         };
@@ -225,7 +227,7 @@ impl TorchLowering for DynamicUpdateSliceOperation {
     }
 }
 impl TorchLowering for SelectNOperation {
-    fn lower_torch(&self, _: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, _: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [s, x, rest @ ..] = args else {
             return Err(invalid("expected selector and cases"));
         };

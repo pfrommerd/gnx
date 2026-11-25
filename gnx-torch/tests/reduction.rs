@@ -35,13 +35,16 @@ fn maximum(shape: &[usize], axes: &[usize], window: Option<Window>) -> TorchExec
     let ids = p.input(info(shape, DType::I64));
     let v0 = p.input(f);
     let id0 = p.input(i);
-    let reducer = r.finish(vec![v, id]).into();
+    let reducer = r.finish(vec![v, id]).build().unwrap().handle();
     let out = match window {
         Some(w) => reduce_window(&mut p, &[x, ids], &[v0, id0], w, reducer),
         None => reduce(&mut p, &[x, ids], &[v0, id0], axes, reducer),
     }
     .unwrap();
-    TorchDevice::cpu().unwrap().compile(&p.finish(out)).unwrap()
+    TorchDevice::cpu()
+        .unwrap()
+        .compile(&p.finish(out).build().unwrap())
+        .unwrap()
 }
 fn run(p: &TorchExecutable, args: &[Tensor]) -> (Tensor, Tensor) {
     let mut traces = p.modules();

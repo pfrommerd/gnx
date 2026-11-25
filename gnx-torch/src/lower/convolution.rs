@@ -2,7 +2,7 @@ use super::*;
 use gnx_math::ops::contraction::{ConvGeneralDilatedOperation, DotDimensions};
 
 impl TorchLowering for ConvGeneralDilatedOperation {
-    fn lower_torch(&self, eqn: &Eqn, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
+    fn lower_torch(&self, eqn: Eqn<'_>, args: &[Tensor]) -> io::Result<Vec<Tensor>> {
         let [x, w] = args else {
             return Err(invalid("convolution needs input and kernel"));
         };

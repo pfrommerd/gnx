@@ -35,6 +35,20 @@ impl<T: Portable> OwnedArchive<T> {
         })
     }
 
+    // SAFETY: the caller certifies that bytes holds a valid archived T at
+    // offset, e.g. because it was just written by serializing one.
+    pub unsafe fn new_unchecked(bytes: AlignedVec, offset: usize) -> Self {
+        Self {
+            bytes,
+            offset,
+            _type: PhantomData,
+        }
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     pub fn get(&self) -> &T {
         // SAFETY: construction validated this location, and the private
         // backing buffer is never exposed for mutation.

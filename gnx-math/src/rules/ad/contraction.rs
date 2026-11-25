@@ -124,7 +124,7 @@ deflinear!(FftOperation, |cx, ct, [input]| {
     let op = cx.operation::<FftOperation>()?;
     match op.kind() {
         FftKind::Fft | FftKind::Ifft => {
-            Ok(cx.emit(fft(op.kind(), op.lengths()), &[ct], input.info()))
+            Ok(cx.emit(fft(op.kind(), &op.lengths()), &[ct], input.info()))
         }
         FftKind::Rfft | FftKind::Irfft if op.lengths().is_empty() => Ok(ct),
         FftKind::Rfft => {
@@ -134,7 +134,7 @@ deflinear!(FftOperation, |cx, ct, [input]| {
             let conj = cx.emit(conj_op(), &[ct], ct.info());
             let weight = fft_weights(cx, ct, sz)?;
             let scaled = cx.emit(div_op(), &[conj, weight], ct.info());
-            let transformed = cx.emit(fft(FftKind::Irfft, op.lengths()), &[scaled], input.info());
+            let transformed = cx.emit(fft(FftKind::Irfft, &op.lengths()), &[scaled], input.info());
             Ok(transformed * fft_constant(cx, n, transformed)?)
         }
         FftKind::Irfft => {
@@ -145,7 +145,7 @@ deflinear!(FftOperation, |cx, ct, [input]| {
                 .iter()
                 .map(|&size| size as f64)
                 .product::<f64>();
-            let transformed = cx.emit(fft(FftKind::Rfft, op.lengths()), &[ct], input.info());
+            let transformed = cx.emit(fft(FftKind::Rfft, &op.lengths()), &[ct], input.info());
             let weighted = transformed
                 * fft_weights(cx, transformed, sz)?
                 * fft_constant(cx, 1. / n, transformed)?;
@@ -164,7 +164,7 @@ impl JvpRule for CustomLinearSolveOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -177,7 +177,14 @@ impl JvpRule for CustomLinearSolveOperation {
             .copied()
             .chain(result.iter().copied().map(Dual::constant))
             .collect();
-        let perturbation = jvp_expr(b, eqn.subexprs()[0].expr(), &[], &matvec)?;
+        let perturbation = jvp_expr(
+            b,
+            (eqn.subexprs().next())
+                .ok_or_else(|| TransformError::invalid("custom_linear_solve requires a matvec"))?
+                .expr(),
+            &[],
+            &matvec,
+        )?;
         let mut new_operands = primals[..self.parameters()].to_vec();
         for (&rhs, applied) in rhs.iter().zip(perturbation) {
             let metadata = b.info(rhs.primal).clone();
@@ -206,13 +213,13 @@ impl TransposeRule for CustomLinearSolveOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         operands: &[Operand],
         _: &[Vec<Var>],
         cotangents: &[Tangent],
     ) -> TransformResult<Vec<Tangent>> {
         let index = if self.symmetric() { 1 } else { 2 };
-        let region = eqn.subexprs().get(index).ok_or_else(|| {
+        let region = eqn.subexprs().nth(index).ok_or_else(|| {
             TransformError::invalid("custom_linear_solve requires a transpose solver")
         })?;
         let mut args = Vec::new();
@@ -224,10 +231,10 @@ impl TransposeRule for CustomLinearSolveOperation {
             };
             args.push(*var);
         }
-        for (&cotangent, (_, info)) in cotangents.iter().zip(eqn.outputs()) {
-            args.push(instantiate(b, cotangent, info));
+        for (&cotangent, info) in (cotangents.iter()).zip(gnx_transforms::util::output_infos(eqn)) {
+            args.push(instantiate(b, cotangent, &info));
         }
-        let out = b.inline(region.expr(), &region.symbol_captures, &[], &args)?;
+        let out = b.inline(region.expr(), region.provided_symbols(), &[], &args)?;
         let mut result = vec![Tangent::Zero; self.parameters()];
         result.extend(out.into_iter().zip(&operands[self.parameters()..]).map(
             |(value, operand)| {
@@ -337,7 +344,7 @@ fn conv_lhs<'a>(
 ) -> TransformResult<Val<'a>> {
     let p = cx.operation::<ConvGeneralDilatedOperation>()?.parameters();
     let mut shape = lhs.dims()?;
-    let pad = conv_padding(p, &shape, &rhs.dims()?, &ct.dims()?, true)?;
+    let pad = conv_padding(&p, &shape, &rhs.dims()?, &ct.dims()?, true)?;
     let groups = p.feature_groups.max(p.batch_groups);
     let mut rhs = rhs.val()?;
     if groups > 1 {
@@ -388,7 +395,7 @@ fn conv_rhs<'a>(
         return Ok(cx.zeros(&rhs.info()));
     }
     let rhs_shape = rhs.dims()?;
-    let pad = conv_padding(p, &lhs.dims()?, &rhs_shape, &ct_shape, false)?;
+    let pad = conv_padding(&p, &lhs.dims()?, &rhs_shape, &ct_shape, false)?;
     let ty = dtype(&ct.info())?;
     let lhs = conv_cast(cx, lhs.val()?, ty)?;
     let conv = ConvParameters {

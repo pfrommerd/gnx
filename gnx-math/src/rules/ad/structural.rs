@@ -78,7 +78,7 @@ deflinear!(
         let ones = cx.emit(crate::ops::ones_op(), &[], mask_info(&input_shape));
         let false_value = cx.zeros(&mask_info(&[]));
         let mask = cx.emit(
-            pad(cx.operation::<PadOperation>()?.padding()),
+            pad(&cx.operation::<PadOperation>()?.padding()),
             &[ones, false_value],
             mask_info(&output_shape),
         );
@@ -95,7 +95,7 @@ impl gnx_transforms::ad::JvpRule for DynamicSliceOperation {
     fn jvp(
         &self,
         b: &mut gnx_expr::pass::Builder,
-        eqn: &gnx_expr::Eqn,
+        eqn: gnx_expr::Eqn<'_>,
         inputs: &[gnx_transforms::ad::Dual],
         captures: &[Vec<gnx_transforms::ad::Dual>],
     ) -> gnx_transforms::TransformResult<Vec<gnx_transforms::ad::Dual>> {
@@ -119,7 +119,7 @@ impl gnx_transforms::ad::TransposeRule for DynamicSliceOperation {
     fn transpose(
         &self,
         b: &mut gnx_expr::pass::Builder,
-        eqn: &gnx_expr::Eqn,
+        eqn: gnx_expr::Eqn<'_>,
         operands: &[gnx_transforms::ad::Operand],
         _: &[Vec<gnx_expr::Var>],
         cotangents: &[gnx_transforms::ad::Tangent],
@@ -160,7 +160,7 @@ impl JvpRule for ConcatenateOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> TransformResult<Vec<Dual>> {
@@ -185,7 +185,7 @@ impl TransposeRule for ConcatenateOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        _: &Eqn,
+        _: Eqn<'_>,
         operands: &[Operand],
         _: &[Vec<Var>],
         ct: &[Tangent],

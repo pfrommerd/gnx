@@ -2,7 +2,6 @@ extern crate self as gnx_transforms;
 
 pub mod ad;
 pub use ad::stop_gradient;
-pub mod body;
 mod cache;
 pub mod callable;
 pub mod cf;
@@ -15,7 +14,6 @@ mod traced;
 pub mod util;
 
 pub use ad::{grad, hessian, jvp, value_and_grad, vjp};
-pub use body::{Body, BodySignature};
 pub use callable::{Callable, Function, Jitable, TryCallable, TryJitable};
 pub use cf::{call, call_immutable, call_lowered, cond, scan, switch, while_loop};
 pub use error::{ApplyError, TransformError, TransformResult};

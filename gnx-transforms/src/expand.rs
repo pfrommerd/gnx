@@ -2,7 +2,9 @@
 //! and any other operation implementing [`Transform`]) into ordinary ones.
 
 use gnx_expr::pass::{Builder, Pass, PassError, rewrite};
-use gnx_expr::{Eqn, Expr, InterfaceError, Var};
+use std::sync::Arc;
+
+use gnx_expr::{EqnSource, Expr, ExprBuilder, InterfaceError, RootExpr, Var};
 
 use crate::{TransformError, TransformResult};
 
@@ -11,7 +13,7 @@ use crate::{TransformError, TransformResult};
 pub trait Transform: Sync {
     /// Emit the expansion of `eqn` (already translated into `b`, with its
     /// body expanded) and return one variable per result.
-    fn expand(&self, b: &mut Builder, eqn: &Eqn) -> TransformResult<Vec<Var>>;
+    fn expand(&self, b: &mut Builder, eqn: &EqnSource) -> TransformResult<Vec<Var>>;
 }
 
 /// Rewrite every [`Transform`] operation, innermost first, into ordinary
@@ -24,13 +26,15 @@ impl Pass for ExpandTransforms {
         "transforms.expand"
     }
 
-    fn run(&self, expr: Expr) -> Result<Expr, PassError> {
-        expand_transforms(&expr).map_err(|error| PassError::new(self.name(), error))
+    fn run(&self, expr: Arc<RootExpr>) -> Result<Arc<RootExpr>, PassError> {
+        expand_transforms(expr.view())
+            .and_then(|expanded| Ok(expanded.build()?))
+            .map_err(|error| PassError::new(self.name(), error))
     }
 }
 
-pub fn expand_transforms(expr: &Expr) -> TransformResult<Expr> {
-    rewrite(expr, &mut |b: &mut Builder, eqn: &Eqn| {
+pub fn expand_transforms(expr: Expr<'_>) -> TransformResult<ExprBuilder> {
+    rewrite(expr, &mut |b: &mut Builder, eqn: &EqnSource| {
         let transform = match eqn.op().interface::<dyn Transform>() {
             Ok(transform) => transform,
             Err(InterfaceError::Missing { .. }) => return Ok(None),

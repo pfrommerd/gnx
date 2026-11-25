@@ -30,7 +30,7 @@ fn compile(dims: &[usize], dtype: DType, lower: bool) -> Vec<CModule> {
     );
     TorchDevice::cpu()
         .unwrap()
-        .compile(&b.finish(out))
+        .compile(&b.finish(out).build().unwrap())
         .unwrap()
         .modules()
         .map(support::reload)

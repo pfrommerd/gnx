@@ -35,9 +35,10 @@ pub fn leading(indices: &[usize]) -> Vec<usize> {
     std::iter::once(0).chain(shifted(indices)).collect()
 }
 
-fn single_result(eqn: &Eqn) -> TransformResult<&VarInfo> {
-    match eqn.outputs() {
-        [(_, info)] => Ok(info),
+fn single_result(eqn: Eqn<'_>) -> TransformResult<VarInfo> {
+    let mut outputs = eqn.outputs();
+    match (outputs.next(), outputs.next()) {
+        (Some(output), None) => Ok(output.info_ref().to_owned()),
         _ => Err(TransformError::invalid(
             "declarative batching rules need exactly one result",
         )),
@@ -48,7 +49,7 @@ fn single_result(eqn: &Eqn) -> TransformResult<&VarInfo> {
 pub fn broadcasting(
     b: &mut Builder,
     size: usize,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     inputs: &[Batched],
 ) -> TransformResult<Vec<Batched>> {
     let info = single_result(eqn)?;
@@ -65,8 +66,11 @@ pub fn broadcasting(
             .collect::<TransformResult<Vec<_>>>()?;
         (0, vars)
     };
-    let info = with_axis(info, axis, size)?;
-    Ok(vec![Batched::at(b.emit1(eqn.op().clone(), &vars, info), axis)])
+    let info = with_axis(&info, axis, size)?;
+    Ok(vec![Batched::at(
+        b.emit1(eqn.op().to_owned(), &vars, info),
+        axis,
+    )])
 }
 
 /// Batching rule body for `defbatch!`: apply `op` to the operands with their
@@ -74,11 +78,11 @@ pub fn broadcasting(
 pub fn at_leading_axis(
     b: &mut Builder,
     size: usize,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     inputs: &[Batched],
     op: Op,
 ) -> TransformResult<Vec<Batched>> {
-    let info = with_axis(single_result(eqn)?, 0, size)?;
+    let info = with_axis(&single_result(eqn)?, 0, size)?;
     let vars = inputs
         .iter()
         .map(|&value| materialize(b, value, size, 0))
@@ -107,7 +111,7 @@ macro_rules! defbroadcasting {
                 &self,
                 b: &mut $crate::__private::gnx_expr::pass::Builder,
                 size: usize,
-                eqn: &$crate::__private::gnx_expr::Eqn,
+                eqn: $crate::__private::gnx_expr::Eqn<'_>,
                 inputs: &[$crate::map::Batched],
                 _captures: &[::std::vec::Vec<$crate::map::Batched>],
             ) -> $crate::TransformResult<::std::vec::Vec<$crate::map::Batched>> {
@@ -134,7 +138,7 @@ macro_rules! defbatch {
                 &self,
                 b: &mut $crate::__private::gnx_expr::pass::Builder,
                 size: usize,
-                eqn: &$crate::__private::gnx_expr::Eqn,
+                eqn: $crate::__private::gnx_expr::Eqn<'_>,
                 inputs: &[$crate::map::Batched],
                 _captures: &[::std::vec::Vec<$crate::map::Batched>],
             ) -> $crate::TransformResult<::std::vec::Vec<$crate::map::Batched>> {

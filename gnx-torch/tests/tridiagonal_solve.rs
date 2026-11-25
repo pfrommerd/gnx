@@ -13,7 +13,7 @@ fn compile(dims: &[usize], cols: usize, k: DType, perturb: bool) -> CModule {
     let x = b.emit1(tridiagonal_solve(perturb), &[d[0], d[1], d[2], r], rhs);
     let p = TorchDevice::cpu()
         .unwrap()
-        .compile(&b.finish(vec![x]))
+        .compile(&b.finish(vec![x]).build().unwrap())
         .unwrap();
     support::reload(p.modules().next().unwrap())
 }

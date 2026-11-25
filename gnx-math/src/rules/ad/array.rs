@@ -137,10 +137,10 @@ defjvp!(XorOperation, None, None);
 defjvp!(NotOperation, None);
 defjvp!(ClzOperation, None);
 defjvp!(ConvertElementTypeOperation, |cx, t, [x]| {
-    if gnx_transforms::util::is_inexact(&x.info()) && gnx_transforms::util::is_inexact(cx.out()) {
+    if gnx_transforms::util::is_inexact(&x.info()) && gnx_transforms::util::is_inexact(&cx.out()) {
         Ok(cx.apply(&[t]))
     } else {
-        Ok(cx.zeros(cx.out()))
+        Ok(cx.zeros(&cx.out()))
     }
 });
 deftranspose!(ConvertElementTypeOperation, |cx, ct, [x]| {
@@ -308,7 +308,7 @@ fn clamp_broadcast<'a>(
     cx: &'a Ctx<'a>,
     value: Val<'a>,
 ) -> gnx_transforms::TransformResult<Val<'a>> {
-    if &value.info() == cx.out() {
+    if value.info() == cx.out() {
         return Ok(value);
     }
     if !value.dims()?.is_empty() {
@@ -316,11 +316,7 @@ fn clamp_broadcast<'a>(
             "clamp bound must be scalar or match the operand",
         ));
     }
-    Ok(cx.emit(
-        crate::ops::broadcast_in_dim_op(&[]),
-        &[value],
-        cx.out().clone(),
-    ))
+    Ok(cx.emit(crate::ops::broadcast_in_dim_op(&[]), &[value], cx.out()))
 }
 
 defjvp!(
@@ -477,12 +473,12 @@ impl gnx_transforms::ad::JvpRule for PolynomialOperation {
     fn jvp(
         &self,
         b: &mut gnx_expr::pass::Builder,
-        eqn: &gnx_expr::Eqn,
+        eqn: gnx_expr::Eqn<'_>,
         inputs: &[gnx_transforms::ad::Dual],
         _: &[Vec<gnx_transforms::ad::Dual>],
     ) -> gnx_transforms::TransformResult<Vec<gnx_transforms::ad::Dual>> {
         let mut recipe = gnx_expr::pass::Builder::new();
-        let metadata = &eqn.outputs()[0].1;
+        let metadata = &gnx_transforms::util::output_infos(eqn)[0];
         let args: Vec<_> = inputs
             .iter()
             .map(|input| recipe.input(b.info(input.primal).clone()))
@@ -516,7 +512,12 @@ impl gnx_transforms::ad::JvpRule for PolynomialOperation {
             let product = gnx_transforms::util::mul(&mut recipe, result, *x);
             result = gnx_transforms::util::add(&mut recipe, product, coefficient);
         }
-        gnx_transforms::ad::jvp::jvp_expr(b, &recipe.finish(vec![result]), &[], inputs)
+        gnx_transforms::ad::jvp::jvp_expr(
+            b,
+            recipe.finish(vec![result]).build()?.view(),
+            &[],
+            inputs,
+        )
     }
 }
 gnx_expr::register_op_interface!(dyn gnx_transforms::ad::JvpRule: PolynomialOperation);

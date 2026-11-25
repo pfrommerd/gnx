@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 
 use gnx_expr::pass::Builder;
-use gnx_expr::{Eqn, Expr, SubExpr, Var};
+use gnx_expr::{Eqn, EqnSource, Expr, SubExprBuilder, Var};
 
 use super::MapParameters;
-use crate::util::{broadcast_axis, copy_eqn, move_axis, with_axis};
+use crate::util::{broadcast_axis, copy_eqn, input_infos, move_axis, region_body, with_axis};
 use crate::{TransformError, TransformResult};
 
 /// A value in the batched program and the axis holding its instances, if any.
@@ -39,7 +39,7 @@ pub trait BatchRule: Sync {
         &self,
         b: &mut Builder,
         size: usize,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Batched],
         captures: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>>;
@@ -66,23 +66,21 @@ fn vars(values: &[Batched]) -> Vec<Var> {
 pub fn batch_expr(
     b: &mut Builder,
     size: usize,
-    expr: &Expr,
+    expr: Expr<'_>,
     closure: &[Batched],
     inputs: &[Batched],
 ) -> TransformResult<Vec<Batched>> {
     let mut env: HashMap<Var, Batched> = expr
-        .closure()
-        .iter()
+        .closure_inputs()
         .chain(expr.inputs())
-        .map(|(var, _)| *var)
+        .map(|param| param.var())
         .zip(closure.iter().chain(inputs).copied())
         .collect();
-    for (index, eqn) in expr.eqns().iter().enumerate() {
+    for (index, eqn) in expr.eqns().enumerate() {
         let operands: Vec<_> = eqn.inputs().iter().map(|var| env[var]).collect();
         let captures: Vec<Vec<_>> = eqn
             .subexprs()
-            .iter()
-            .map(|sub| sub.closure().iter().map(|var| env[var]).collect())
+            .map(|sub| sub.provided_vars().iter().map(|var| env[var]).collect())
             .collect();
         let results = (|| {
             let results = if operands
@@ -105,10 +103,11 @@ pub fn batch_expr(
                     "batching rule returned the wrong arity",
                 ));
             }
-            for (value, (_, info)) in results.iter().zip(eqn.outputs()) {
+            for (value, param) in results.iter().zip(eqn.outputs()) {
+                let info = param.info_ref().to_owned();
                 let expected = match value.axis {
-                    Some(axis) => with_axis(info, axis, size)?,
-                    None => info.clone(),
+                    Some(axis) => with_axis(&info, axis, size)?,
+                    None => info,
                 };
                 if *b.info(value.var) != expected {
                     return Err(TransformError::invalid(format!(
@@ -120,8 +119,8 @@ pub fn batch_expr(
             Ok(results)
         })()
         .map_err(|error: TransformError| error.at(index, eqn))?;
-        for ((var, _), value) in eqn.outputs().iter().zip(results) {
-            env.insert(*var, value);
+        for (param, value) in eqn.outputs().zip(results) {
+            env.insert(param.var(), value);
         }
     }
     Ok(expr.outputs().iter().map(|var| env[var]).collect())
@@ -135,23 +134,22 @@ pub fn batch_expr(
 pub fn batch_region(
     b: &Builder,
     size: usize,
-    body: &Expr,
+    body: Expr<'_>,
     captures: &[Batched],
     inputs: &[bool],
     outputs: Option<&[bool]>,
-) -> TransformResult<(SubExpr, Vec<bool>)> {
-    if inputs.len() != body.inputs().len() || captures.len() != body.closure().len() {
+) -> TransformResult<(SubExprBuilder, Vec<bool>)> {
+    if inputs.len() != body.inputs().len() || captures.len() != body.closure_inputs().len() {
         return Err(TransformError::invalid("region binding arity"));
     }
-    let infos = body
-        .inputs()
-        .iter()
+    let infos = input_infos(body)
+        .into_iter()
         .zip(inputs)
-        .map(|((_, info), &batched)| {
+        .map(|(info, &batched)| {
             if batched {
-                with_axis(info, 0, size)
+                with_axis(&info, 0, size)
             } else {
-                Ok(info.clone())
+                Ok(info)
             }
         })
         .collect::<TransformResult<Vec<_>>>()?;
@@ -200,14 +198,15 @@ pub fn batch_region(
 /// Expand `ad.map` by batching its body.
 pub(super) fn expand_map(
     b: &mut Builder,
-    eqn: &Eqn,
+    eqn: &EqnSource,
     parameters: &MapParameters,
 ) -> TransformResult<Vec<Var>> {
     let [sub] = eqn.subexprs() else {
         return Err(TransformError::invalid("map takes one body"));
     };
+    let body = region_body(sub)?;
     let closure: Vec<_> = sub
-        .closure()
+        .provided_vars()
         .iter()
         .copied()
         .map(Batched::unbatched)
@@ -218,7 +217,7 @@ pub(super) fn expand_map(
         .zip(&parameters.in_axes)
         .map(|(&var, &axis)| Batched::at(var, axis))
         .collect();
-    let results = batch_expr(b, parameters.size, sub.expr(), &closure, &inputs)?;
+    let results = batch_expr(b, parameters.size, body.view(), &closure, &inputs)?;
     results
         .into_iter()
         .zip(&parameters.out_axes)

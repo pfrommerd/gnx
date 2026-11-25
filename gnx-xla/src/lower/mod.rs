@@ -9,12 +9,12 @@ mod structural;
 use std::collections::HashMap;
 use std::io;
 
-use gnx_expr::{Eqn, Expr, Var, VarInfo};
+use gnx_expr::{Eqn, Expr, Var, VarInfoRef};
 use gnx_math::ops::{
     AddOperation, BroadcastInDimOperation, EyeOperation, MulOperation, OnesOperation,
     ReshapeOperation, RevOperation, SelectOperation, TransposeOperation, ZerosOperation,
 };
-use gnx_math::{ArrayInfo, DType, Dim};
+use gnx_math::{ArrayInfo, ArrayInfoData, DType, Dim};
 use gnx_transforms::ad::StopGradientOperation;
 use gnx_transforms::cf::{
     CallOperation, CondOperation, ScanOperation, SwitchOperation, WhileOperation,
@@ -29,7 +29,7 @@ pub trait XlaLowering {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         operands: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>>;
 }
@@ -43,7 +43,7 @@ macro_rules! register_xla_lowering {
 }
 
 struct Child<'a> {
-    expr: &'a Expr,
+    expr: Expr<'a>,
     captures: Vec<XlaOp>,
 }
 
@@ -67,9 +67,10 @@ impl LoweringContext<'_> {
     }
 }
 
-pub(super) fn metadata(info: &VarInfo) -> io::Result<&ArrayInfo> {
-    info.downcast()
-        .map_err(|_| unsupported("XLA only supports array values"))
+pub(super) fn metadata(info: VarInfoRef<'_>) -> io::Result<ArrayInfo> {
+    info.downcast::<ArrayInfoData>()
+        .map(ArrayInfoData::to_native)
+        .ok_or_else(|| unsupported("XLA only supports array values"))
 }
 
 pub(super) fn dimensions(info: &ArrayInfo) -> io::Result<Vec<i64>> {
@@ -109,46 +110,45 @@ pub(super) fn element(dtype: DType) -> ElementType {
 pub(super) fn shape(info: &ArrayInfo) -> io::Result<Shape> {
     Ok(Shape::array_with_type(
         element(info.dtype()),
-        dimensions(info)?,
+        dimensions(&info)?,
     ))
 }
 
-pub(super) fn lower(expr: &Expr) -> io::Result<XlaComputation> {
+pub(super) fn lower(expr: Expr<'_>) -> io::Result<XlaComputation> {
     let builder = XlaBuilder::new("gnx");
     let parameters = expr
-        .closure()
-        .iter()
+        .closure_inputs()
         .chain(expr.inputs())
         .enumerate()
-        .map(|(i, (_, info))| {
-            native(builder.parameter_s(i as i64, &shape(metadata(info)?)?, &format!("arg{i}")))
+        .map(|(i, param)| {
+            let info = metadata(param.info_ref())?;
+            native(builder.parameter_s(i as i64, &shape(&info)?, &format!("arg{i}")))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    let (captures, inputs) = parameters.split_at(expr.closure().len());
+    let (captures, inputs) = parameters.split_at(expr.closure_inputs().len());
     let results = lower_body(&builder, expr, captures, inputs)?;
     native(native(builder.tuple(&results))?.build())
 }
 
 fn lower_body(
     builder: &XlaBuilder,
-    expr: &Expr,
+    expr: Expr<'_>,
     captures: &[XlaOp],
     inputs: &[XlaOp],
 ) -> io::Result<Vec<XlaOp>> {
-    if captures.len() != expr.closure().len() || inputs.len() != expr.inputs().len() {
+    if captures.len() != expr.closure_inputs().len() || inputs.len() != expr.inputs().len() {
         return Err(invalid("XLA region argument arity mismatch"));
     }
     let mut values: HashMap<Var, XlaOp> = HashMap::new();
-    for ((var, info), value) in expr
-        .closure()
-        .iter()
+    for (param, value) in expr
+        .closure_inputs()
         .chain(expr.inputs())
         .zip(captures.iter().chain(inputs))
     {
-        check_shape(value, metadata(info)?)?;
-        values.insert(*var, value.clone());
+        check_shape(value, &metadata(param.info_ref())?)?;
+        values.insert(param.var(), value.clone());
     }
-    for (index, eqn) in expr.eqns().iter().enumerate() {
+    for (index, eqn) in expr.eqns().enumerate() {
         let op = eqn.op();
         let results = (|| {
             let rule = op
@@ -161,33 +161,30 @@ fn lower_body(
                 .collect::<Vec<_>>();
             let children = eqn
                 .subexprs()
-                .iter()
                 .map(|sub| Child {
                     expr: sub.expr(),
-                    captures: sub.closure().iter().map(|v| values[v].clone()).collect(),
+                    captures: (sub.provided_vars().iter())
+                        .map(|v| values[v].clone())
+                        .collect(),
                 })
                 .collect();
             let results = rule.lower_xla(&LoweringContext { builder, children }, eqn, &operands)?;
             if results.len() != eqn.outputs().len() {
                 return Err(invalid("XLA lowering result arity mismatch"));
             }
-            for ((_, info), value) in eqn.outputs().iter().zip(&results) {
-                check_shape(value, metadata(info)?)?;
+            for (param, value) in eqn.outputs().zip(&results) {
+                check_shape(value, &metadata(param.info_ref())?)?;
             }
             Ok(results)
         })()
         .map_err(|err| {
             io::Error::new(
                 err.kind(),
-                format!(
-                    "equation {index} ({}.{}) : {err}",
-                    op.dialect().name(),
-                    op.name()
-                ),
+                format!("equation {index} ({}.{}) : {err}", op.dialect(), op.name()),
             )
         })?;
-        for ((var, _), value) in eqn.outputs().iter().zip(results) {
-            values.insert(*var, value);
+        for (param, value) in eqn.outputs().zip(results) {
+            values.insert(param.var(), value);
         }
     }
     Ok(expr
@@ -208,9 +205,10 @@ fn is_pred(op: &XlaOp) -> io::Result<bool> {
     Ok(native(op.ty())? == xla::PrimitiveType::Pred)
 }
 
-fn result_info(eqn: &Eqn) -> io::Result<&ArrayInfo> {
-    match eqn.outputs() {
-        [(_, info)] => metadata(info),
+fn result_info(eqn: Eqn<'_>) -> io::Result<ArrayInfo> {
+    let mut outputs = eqn.outputs();
+    match (outputs.next(), outputs.next()) {
+        (Some(output), None) => metadata(output.info_ref()),
         _ => Err(invalid("array operations have one result")),
     }
 }
@@ -234,7 +232,7 @@ impl XlaLowering for StopGradientOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         Ok(vec![unary("stop_gradient", inputs)?.clone()])
@@ -247,7 +245,7 @@ impl XlaLowering for AddOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [a, b] = inputs else {
@@ -265,7 +263,7 @@ impl XlaLowering for MulOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [a, b] = inputs else {
@@ -283,7 +281,7 @@ impl XlaLowering for SelectOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [predicate, on_true, on_false] = inputs else {
@@ -297,12 +295,12 @@ impl XlaLowering for ZerosOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         _: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let info = result_info(eqn)?;
         let zero = native(ctx.builder.zero(element(info.dtype())))?;
-        Ok(vec![native(zero.broadcast(&dimensions(info)?))?])
+        Ok(vec![native(zero.broadcast(&dimensions(&info)?))?])
     }
 }
 
@@ -310,12 +308,12 @@ impl XlaLowering for OnesOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         _: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let info = result_info(eqn)?;
         let one = native(ctx.builder.one(element(info.dtype())))?;
-        Ok(vec![native(one.broadcast(&dimensions(info)?))?])
+        Ok(vec![native(one.broadcast(&dimensions(&info)?))?])
     }
 }
 
@@ -323,11 +321,11 @@ impl XlaLowering for EyeOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         _: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let info = result_info(eqn)?;
-        let dims = dimensions(info)?;
+        let dims = dimensions(&info)?;
         let ty = element(info.dtype());
         let rows = native(ctx.builder.iota(ElementType::S64, &dims, 0))?;
         let columns = native(ctx.builder.iota(ElementType::S64, &dims, 1))?;
@@ -343,12 +341,12 @@ impl XlaLowering for ReshapeOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let input = unary("reshape", inputs)?;
         Ok(vec![native(
-            input.reshape(&dimensions(result_info(eqn)?)?),
+            input.reshape(&dimensions(&result_info(eqn)?)?),
         )?])
     }
 }
@@ -357,13 +355,13 @@ impl XlaLowering for BroadcastInDimOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let input = unary("broadcast_in_dim", inputs)?;
-        let shape = dimensions(result_info(eqn)?)?;
+        let shape = dimensions(&result_info(eqn)?)?;
         Ok(vec![native(
-            input.broadcast_in_dim(&shape, &indices(self.dims())?),
+            input.broadcast_in_dim(&shape, &indices(&self.dims())?),
         )?])
     }
 }
@@ -372,11 +370,11 @@ impl XlaLowering for TransposeOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let input = unary("transpose", inputs)?;
-        Ok(vec![native(input.transpose(&indices(self.perm())?))?])
+        Ok(vec![native(input.transpose(&indices(&self.perm())?))?])
     }
 }
 
@@ -384,11 +382,11 @@ impl XlaLowering for RevOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let input = unary("rev", inputs)?;
-        Ok(vec![native(input.rev(&indices(self.axes())?))?])
+        Ok(vec![native(input.rev(&indices(&self.axes())?))?])
     }
 }
 
@@ -405,12 +403,13 @@ crate::register_xla_lowering!(
     RevOperation,
 );
 
-fn local_sharding(eqn: &Eqn, inputs: &[XlaOp]) -> io::Result<Vec<XlaOp>> {
-    let [(_, info)] = eqn.outputs() else {
+fn local_sharding(eqn: Eqn<'_>, inputs: &[XlaOp]) -> io::Result<Vec<XlaOp>> {
+    let mut outputs = eqn.outputs();
+    let (Some(output), None) = (outputs.next(), outputs.next()) else {
         return Err(invalid("sharding annotation result arity"));
     };
-    let spec = gnx_math::shard::Sharding::from_op(eqn.op(), metadata(info)?.shape().dims().len())
-        .map_err(io::Error::other)?;
+    let rank = metadata(output.info_ref())?.shape().dims().len();
+    let spec = gnx_math::shard::Sharding::from_op_ref(eqn.op(), rank).map_err(io::Error::other)?;
     if !spec.is_replicated() {
         return Err(unsupported(
             "named sharding axes are unavailable on the local XLA device",
@@ -423,7 +422,7 @@ impl XlaLowering for gnx_math::shard::Constraint {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         local_sharding(eqn, inputs)
@@ -433,7 +432,7 @@ impl XlaLowering for gnx_math::shard::Replicate {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         local_sharding(eqn, inputs)
@@ -446,7 +445,7 @@ impl XlaLowering for CallOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        _eqn: &Eqn,
+        _eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         ctx.lower_region(0, inputs)
@@ -495,7 +494,7 @@ impl XlaLowering for CondOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let ([pred, operands @ ..], [when_true, when_false]) = (inputs, ctx.children.as_slice())
@@ -516,7 +515,7 @@ impl XlaLowering for SwitchOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         fn lower_switch(
@@ -593,7 +592,7 @@ impl XlaLowering for WhileOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        _eqn: &Eqn,
+        _eqn: Eqn<'_>,
         carry: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [condition, body] = ctx.children.as_slice() else {
@@ -653,7 +652,7 @@ impl XlaLowering for ScanOperation {
     fn lower_xla(
         &self,
         ctx: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let configuration = self.parameters();
@@ -663,15 +662,16 @@ impl XlaLowering for ScanOperation {
         let [child] = ctx.children.as_slice() else {
             return Err(invalid("missing scan body"));
         };
+        if eqn.outputs().len() < carry {
+            return Err(invalid("invalid scan carry"));
+        }
         let ys = eqn
             .outputs()
-            .get(carry..)
-            .ok_or_else(|| invalid("invalid scan carry"))?
-            .iter()
-            .map(|(_, info)| {
-                let info = metadata(info)?;
+            .skip(carry)
+            .map(|output| {
+                let info = metadata(output.info_ref())?;
                 native(
-                    native(ctx.builder.zero(element(info.dtype())))?.broadcast(&dimensions(info)?),
+                    native(ctx.builder.zero(element(info.dtype())))?.broadcast(&dimensions(&info)?),
                 )
             })
             .collect::<io::Result<Vec<_>>>()?;

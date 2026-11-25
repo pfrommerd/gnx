@@ -214,7 +214,7 @@ fn permute_axis(b: &mut Builder, x: Var, permutation: Var, axis: usize) -> Resul
     transpose(b, result, &axes)
 }
 
-fn primal(b: &mut Builder, eqn: &Eqn, inputs: &[Dual]) -> Vec<Var> {
+fn primal(b: &mut Builder, eqn: Eqn<'_>, inputs: &[Dual]) -> Vec<Var> {
     let args: Vec<_> = inputs.iter().map(|d| d.primal).collect();
     copy_eqn(b, eqn, &args, &[])
 }
@@ -235,7 +235,7 @@ impl JvpRule for CholeskyOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> Result<Vec<Dual>> {
@@ -272,7 +272,7 @@ impl JvpRule for TriangularSolveOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> Result<Vec<Dual>> {
@@ -326,7 +326,7 @@ impl TransposeRule for TriangularSolveOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        _: &Eqn,
+        _: Eqn<'_>,
         args: &[Operand],
         _: &[Vec<Var>],
         cts: &[Tangent],
@@ -349,7 +349,7 @@ impl JvpRule for LuOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> Result<Vec<Dual>> {
@@ -457,7 +457,7 @@ impl JvpRule for EighOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> Result<Vec<Dual>> {
@@ -534,7 +534,7 @@ impl JvpRule for QrOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> Result<Vec<Dual>> {
@@ -611,7 +611,7 @@ impl JvpRule for SvdOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        _eqn: &Eqn,
+        _eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> Result<Vec<Dual>> {
@@ -777,7 +777,7 @@ impl JvpRule for EigOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> Result<Vec<Dual>> {
@@ -789,9 +789,12 @@ impl JvpRule for EigOperation {
         }
         let a = inputs[0].primal;
         let da = tangent(b, inputs[0]);
-        let ty = dtype(&eqn.outputs()[0].1)?;
+        let ty = dtype(&gnx_transforms::util::output_infos(eqn)[0])?;
         let info_a = info(&shape(b, a)?, ty);
-        let mut outputs = vec![eqn.outputs()[0].1.clone(), info_a.clone()];
+        let mut outputs = vec![
+            gnx_transforms::util::output_infos(eqn)[0].clone(),
+            info_a.clone(),
+        ];
         if self.left() {
             outputs.push(info_a);
         }
@@ -855,7 +858,7 @@ impl JvpRule for TridiagonalSolveOperation {
     fn jvp(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[Dual],
         _: &[Vec<Dual>],
     ) -> Result<Vec<Dual>> {
@@ -870,7 +873,7 @@ impl JvpRule for TridiagonalSolveOperation {
             drhs = sub(b, drhs, product);
         }
         let out = b.emit1(
-            eqn.op().clone(),
+            eqn.op().to_owned(),
             &[dl.primal, d.primal, du.primal, drhs],
             b.info(x).clone(),
         );
@@ -882,7 +885,7 @@ impl TransposeRule for TridiagonalSolveOperation {
     fn transpose(
         &self,
         b: &mut Builder,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         operands: &[Operand],
         _: &[Vec<Var>],
         cts: &[Tangent],
@@ -916,7 +919,7 @@ impl TransposeRule for TridiagonalSolveOperation {
             let up = padding(b, up, &pad, &shape)?;
             (low, up)
         };
-        let x = b.emit1(eqn.op().clone(), &[lower, *d, upper, *ct], rhs.clone());
+        let x = b.emit1(eqn.op().to_owned(), &[lower, *d, upper, *ct], rhs.clone());
         Ok(vec![
             Tangent::Zero,
             Tangent::Zero,

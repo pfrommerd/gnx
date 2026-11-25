@@ -1,14 +1,15 @@
-use crate::{Eqn, Expr, Op, SubExpr, Var, VarInfo, VarScope};
+use crate::{EqnSource, ExprBuilder as Expr, ExprRef, Op, SubExprBuilder, Var, VarInfo, VarScope};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
+// What `expr!` expands to calls of: builds an expression whose variables
+// are referred to by name.
 #[doc(hidden)]
 pub struct ExprBuilder<'a> {
     var_scope: VarScope,
     vars: BTreeMap<&'static str, Var>,
     closure: Vec<(Var, VarInfo)>,
     inputs: Vec<(Var, VarInfo)>,
-    eqns: Vec<Eqn>,
+    eqns: Vec<EqnSource>,
     info: Option<VarInfo>,
     outer: Option<&'a mut dyn FnMut(&'static str) -> Option<VarInfo>>,
 }
@@ -77,11 +78,14 @@ impl ExprBuilder<'_> {
         }
     }
 
-    pub fn subexpr(&self, body: impl Into<Arc<Expr>>, captures: Vec<Var>) -> SubExpr {
-        SubExpr::new(body.into(), captures)
+    pub fn subexpr(&self, body: impl Into<ExprRef>, captures: Vec<Var>) -> SubExprBuilder {
+        SubExprBuilder::new(body).with_vars(captures)
     }
 
-    pub fn inline_subexpr(&mut self, build: impl FnOnce(ExprBuilder<'_>) -> Expr) -> SubExpr {
+    pub fn inline_subexpr(
+        &mut self,
+        build: impl FnOnce(ExprBuilder<'_>) -> Expr,
+    ) -> SubExprBuilder {
         let mut child = ExprBuilder::new(self.info.clone());
         let mut captures = Vec::new();
         // Resolving through this builder also captures names used only by deeper regions.
@@ -91,7 +95,7 @@ impl ExprBuilder<'_> {
             Some(info)
         };
         child.outer = Some(&mut outer);
-        SubExpr::new(Arc::new(build(child)), captures)
+        SubExprBuilder::new(build(child)).with_vars(captures)
     }
 
     pub fn eqn(
@@ -99,14 +103,14 @@ impl ExprBuilder<'_> {
         outputs: Vec<(Var, VarInfo)>,
         op: Op,
         inputs: Vec<Var>,
-        subexprs: Vec<SubExpr>,
+        subexprs: Vec<SubExprBuilder>,
     ) {
         self.eqns
-            .push(Eqn::new_with_subexprs(op, subexprs, inputs, outputs));
+            .push(EqnSource::new(op, subexprs, inputs, outputs));
     }
 
     pub fn finish(self, outputs: Vec<Var>) -> Expr {
-        Expr::new(self.closure, self.inputs, self.eqns, outputs)
+        Expr::from_parts(vec![], self.closure, self.inputs, self.eqns, outputs)
     }
 
     fn resolve(&mut self, name: &'static str) -> Option<(Var, VarInfo)> {
@@ -115,7 +119,7 @@ impl ExprBuilder<'_> {
                 .closure
                 .iter()
                 .chain(&self.inputs)
-                .chain(self.eqns.iter().flat_map(Eqn::outputs))
+                .chain(self.eqns.iter().flat_map(EqnSource::outputs))
                 .find_map(|(defined, info)| (*defined == var).then(|| info.clone()))?;
             return Some((var, info));
         }
@@ -127,18 +131,13 @@ impl ExprBuilder<'_> {
 
     fn var(&mut self, name: &'static str) -> Var {
         if let Some(var) = self.vars.get(name) {
-            var.clone()
+            *var
         } else {
-            let var = self.var_scope.create_var_with_hint(name);
-            self.vars.insert(name, var.clone());
+            let var = self.var_scope.create_var();
+            self.vars.insert(name, var);
             var
         }
     }
-}
-
-#[doc(hidden)]
-pub fn subexpr(body: impl Into<Arc<Expr>>, captures: Vec<Var>) -> SubExpr {
-    SubExpr::new(body.into(), captures)
 }
 
 /// Build an immutable computation expression. Cell actions belong to HExpr.
@@ -159,7 +158,11 @@ pub fn subexpr(body: impl Into<Arc<Expr>>, captures: Vec<Var>) -> SubExpr {
 /// variables (like `outer`) are captured implicitly. Use `name = |...| =>
 /// { ... }` before `in |...| => { ... }` to define a shared region, then refer to it
 /// with `dialect::op [@name{outer}] x`. Captures are positional. To attach a prebuilt
-/// `Expr` or `Arc<Expr>`, use `dialect::op[body => (captures)] x y`.
+/// expression (an `ExprBuilder`, an `ExprRef` or an `ExprHandle`), use
+/// `dialect::op[body => (captures)] x y`.
+///
+/// The result is an `ExprBuilder`: call `build()` on it for a root. A result
+/// written `_` is a hole, which discards the value.
 ///
 /// ```compile_fail
 /// let _ = gnx_expr::expr!(gnx_expr::VarInfo::new(0usize); { lambda cell[:]: in (cell) });
@@ -245,7 +248,7 @@ macro_rules! __expr_named {
     };
     (@define $macro:ident, [$($default:tt)*], $name:ident;
         [$($definition:tt)*] $($tail:tt)*) => {{
-        let $name = ::std::sync::Arc::new(
+        let $name = $crate::Ref::from(
             $crate::$macro!($($default)* $($definition)*)
                 .with_name_hint(stringify!($name))
         );
@@ -500,7 +503,7 @@ macro_rules! __expr_subexpr {
     };
     ($builder:ident, $next:ident; @$name:ident $({$($captures:tt)*})?) => {{
         let __captures = $crate::__expr_inputs!($builder; [] $($($captures)*)?);
-        $builder.subexpr(::std::sync::Arc::clone(&$name), __captures)
+        $builder.subexpr(::core::clone::Clone::clone(&$name), __captures)
     }};
     ($builder:ident, $next:ident; $body:expr => ($($captures:tt)*)) => {{
         let __captures = $crate::__expr_inputs!($builder; [] $($captures)*);

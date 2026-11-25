@@ -8,7 +8,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use futures_channel::oneshot;
 use gnx_expr::pass::{CheckSupported, Dce, FnPass, Pipeline};
-use gnx_expr::{Expr, Value};
+use gnx_expr::{RootExpr, Value};
 use gnx_math::{
     ArrayInfo, DataHandle, Device, DeviceId, ExecOpts, ExecutionBoundary, HostBuffer, HostId,
     LocalAllocations, MemoryLocation, ShardStorage, TransferPolicy,
@@ -30,7 +30,9 @@ pub fn pipeline() -> &'static Pipeline<XlaComputation> {
             .with(ExpandTransforms)
             .with(Dce)
             .with(CheckSupported::<dyn XlaLowering>::new())
-            .finalize(FnPass::new("xla.lower", |expr: Expr| lower::lower(&expr)))
+            .finalize(FnPass::new("xla.lower", |expr: Arc<RootExpr>| {
+                lower::lower(expr.view())
+            }))
     });
     &PIPELINE
 }
@@ -124,16 +126,13 @@ impl XlaDevice {
         self.0.ordinal
     }
 
-    pub fn compile(&self, expr: &Expr) -> io::Result<XlaExecutable> {
-        let (projected, boundary) = ExecutionBoundary::project(expr)?;
+    pub fn compile(&self, expr: &Arc<RootExpr>) -> io::Result<XlaExecutable> {
+        let (projected, boundary) = ExecutionBoundary::project(expr.view())?;
         let program = projected
             .map(|expr| {
-                let output = expr
-                    .outputs()
-                    .iter()
-                    .map(|var| {
-                        lower::metadata(expr.value_info(var).expect("checked SSA output")).cloned()
-                    })
+                let view = expr.view();
+                let output = (view.outputs().iter())
+                    .map(|&var| lower::metadata(view.value_info(var).expect("checked SSA output")))
                     .collect::<io::Result<Vec<_>>>()?;
                 let native_program = pipeline().run(expr).map_err(pass_error)?;
                 let bytes = native(native_program.proto().to_bytes())?;
@@ -245,14 +244,14 @@ impl fmt::Debug for XlaDevice {
 /// A compiled expression can run repeatedly on its owning runtime.
 pub struct XlaExecutable {
     device: XlaDevice,
-    signature: Expr,
+    signature: Arc<RootExpr>,
     boundary: ExecutionBoundary,
     program: Option<(Executable, Vec<ArrayInfo>)>,
 }
 
 impl XlaExecutable {
     pub fn run(&self, args: &[Value], opts: ExecOpts) -> io::Result<Vec<Value>> {
-        ExecutionBoundary::validate_arguments(&self.signature, args)?;
+        ExecutionBoundary::validate_arguments(self.signature.view(), args)?;
         let Some((program, output_info)) = &self.program else {
             return self.boundary.finish(args, &[]);
         };
@@ -281,7 +280,7 @@ impl Device for XlaDevice {
 
     fn execute(
         &self,
-        expr: Expr,
+        expr: Arc<RootExpr>,
         args: impl IntoIterator<Item = Value>,
         opts: ExecOpts,
     ) -> impl Future<Output = io::Result<Self::Outputs>> + Send {

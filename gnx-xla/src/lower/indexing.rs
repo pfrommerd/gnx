@@ -52,7 +52,7 @@ impl XlaLowering for GatherOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        _: &Eqn,
+        _: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [operand, start, more @ ..] = inputs else {
@@ -101,7 +101,7 @@ impl XlaLowering for GatherOperation {
 
 fn scatter_computation(
     operation: ScatterUpdate,
-    eqn: &Eqn,
+    eqn: Eqn<'_>,
     ty: ElementType,
 ) -> io::Result<XlaComputation> {
     let builder = XlaBuilder::new("scatter_update");
@@ -115,7 +115,8 @@ fn scatter_computation(
         ScatterUpdate::Min => native(lhs.min(&rhs))?,
         ScatterUpdate::Max => native(lhs.max(&rhs))?,
         ScatterUpdate::Apply => {
-            let [region] = eqn.subexprs() else {
+            let mut regions = eqn.subexprs();
+            let (Some(region), None) = (regions.next(), regions.next()) else {
                 return Err(invalid("scatter_apply needs an update region"));
             };
             let results = lower_body(&builder, region.expr(), &[], &[lhs])?;
@@ -132,7 +133,7 @@ impl XlaLowering for ScatterOperation {
     fn lower_xla(
         &self,
         _: &LoweringContext<'_>,
-        eqn: &Eqn,
+        eqn: Eqn<'_>,
         inputs: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
         let [operand, start, updates] = inputs else {
