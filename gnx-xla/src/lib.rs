@@ -7,14 +7,16 @@ use std::io::{self, ErrorKind};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use futures_channel::oneshot;
-use gnx_expr::pass::{CheckSupported, Dce, FnPass, Pipeline};
+use gnx_common::cache::Cache;
+use gnx_common::pass::{
+    CheckSupported, Dce, FinalPipeline, Pass, PassError, Pipeline, PipelineError,
+};
 use gnx_expr::{RootExpr, Value};
 use gnx_math::{
     ArrayInfo, DataHandle, Device, DeviceId, ExecOpts, ExecutionBoundary, HostBuffer, HostId,
     LocalAllocations, MemoryLocation, ShardStorage, TransferPolicy,
 };
 use gnx_transforms::ExpandTransforms;
-use xla::XlaComputation;
 use xla::pjrt::{Buffer, Client, Executable};
 
 #[doc(hidden)]
@@ -22,17 +24,41 @@ pub use gnx_expr as __gnx_expr;
 pub use lower::{LoweringContext, XlaLowering};
 pub use xla::XlaOp;
 
+/// A lowered program: a serialized HLO module.
+#[derive(rkyv::Archive, rkyv::Serialize)]
+pub struct HloModule {
+    pub bytes: Vec<u8>,
+}
+
+/// The final stage of [`pipeline`]: lowers each equation to HLO.
+pub struct LowerXla;
+
+impl gnx_common::anyhash::Hash for LowerXla {
+    fn hash<H: gnx_common::anyhash::HasherWrite>(&self, _: &mut H) {}
+}
+
+impl Pass<HloModule> for LowerXla {
+    fn name(&self) -> &'static str {
+        "xla.lower"
+    }
+
+    fn run(&self, expr: Arc<RootExpr>) -> Result<HloModule, PassError> {
+        lower::lower(expr.view())
+            .and_then(|program| native(program.proto().to_bytes()))
+            .map(|bytes| HloModule { bytes })
+            .map_err(|error| PassError::new(self.name(), error))
+    }
+}
+
 /// The passes `XlaDevice::compile` runs: expand transformations, remove dead
 /// code, check that each operation has an XLA lowering, and lower to HLO.
-pub fn pipeline() -> &'static Pipeline<XlaComputation> {
-    static PIPELINE: LazyLock<Pipeline<XlaComputation>> = LazyLock::new(|| {
+pub fn pipeline() -> &'static FinalPipeline<HloModule> {
+    static PIPELINE: LazyLock<FinalPipeline<HloModule>> = LazyLock::new(|| {
         Pipeline::new()
             .with(ExpandTransforms)
             .with(Dce)
             .with(CheckSupported::<dyn XlaLowering>::new())
-            .finalize(FnPass::new("xla.lower", |expr: Arc<RootExpr>| {
-                lower::lower(expr.view())
-            }))
+            .finalize(LowerXla)
     });
     &PIPELINE
 }
@@ -53,41 +79,52 @@ struct Runtime {
     kind: String,
     client: Arc<Client>,
     allocations: LocalAllocations<Buffer>,
+    cache: Cache,
 }
 
 impl XlaDevice {
     /// The process's default single-device CPU client. This does not load Python.
-    pub fn cpu() -> io::Result<Self> {
+    ///
+    /// The first call decides the cache compiled programs are kept in; later
+    /// calls return the same device, whatever cache they are given.
+    pub fn cpu(cache: Cache) -> io::Result<Self> {
         static CPU: Mutex<Option<XlaDevice>> = Mutex::new(None);
         let mut cpu = CPU.lock().unwrap();
         if let Some(device) = &*cpu {
             return Ok(device.clone());
         }
-        let device = Self::cpu_on(HostId::local())?;
+        let device = Self::cpu_on(HostId::local(), cache)?;
         *cpu = Some(device.clone());
         Ok(device)
     }
 
     /// Create a CPU runtime with an explicitly supplied identity for this host.
-    pub fn cpu_on(host: HostId) -> io::Result<Self> {
-        Self::from_client(host, Platform::Cpu, Client::new()?)
+    pub fn cpu_on(host: HostId, cache: Cache) -> io::Result<Self> {
+        Self::from_client(host, Platform::Cpu, Client::new()?, cache)
     }
 
     /// Open the CUDA-visible GPU with this local ordinal. Repeated calls for
     /// the same ordinal share a client and its allocation table.
-    pub fn cuda(ordinal: usize) -> io::Result<Self> {
+    /// The cache is that of the first call for the ordinal.
+    pub fn cuda(ordinal: usize, cache: Cache) -> io::Result<Self> {
         use std::collections::BTreeMap;
         static DEVICES: Mutex<BTreeMap<usize, XlaDevice>> = Mutex::new(BTreeMap::new());
         let mut devices = DEVICES.lock().unwrap();
         if let Some(device) = devices.get(&ordinal) {
             return Ok(device.clone());
         }
-        let device = Self::from_client(HostId::local(), Platform::Cuda, Client::cuda(ordinal)?)?;
+        let client = Client::cuda(ordinal)?;
+        let device = Self::from_client(HostId::local(), Platform::Cuda, client, cache)?;
         devices.insert(ordinal, device.clone());
         Ok(device)
     }
 
-    fn from_client(host: HostId, platform: Platform, client: Arc<Client>) -> io::Result<Self> {
+    fn from_client(
+        host: HostId,
+        platform: Platform,
+        client: Arc<Client>,
+        cache: Cache,
+    ) -> io::Result<Self> {
         if cfg!(target_endian = "big") {
             return Err(unsupported(
                 "XLA host transfers require a little-endian host",
@@ -101,6 +138,7 @@ impl XlaDevice {
             kind,
             client,
             allocations: LocalAllocations::new(),
+            cache,
         })))
     }
 
@@ -126,20 +164,22 @@ impl XlaDevice {
         self.0.ordinal
     }
 
-    pub fn compile(&self, expr: &Arc<RootExpr>) -> io::Result<XlaExecutable> {
+    /// Lower `expr` and compile it for this device. Lowering is skipped if
+    /// the device's cache holds the program from an earlier compilation.
+    pub async fn compile(&self, expr: &Arc<RootExpr>) -> io::Result<XlaExecutable> {
         let (projected, boundary) = ExecutionBoundary::project(expr.view())?;
-        let program = projected
-            .map(|expr| {
+        let program = match projected {
+            Some(expr) => {
                 let view = expr.view();
                 let output = (view.outputs().iter())
                     .map(|&var| lower::metadata(view.value_info(var).expect("checked SSA output")))
                     .collect::<io::Result<Vec<_>>>()?;
-                let native_program = pipeline().run(expr).map_err(pass_error)?;
-                let bytes = native(native_program.proto().to_bytes())?;
-                let executable = self.0.client.compile(&bytes)?;
-                Ok::<_, io::Error>((executable, output))
-            })
-            .transpose()?;
+                let module =
+                    (pipeline().run(expr.clone(), &self.0.cache).await).map_err(pipeline_error)?;
+                Some((self.0.client.compile(&module.bytes)?, output))
+            }
+            None => None,
+        };
         Ok(XlaExecutable {
             device: self.clone(),
             signature: expr.clone(),
@@ -291,8 +331,7 @@ impl Device for XlaDevice {
             std::thread::Builder::new()
                 .name("gnx-xla".into())
                 .spawn(move || {
-                    let result = device
-                        .compile(&expr)
+                    let result = futures_executor::block_on(device.compile(&expr))
                         .and_then(|compiled| compiled.run(&args, opts));
                     let _ = sender.send(result);
                 })?;
@@ -309,8 +348,14 @@ fn invalid(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::
 fn unsupported(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(ErrorKind::Unsupported, message)
 }
+pub(crate) fn pipeline_error(error: PipelineError) -> io::Error {
+    match error {
+        PipelineError::Pass(error) => pass_error(error),
+        PipelineError::Cache(error) => io::Error::other(error),
+    }
+}
 /// Preserve the kind of an I/O error raised inside a pass.
-pub(crate) fn pass_error(error: gnx_expr::pass::PassError) -> io::Error {
+pub(crate) fn pass_error(error: PassError) -> io::Error {
     let kind = error
         .source
         .downcast_ref::<io::Error>()
@@ -328,7 +373,7 @@ mod tests {
 
     #[test]
     fn cpu_aliases_an_aligned_snapshot_and_retains_its_storage() {
-        let device = XlaDevice::cpu().unwrap();
+        let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
         let info = ArrayInfo::new(Shape::fixed([2]), DType::F32);
         let values = [1_f32, 2.]
             .into_iter()
@@ -350,7 +395,7 @@ mod tests {
 
     #[test]
     fn strict_import_rejects_a_misaligned_view_before_copying() {
-        let device = XlaDevice::cpu().unwrap();
+        let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
         let source =
             HostBuffer::copy_from_slice(ArrayInfo::new(Shape::fixed([5]), DType::U8), &[0; 5])
                 .unwrap();

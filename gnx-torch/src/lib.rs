@@ -4,9 +4,10 @@ mod regions;
 
 use std::future::Future;
 use std::io;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use gnx_expr::pass::{CheckSupported, Dce, Pipeline};
+use gnx_common::cache::Cache;
+use gnx_common::pass::{CheckSupported, Dce, Pass, PassError, Pipeline, PipelineError};
 use gnx_expr::{RootExpr, Value};
 use gnx_math::{
     ArrayInfo, DataHandle, Device, DeviceId, ExecOpts, ExecutionBoundary, HostBuffer, HostId,
@@ -31,25 +32,32 @@ fn unsupported(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> 
 pub struct TorchDevice {
     target: tch::Device,
     allocations: Arc<LocalAllocations<Mutex<Tensor>>>,
+    cache: Cache,
 }
 
 impl TorchDevice {
     /// The process-wide CPU runtime and allocation table.
-    pub fn cpu() -> io::Result<Self> {
+    ///
+    /// The first call decides the cache compiled programs are kept in; later
+    /// calls return the same device, whatever cache they are given.
+    pub fn cpu(cache: Cache) -> io::Result<Self> {
         if cfg!(target_endian = "big") {
             return Err(unsupported(
                 "Torch host transfers require a little-endian host",
             ));
         }
-        static CPU: LazyLock<TorchDevice> = LazyLock::new(|| TorchDevice {
+        static CPU: OnceLock<TorchDevice> = OnceLock::new();
+        let device = CPU.get_or_init(|| TorchDevice {
             target: tch::Device::Cpu,
             allocations: Arc::default(),
+            cache,
         });
-        Ok(CPU.clone())
+        Ok(device.clone())
     }
 
     /// Open the CUDA-visible ordinal. Repeated calls share its allocation table.
-    pub fn cuda(ordinal: usize) -> io::Result<Self> {
+    /// The cache is that of the first call for the ordinal.
+    pub fn cuda(ordinal: usize, cache: Cache) -> io::Result<Self> {
         if cfg!(target_endian = "big") {
             return Err(unsupported(
                 "Torch host transfers require a little-endian host",
@@ -111,6 +119,7 @@ impl TorchDevice {
         let device = Self {
             target,
             allocations: Arc::default(),
+            cache,
         };
         devices.insert(ordinal, device.clone());
         Ok(device)
@@ -126,24 +135,33 @@ impl TorchDevice {
         }
     }
 
-    pub fn compile(&self, expr: &Arc<RootExpr>) -> io::Result<TorchExecutable> {
+    /// Lower `expr` and trace it into TorchScript modules for this device.
+    /// Both are skipped if the device's cache holds the modules from an
+    /// earlier compilation.
+    pub async fn compile(&self, expr: &Arc<RootExpr>) -> io::Result<TorchExecutable> {
         let (projected, boundary) = ExecutionBoundary::project(expr.view())?;
         let mut modules = Vec::new();
         if let Some(body) = projected {
-            let body = Pipeline::new()
+            let view = body.view();
+            let outputs = (view.outputs().iter())
+                .map(|&var| lower::metadata(view.value_info(var).expect("checked SSA output")))
+                .collect::<io::Result<Vec<_>>>()?;
+            let traced = Pipeline::new()
                 .with(ExpandTransforms)
                 .with(regions::StaticRegions)
                 .with(Dce)
                 .with(CheckSupported::<dyn TorchLowering>::new())
-                .run(body)
-                .map_err(|e| {
-                    if e.pass == "check_supported" {
-                        unsupported(e)
-                    } else {
-                        invalid(e)
-                    }
-                })?;
-            modules = lower::trace(body.view(), self.target)?;
+                .finalize(TraceTorch {
+                    target: self.target,
+                })
+                .run(body.clone(), &self.cache)
+                .await
+                .map_err(pipeline_error)?;
+            for (module, info) in traced.modules.iter().zip(outputs) {
+                let module = CModule::load_data_on_device(&mut &module[..], self.target)
+                    .map_err(io::Error::other)?;
+                modules.push((module, info));
+            }
         }
         Ok(TorchExecutable {
             device: self.clone(),
@@ -274,13 +292,59 @@ impl Device for TorchDevice {
                 .name("gnx-torch".into())
                 .spawn(move || {
                     let _ = tx.send(
-                        device
-                            .compile(&expr)
+                        futures_executor::block_on(device.compile(&expr))
                             .and_then(|program| program.run(&args, opts)),
                     );
                 })?;
             rx.await
                 .map_err(|_| io::Error::other("Torch execution worker stopped"))?
         }
+    }
+}
+
+/// Traced programs: one serialized TorchScript module per computed output.
+#[derive(rkyv::Archive, rkyv::Serialize)]
+pub struct TorchModules {
+    pub modules: Vec<Vec<u8>>,
+}
+
+/// The final stage of compilation: traces the expression on `target`.
+pub struct TraceTorch {
+    pub target: tch::Device,
+}
+
+impl gnx_common::anyhash::Hash for TraceTorch {
+    fn hash<H: gnx_common::anyhash::HasherWrite>(&self, state: &mut H) {
+        // Tracing runs on the target, and a module may depend on it.
+        state.write_str(&format!("{:?}", self.target));
+    }
+}
+
+impl Pass<TorchModules> for TraceTorch {
+    fn name(&self) -> &'static str {
+        "torch.trace"
+    }
+
+    fn run(&self, expr: Arc<RootExpr>) -> Result<TorchModules, PassError> {
+        lower::trace(expr.view(), self.target)
+            .and_then(|modules| {
+                (modules.iter())
+                    .map(|(module, _)| lower::save(module))
+                    .collect()
+            })
+            .map(|modules| TorchModules { modules })
+            .map_err(|error| PassError::new(self.name(), error))
+    }
+}
+
+fn pipeline_error(error: PipelineError) -> io::Error {
+    match error {
+        PipelineError::Pass(error) if error.pass == "check_supported" => unsupported(error),
+        // Tracing reports the kind of its own failures.
+        PipelineError::Pass(error) => match error.source.downcast_ref::<io::Error>() {
+            Some(source) => io::Error::new(source.kind(), error),
+            None => invalid(error),
+        },
+        PipelineError::Cache(error) => io::Error::other(error),
     }
 }

@@ -1,14 +1,17 @@
 mod arithmetic;
 pub mod array;
 pub mod buffer;
+pub mod cache;
 mod context;
 pub mod des;
 mod error;
 pub mod ops;
+pub mod pass;
 mod path;
 pub mod ser;
 pub mod store;
 
+pub use anyhash;
 pub use array::*;
 pub use buffer::*;
 pub use context::GraphContext;

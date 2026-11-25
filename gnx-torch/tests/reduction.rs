@@ -1,4 +1,5 @@
-use gnx_expr::{VarInfo, pass::Builder};
+use gnx_common::pass::Builder;
+use gnx_expr::VarInfo;
 use gnx_math::{
     ArrayInfo, DType, Shape,
     ops::{
@@ -41,10 +42,12 @@ fn maximum(shape: &[usize], axes: &[usize], window: Option<Window>) -> TorchExec
         None => reduce(&mut p, &[x, ids], &[v0, id0], axes, reducer),
     }
     .unwrap();
-    TorchDevice::cpu()
-        .unwrap()
-        .compile(&p.finish(out).build().unwrap())
-        .unwrap()
+    futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&p.finish(out).build().unwrap()),
+    )
+    .unwrap()
 }
 fn run(p: &TorchExecutable, args: &[Tensor]) -> (Tensor, Tensor) {
     let mut traces = p.modules();

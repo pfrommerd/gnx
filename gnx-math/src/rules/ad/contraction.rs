@@ -155,7 +155,7 @@ deflinear!(FftOperation, |cx, ct, [input]| {
 });
 
 use crate::ops::{elementwise::sub_op, linalg::CustomLinearSolveOperation};
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{Eqn, Var};
 use gnx_transforms::ad::jvp::{instantiate, jvp_expr};
 use gnx_transforms::ad::{Dual, JvpRule, Operand, Tangent, TransposeRule};

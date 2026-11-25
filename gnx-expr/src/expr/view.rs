@@ -345,3 +345,32 @@ impl fmt::Debug for Param<'_> {
         write!(f, "{:?}: {:?}", self.var, self.info)
     }
 }
+
+// Binding the symbols of an expression where it is used.
+impl<'a> Expr<'a> {
+    /// Match symbolic slots across the whole boundary: the result maps each
+    /// closure symbol to its capture, and each symbol bound by an input to
+    /// the symbol in the same slot of what the input is bound to.
+    pub fn bind_symbols(
+        self,
+        symbol_captures: &[Symbol],
+        actual_closure: &[VarInfo],
+        actual_inputs: &[VarInfo],
+        defined: impl Fn(Symbol) -> bool,
+    ) -> Result<std::collections::BTreeMap<Symbol, Symbol>, LoweringError> {
+        if self.closure_inputs().len() != actual_closure.len()
+            || self.inputs().len() != actual_inputs.len()
+        {
+            return Err(LoweringError::CallArity);
+        }
+        crate::symbol::symbol_substitution(
+            self.closure_symbols(),
+            symbol_captures,
+            &self.input_symbols(),
+            (self.closure_inputs().chain(self.inputs()))
+                .map(|param| param.info().symbols())
+                .zip((actual_closure.iter().chain(actual_inputs)).map(|info| info.symbols())),
+            defined,
+        )
+    }
+}

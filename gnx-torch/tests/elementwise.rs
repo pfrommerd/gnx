@@ -22,10 +22,12 @@ fn compile(op: Op, inputs: &[VarInfo], output: VarInfo) -> std::io::Result<Torch
         args.iter().map(|(v, _)| *v).collect(),
         vec![(out, output)],
     );
-    TorchDevice::cpu()?.compile(
-        &ExprBuilder::from_parts(vec![], vec![], args, vec![eqn], vec![out])
-            .build()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?,
+    futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())?.compile(
+            &ExprBuilder::from_parts(vec![], vec![], args, vec![eqn], vec![out])
+                .build()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?,
+        ),
     )
 }
 fn binary(op: Op, kind: DType, result: DType, n: usize) -> CModule {

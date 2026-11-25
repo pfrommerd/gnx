@@ -472,12 +472,12 @@ defjvp!(extern RemOperation, |_, t, _| Ok(t), |cx, t, [x, y]| {
 impl gnx_transforms::ad::JvpRule for PolynomialOperation {
     fn jvp(
         &self,
-        b: &mut gnx_expr::pass::Builder,
+        b: &mut gnx_common::pass::Builder,
         eqn: gnx_expr::Eqn<'_>,
         inputs: &[gnx_transforms::ad::Dual],
         _: &[Vec<gnx_transforms::ad::Dual>],
     ) -> gnx_transforms::TransformResult<Vec<gnx_transforms::ad::Dual>> {
-        let mut recipe = gnx_expr::pass::Builder::new();
+        let mut recipe = gnx_common::pass::Builder::new();
         let metadata = &gnx_transforms::util::output_infos(eqn)[0];
         let args: Vec<_> = inputs
             .iter()

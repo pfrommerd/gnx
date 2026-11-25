@@ -1,4 +1,5 @@
-use gnx_expr::{Op, VarInfo, pass::Builder};
+use gnx_common::pass::Builder;
+use gnx_expr::{Op, VarInfo};
 use gnx_math::{
     ArrayInfo, DType, Shape,
     ops::{bitwise, contraction::*, elementwise as ew, fft::*, indexing, shape, special},
@@ -13,10 +14,12 @@ fn program(op: Op, args: &[VarInfo], out: VarInfo) -> gnx_torch::TorchExecutable
     let mut b = Builder::new();
     let args: Vec<_> = args.iter().map(|t| b.input(t.clone())).collect();
     let out = b.emit1(op, &args, out);
-    TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(vec![out]).build().unwrap())
-        .unwrap()
+    futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(vec![out]).build().unwrap()),
+    )
+    .unwrap()
 }
 fn run(op: Op, args: &[(&Tensor, DType)], shape: &[usize], dtype: DType) -> Tensor {
     let ins: Vec<_> = args
@@ -51,12 +54,14 @@ fn single_cpu_accepts_replicated_but_not_named_sharding() {
         t,
     );
     assert_eq!(
-        TorchDevice::cpu()
-            .unwrap()
-            .compile(&b.finish(vec![y]).build().unwrap())
-            .err()
-            .unwrap()
-            .kind(),
+        futures_executor::block_on(
+            TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+                .unwrap()
+                .compile(&b.finish(vec![y]).build().unwrap())
+        )
+        .err()
+        .unwrap()
+        .kind(),
         std::io::ErrorKind::Unsupported
     );
 }
@@ -214,10 +219,12 @@ fn scan_replays_live_carry_and_stacks_outputs() {
         [s, row],
         vec![body],
     );
-    let p = TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(ys).build().unwrap())
-        .unwrap();
+    let p = futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(ys).build().unwrap()),
+    )
+    .unwrap();
     let args = [Tensor::from(3f32), Tensor::from_slice(&[2f32, -1., 5.])];
     let vals = p
         .modules()
@@ -278,10 +285,12 @@ fn cholesky_lower_factor_and_pivoted_qr_reconstruct_inputs() {
         [mat.clone(), mat, ty(DType::I32, &[2])],
         vec![],
     );
-    let p = TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(outputs).build().unwrap())
-        .unwrap();
+    let p = futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(outputs).build().unwrap()),
+    )
+    .unwrap();
     let out = p
         .modules()
         .map(|m| m.forward_ts(&[&x]).unwrap())
@@ -346,10 +355,12 @@ fn stable_lexicographic_sort_permutates_payloads() {
         [row.clone(), row.clone(), row],
         vec![],
     );
-    let p = TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(vec![outputs[2]]).build().unwrap())
-        .unwrap();
+    let p = futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(vec![outputs[2]]).build().unwrap()),
+    )
+    .unwrap();
     let args = [[1, 0, 1, 0, 0], [4, 2, 1, 2, 1], [0, 1, 2, 3, 4]]
         .map(|v: [i32; 5]| Tensor::from_slice(&v));
     let payload = p.modules().next().unwrap().forward_ts(&args).unwrap();

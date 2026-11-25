@@ -4,7 +4,7 @@ use gnx_common::ops::{
     add_op, broadcast_in_dim_op, mul_op, rev_op, select_op, transpose_op, zeros_op,
 };
 use gnx_common::{ArrayInfo, DType, Shape, fixed_dims};
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{Eqn, ExprHandle, Ref, SubExprBuilder, Var, VarInfo};
 
 use crate::{TransformError, TransformResult};

@@ -1,5 +1,6 @@
 mod support;
-use gnx_expr::{VarInfo, pass::Builder};
+use gnx_common::pass::Builder;
+use gnx_expr::VarInfo;
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::hessenberg};
 use gnx_torch::TorchDevice;
 use tch::{CModule, Kind, Tensor};
@@ -13,13 +14,15 @@ fn compile(shape: &[usize], dtype: DType) -> Vec<CModule> {
     let mut b = Builder::new();
     let a = b.input(ty(shape));
     let outputs = b.emit(hessenberg(), &[a], [ty(shape), ty(&tau_shape)], vec![]);
-    TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(outputs).build().unwrap())
-        .unwrap()
-        .modules()
-        .map(support::reload)
-        .collect()
+    futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(outputs).build().unwrap()),
+    )
+    .unwrap()
+    .modules()
+    .map(support::reload)
+    .collect()
 }
 
 // Reconstruct using the independent LAPACK-style Householder product kernel.

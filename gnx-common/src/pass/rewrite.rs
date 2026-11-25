@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::Builder;
-use crate::{EqnSource, Expr, ExprBuilder, SubExprBuilder, Var};
+use gnx_expr::{EqnSource, Expr, ExprBuilder, SubExprBuilder, Var};
 
 /// Copy `expr` into a fresh namespace, letting `hook` replace equations.
 ///

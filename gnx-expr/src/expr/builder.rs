@@ -78,6 +78,56 @@ impl ExprBuilder {
         self.scope.reserve(defs.map(|(var, _)| *var), symbols);
     }
 
+    /// A new, empty expression whose variables and symbols are distinct
+    /// from every one allocated here so far. An expression nested in this
+    /// one can then refer to the symbols it captures by the same names.
+    pub fn nested(&self) -> Self {
+        Self {
+            scope: self.scope.clone(),
+            ..Self::default()
+        }
+    }
+
+    /// The symbols provided by the enclosing expression.
+    pub fn closure_symbols(&self) -> &[Symbol] {
+        &self.closure_symbols
+    }
+
+    /// Declares `symbol`, allocated elsewhere, as provided by the enclosing
+    /// expression.
+    pub fn declare_closure_symbol(&mut self, symbol: Symbol) {
+        self.closure_symbols.push(symbol);
+        self.scope.reserve([], [symbol]);
+    }
+
+    /// Keeps the symbols allocated from here on distinct from `symbols`.
+    pub fn reserve_symbols(&mut self, symbols: impl IntoIterator<Item = Symbol>) {
+        self.scope.reserve([], symbols);
+    }
+
+    /// The variables provided by the enclosing expression.
+    pub fn closure_inputs(&self) -> &[(Var, VarInfo)] {
+        &self.closure_inputs
+    }
+
+    /// Replaces the variables provided by the enclosing expression.
+    pub fn set_closure_inputs(&mut self, closure_inputs: Vec<(Var, VarInfo)>) {
+        self.closure_inputs = closure_inputs;
+    }
+
+    pub fn inputs(&self) -> &[(Var, VarInfo)] {
+        &self.inputs
+    }
+
+    pub fn eqns(&self) -> &[EqnSource] {
+        &self.eqns
+    }
+
+    /// The results of the expression.
+    pub fn output_vars(&self) -> &[Var] {
+        &self.outputs
+    }
+
     /// Allocates a variable without defining it.
     pub fn fresh_var(&mut self) -> Var {
         self.scope.create_var()

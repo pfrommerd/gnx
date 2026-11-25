@@ -27,13 +27,13 @@ existing installation, or on an unlisted target, set `LIBTORCH` or use
 `LIBTORCH_USE_PYTORCH=1` with matching PyTorch. These explicit overrides bypass
 the managed download.
 
-Compile once with `let program = TorchDevice::cpu()?.compile(&expr)?`, then
+Compile once with `let program = TorchDevice::cpu(cache)?.compile(&expr).await?`, then
 call `program.run(&args, opts)?` with captures followed by explicit inputs.
 Use `ExecOpts { transfers: TransferPolicy::AllowCopy }` for host inputs; tensors
 already imported on the device can be reused with the default zero-copy policy.
 `device.download(&handle)?` reads a result back into a packed `HostBuffer`.
 
-Use `TorchDevice::cuda(0)?` for the first CUDA-visible GPU. This requires a
+Use `TorchDevice::cuda(0, cache)?` for the first CUDA-visible GPU. This requires a
 compatible NVIDIA driver and the CUDA-enabled runtime selected by `--features cuda`.
 An unavailable GPU or invalid ordinal returns an error instead of falling back to CPU. To exercise
 GPU import, device-buffer reuse, saved-module replay and readback, run
@@ -49,7 +49,7 @@ Shared intermediates can therefore be recomputed across distinct outputs.
 ## Native XLA backend
 
 `gnx-xla` provides single-device execution through `gnx-xla-sys` and PJRT.
-`XlaDevice::cpu()` selects the CPU; `XlaDevice::cuda(0)` selects the first
+`XlaDevice::cpu(cache)` selects the CPU; `XlaDevice::cuda(0, cache)` selects the first
 CUDA-visible GPU. `XlaDevice::compile` returns a reusable executable.
 The default `lapack` feature adds CPU LAPACKE decompositions; Qwen omits it.
 
@@ -75,8 +75,8 @@ a SHA-256-pinned PJRT plugin, NVIDIA runtime libraries (including `libcudart`,
 cuBLAS and cuDNN), and GPU compiler tools. Allow several GB for the first build.
 No Python installation, system CUDA toolkit, or `LD_LIBRARY_PATH` setup is needed.
 On GNU/Linux x86_64, the default managed CUDA 13 backends share the same NVIDIA
-libraries, including cuDNN 9.13. You can keep `TorchDevice::cuda(0)?` and
-`XlaDevice::cuda(0)?` alive in the same process. They still own separate buffers.
+libraries, including cuDNN 9.13. You can keep `TorchDevice::cuda(0, cache)?` and
+`XlaDevice::cuda(0, cache)?` alive in the same process. They still own separate buffers.
 To test convolutions with both initialization orders, run:
 
 ```sh
@@ -102,10 +102,10 @@ device-buffer reuse, and readback. On a host **without** the NVIDIA driver, use
 explicit CUDA error path. For arrays initially stored on the host:
 
 ```rust
-use gnx::{Eval, ExecOpts, buffer::TransferPolicy};
+use gnx::{Eval, ExecOpts, buffer::TransferPolicy, cache::Cache};
 use gnx_xla::XlaDevice;
 
-let gpu = XlaDevice::cuda(0)?;
+let gpu = XlaDevice::cuda(0, Cache::in_memory())?;
 gpu.eval(&result, ExecOpts { transfers: TransferPolicy::AllowCopy }).await?;
 let host = gpu.download(result.data().unwrap())?;
 ```
@@ -202,6 +202,32 @@ linear projections, feed-forward blocks, and recurrent updates use `#[gnx::jit]`
 `device.eval` materializes the next token and layer caches together. Only the
 generated token ID is read back. This example favors clarity over throughput:
 full-attention caches grow with the sequence, and evaluation compiles each step.
+
+## Compilation cache
+
+Every device takes a `gnx::cache::Cache`, in which compilation keeps the result
+of each pass and the lowered program (HLO for XLA, TorchScript modules for
+Torch). Compiling an expression again, on any device with the same cache, reads
+the program back instead of lowering it; the native compilation of that
+program still runs. `Cache::in_memory()` lasts as long as the process. To keep
+programs between runs, give the cache a store:
+
+```rust
+use gnx::{cache::Cache, store::Store};
+
+let cache = Cache::new(Store::local("/var/cache/gnx")?);
+let cpu = XlaDevice::cpu(cache.clone())?;
+```
+
+Entries are files named by the hash of their contents and are memory-mapped
+when read. `Store::mirrored(remote, dir)` puts a local directory in front of
+any other `object_store`, so that its objects are mapped as well. The device
+for a given CPU or CUDA ordinal is shared by the process and keeps the cache
+of the first call that opened it.
+
+Cached entries are **not validated** when read, and are not invalidated when
+GNX changes: use a cache directory with one build of GNX, and clear it after
+upgrading or after changing a pass.
 
 ## Array operations
 

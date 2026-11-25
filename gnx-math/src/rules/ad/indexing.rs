@@ -1,7 +1,7 @@
 use crate::ops::elementwise::neg_op;
 use crate::ops::indexing::*;
 use crate::ops::mul_op;
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{Eqn, Var};
 
 use gnx_transforms::ad::jvp::instantiate;

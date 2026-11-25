@@ -1,5 +1,6 @@
 mod support;
-use gnx_expr::{VarInfo, pass::Builder};
+use gnx_common::pass::Builder;
+use gnx_expr::VarInfo;
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::schur};
 use gnx_torch::TorchDevice;
 use tch::{CModule, Kind, Tensor};
@@ -14,13 +15,15 @@ fn compiled(dims: &[usize], dtype: DType, vectors: bool) -> Vec<CModule> {
         vec![ty; 1 + usize::from(vectors)],
         vec![],
     );
-    TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(out).build().unwrap())
-        .unwrap()
-        .modules()
-        .map(support::reload)
-        .collect()
+    futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(out).build().unwrap()),
+    )
+    .unwrap()
+    .modules()
+    .map(support::reload)
+    .collect()
 }
 fn replay(m: &[CModule], x: &Tensor) -> Vec<Tensor> {
     m.iter().map(|m| m.forward_ts(&[x]).unwrap()).collect()

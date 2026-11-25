@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{Eqn, EqnSource, Expr, SubExprBuilder, Var};
 
 use super::MapParameters;

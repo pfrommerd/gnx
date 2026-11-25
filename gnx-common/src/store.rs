@@ -1,10 +1,11 @@
 use std::path::Path as StdPath;
 use std::sync::Arc;
 
+pub use object_store::Error;
 pub use object_store::path::Path;
 pub use object_store::{
-    DynObjectStore, GetOptions, GetResult, ListResult, ObjectMeta, ObjectStore, ObjectStoreExt,
-    PutOptions, PutPayload, PutPayloadMut, PutResult, Result,
+    DynObjectStore, GetOptions, GetResult, GetResultPayload, ListResult, ObjectMeta, ObjectStore,
+    ObjectStoreExt, PutMode, PutOptions, PutPayload, PutPayloadMut, PutResult, Result,
 };
 
 /// Shared handle to an object store.
@@ -120,5 +121,139 @@ impl Object {
 
     pub async fn delete(&self) -> Result<()> {
         self.store.inner.delete(&self.path).await
+    }
+}
+
+impl Store {
+    /// `remote`, with every object that is read or written kept in the
+    /// local directory `root` as well. Reading an object then gives a local
+    /// file, which can be memory-mapped, and reads it from `remote` at most
+    /// once.
+    ///
+    /// Objects are assumed never to change once written: a local copy is
+    /// not checked against `remote` again.
+    pub fn mirrored<P: AsRef<StdPath>>(remote: Store, root: P) -> Result<Self> {
+        let local = object_store::local::LocalFileSystem::new_with_prefix(root)?;
+        Ok(Self::new(Arc::new(Mirrored {
+            remote: remote.inner,
+            local: Arc::new(local),
+        })))
+    }
+}
+
+/// See [`Store::mirrored`].
+#[derive(Debug)]
+struct Mirrored {
+    remote: Arc<dyn ObjectStore>,
+    local: Arc<object_store::local::LocalFileSystem>,
+}
+
+impl std::fmt::Display for Mirrored {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Mirrored({}, {})", self.remote, self.local)
+    }
+}
+
+// Whether a read asks for a whole object, whatever its state.
+fn is_plain(options: &GetOptions) -> bool {
+    let GetOptions {
+        if_match,
+        if_none_match,
+        if_modified_since,
+        if_unmodified_since,
+        range,
+        version,
+        head,
+        extensions: _,
+    } = options;
+    if_match.is_none()
+        && if_none_match.is_none()
+        && if_modified_since.is_none()
+        && if_unmodified_since.is_none()
+        && range.is_none()
+        && version.is_none()
+        && !head
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for Mirrored {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> Result<PutResult> {
+        let result = self
+            .remote
+            .put_opts(location, payload.clone(), opts)
+            .await?;
+        self.local.put(location, payload).await?;
+        Ok(result)
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        opts: object_store::PutMultipartOptions,
+    ) -> Result<Box<dyn object_store::MultipartUpload>> {
+        self.remote.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
+        if !is_plain(&options) {
+            return self.remote.get_opts(location, options).await;
+        }
+        match self.local.get(location).await {
+            Err(Error::NotFound { .. }) => {}
+            result => return result,
+        }
+        let bytes = self.remote.get(location).await?.bytes().await?;
+        self.local.put(location, bytes.into()).await?;
+        self.local.get(location).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures_util::stream::BoxStream<'static, Result<Path>>,
+    ) -> futures_util::stream::BoxStream<'static, Result<Path>> {
+        use futures_util::StreamExt;
+        let local = self.local.clone();
+        (self.remote.delete_stream(locations))
+            .then(move |deleted| {
+                let local = local.clone();
+                async move {
+                    let location = deleted?;
+                    match local.delete(&location).await {
+                        Ok(()) | Err(Error::NotFound { .. }) => Ok(location),
+                        Err(error) => Err(error),
+                    }
+                }
+            })
+            .boxed()
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&Path>,
+    ) -> futures_util::stream::BoxStream<'static, Result<ObjectMeta>> {
+        self.remote.list(prefix)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
+        self.remote.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: object_store::CopyOptions,
+    ) -> Result<()> {
+        self.remote.copy_opts(from, to, options).await?;
+        // Whatever was mirrored at the destination is out of date.
+        match self.local.delete(to).await {
+            Ok(()) | Err(Error::NotFound { .. }) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 }

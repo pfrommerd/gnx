@@ -94,7 +94,7 @@ deftranspose!(FullOperation, |_, ct, _| ct
 impl gnx_transforms::ad::JvpRule for DynamicSliceOperation {
     fn jvp(
         &self,
-        b: &mut gnx_expr::pass::Builder,
+        b: &mut gnx_common::pass::Builder,
         eqn: gnx_expr::Eqn<'_>,
         inputs: &[gnx_transforms::ad::Dual],
         captures: &[Vec<gnx_transforms::ad::Dual>],
@@ -118,7 +118,7 @@ impl gnx_transforms::ad::JvpRule for DynamicSliceOperation {
 impl gnx_transforms::ad::TransposeRule for DynamicSliceOperation {
     fn transpose(
         &self,
-        b: &mut gnx_expr::pass::Builder,
+        b: &mut gnx_common::pass::Builder,
         eqn: gnx_expr::Eqn<'_>,
         operands: &[gnx_transforms::ad::Operand],
         _: &[Vec<gnx_expr::Var>],
@@ -150,7 +150,7 @@ gnx_expr::register_op_interface!(dyn gnx_transforms::ad::JvpRule: DynamicSliceOp
 gnx_expr::register_op_interface!(dyn gnx_transforms::ad::TransposeRule: DynamicSliceOperation);
 
 use crate::ops::shape::{ConcatenateOperation, split};
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{Eqn, Var};
 use gnx_transforms::ad::jvp::instantiate;
 use gnx_transforms::ad::{Dual, JvpRule, Operand, Tangent, TransposeRule};

@@ -41,6 +41,8 @@ pub enum BuildError {
         dialect: String,
         name: String,
     },
+    /// A stored root refers to a root that was not provided.
+    UnknownRoot(crate::Blake3Hash),
     Serialize(rancor::Error),
 }
 
@@ -65,6 +67,7 @@ impl fmt::Display for BuildError {
             Self::UnknownType { dialect, name } => {
                 write!(f, "no dialect registers the type {dialect}.{name}")
             }
+            Self::UnknownRoot(hash) => write!(f, "root {hash} is not available"),
             Self::Serialize(err) => write!(f, "serialization failed: {err}"),
         }
     }

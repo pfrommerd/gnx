@@ -14,7 +14,7 @@
 //! its unbatched result is shared by every instance. Operations that own
 //! regions implement [`BatchRule`](super::BatchRule) directly.
 
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{Eqn, Op, VarInfo};
 
 use super::batch::{Batched, materialize};
@@ -109,7 +109,7 @@ macro_rules! defbroadcasting {
         impl $crate::map::BatchRule for $op {
             fn batch(
                 &self,
-                b: &mut $crate::__private::gnx_expr::pass::Builder,
+                b: &mut $crate::__private::gnx_common::pass::Builder,
                 size: usize,
                 eqn: $crate::__private::gnx_expr::Eqn<'_>,
                 inputs: &[$crate::map::Batched],
@@ -136,7 +136,7 @@ macro_rules! defbatch {
         impl $crate::map::BatchRule for $op {
             fn batch(
                 &self,
-                b: &mut $crate::__private::gnx_expr::pass::Builder,
+                b: &mut $crate::__private::gnx_common::pass::Builder,
                 size: usize,
                 eqn: $crate::__private::gnx_expr::Eqn<'_>,
                 inputs: &[$crate::map::Batched],

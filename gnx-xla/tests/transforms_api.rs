@@ -105,7 +105,7 @@ fn close(actual: &[f32], expected: &[f32]) {
 
 #[test]
 fn map_specs_select_axes_per_argument_leaf() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     // f(x, (w, b)) = x * w + b, mapping x over rows, w over columns, sharing b.
     let affine =
         map(|x: Array, wb: (Array, Array)| add(&mul(&x, &wb.0), &wb.1)).in_axes(dag!(0, (1, *)));
@@ -160,7 +160,7 @@ fn map_rejects_specs_that_do_not_match_the_arguments() {
 
 #[test]
 fn array_arithmetic_differentiates_through_broadcasts() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let f = |x: Array, y: Array| sum(&((&x % &y) / &y - x));
     let (dx, dy) = grad(f).invoke((floats(&[2], &[5., -3.]), scalar(2.)));
     eval(&device, &(dx.clone(), dy.clone()));
@@ -170,7 +170,7 @@ fn array_arithmetic_differentiates_through_broadcasts() {
 
 #[test]
 fn grad_and_value_and_grad_follow_wrt() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let traces = AtomicUsize::new(0);
     // f(x, y) = sum(x * x * y)
     let f = |x: Array, y: Array| {
@@ -210,7 +210,7 @@ fn grad_and_value_and_grad_follow_wrt() {
 
 #[test]
 fn jvp_vjp_and_pullback() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     // f(x, y) = x * y + x
     let f = |x: Array, y: Array| add(&mul(&x, &y), &x);
     let (x, y) = (floats(&[2], &[2., 3.]), floats(&[2], &[5., 7.]));
@@ -242,7 +242,7 @@ fn jvp_vjp_and_pullback() {
 
 #[test]
 fn transformations_compose() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let cube = |x: Array| mul(&mul(&x, &x), &x);
     // d²/dx² x³ = 6x, as grad of grad.
     let second = grad(grad(cube));
@@ -267,7 +267,7 @@ fn transformations_compose() {
 
 #[test]
 fn stop_gradient_passes_through_the_primal_and_stops_both_derivatives() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let f = |x: Array| mul(&x, &gnx::stop_gradient(&x));
     let (y, dy) = jvp(f).invoke(((scalar(3.),), (scalar(2.),)));
     let (_, (dx,)) = vjp(f).invoke(((scalar(3.),), scalar(1.)));

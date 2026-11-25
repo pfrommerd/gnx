@@ -50,7 +50,7 @@ macro_rules! register_torch_lowering {
     };
 }
 
-fn metadata(info: VarInfoRef<'_>) -> io::Result<ArrayInfo> {
+pub(super) fn metadata(info: VarInfoRef<'_>) -> io::Result<ArrayInfo> {
     info.downcast::<ArrayInfoData>()
         .map(ArrayInfoData::to_native)
         .ok_or_else(|| unsupported("Torch requires array values"))
@@ -174,7 +174,9 @@ pub(super) fn trace(expr: Expr<'_>, device: tch::Device) -> io::Result<Vec<(CMod
             )
             .build()
             .map_err(invalid)?;
-            let body = gnx_expr::pass::dce(body.view()).build().map_err(invalid)?;
+            let body = gnx_common::pass::dce(body.view())
+                .build()
+                .map_err(invalid)?;
             let mut error = None;
             let module = CModule::create_by_tracing("Gnx", "forward", &examples, &mut |inputs| {
                 match emit(body.view(), inputs) {
@@ -278,3 +280,48 @@ rule!(ReduceAddOperation, |op, _eqn, [x]| {
     }
     x.f_sum_dim_intlist(dims.as_slice(), false, x.kind())
 });
+
+/// Serialize a traced module, in the format `CModule::load_data` reads.
+pub(super) fn save(module: &CModule) -> io::Result<Vec<u8>> {
+    use std::ffi::{c_char, c_void};
+    unsafe extern "C" {
+        fn gnx_torch_save_module(
+            module: *const c_void,
+            sink: unsafe extern "C" fn(*mut c_void, *const c_char, usize),
+            ctx: *mut c_void,
+            error: *mut c_char,
+            capacity: usize,
+        ) -> bool;
+    }
+    unsafe extern "C" fn sink(ctx: *mut c_void, data: *const c_char, len: usize) {
+        // SAFETY: ctx is the Vec below, borrowed for this call; data points
+        // to len bytes that live until this function returns.
+        unsafe {
+            let bytes = &mut *ctx.cast::<Vec<u8>>();
+            bytes.extend_from_slice(std::slice::from_raw_parts(data.cast(), len));
+        }
+    }
+    // tch keeps the native module pointer private. The crate is pinned to a
+    // version where a CModule is exactly that pointer.
+    const _: () = assert!(size_of::<CModule>() == size_of::<*const c_void>());
+    // SAFETY: see above; the pointer is only read.
+    let native = unsafe { std::ptr::from_ref(module).cast::<*const c_void>().read() };
+    let mut bytes = Vec::new();
+    let mut error = [0 as c_char; 1024];
+    // SAFETY: the module outlives the call; native writes a NUL-terminated
+    // diagnostic on failure and catches C++ exceptions.
+    let saved = unsafe {
+        gnx_torch_save_module(
+            native,
+            sink,
+            std::ptr::from_mut(&mut bytes).cast(),
+            error.as_mut_ptr(),
+            error.len(),
+        )
+    };
+    if !saved {
+        let message = unsafe { std::ffi::CStr::from_ptr(error.as_ptr()) };
+        return Err(io::Error::other(message.to_string_lossy().into_owned()));
+    }
+    Ok(bytes)
+}

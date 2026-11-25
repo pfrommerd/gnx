@@ -41,7 +41,7 @@ fn unpack(device: &XlaDevice, value: &Value) -> Vec<f32> {
 #[test]
 fn array_arithmetic_broadcasts_and_evaluates_lazily() {
     use gnx::Array;
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let a = Array::from_data(floats(&[2, 1], &[-5., 8.]));
     let b = Array::from_data(floats(&[2], &[2., 4.]));
     let results = vec![
@@ -73,7 +73,7 @@ fn array_arithmetic_broadcasts_and_evaluates_lazily() {
 
 #[test]
 fn compile_nested_call_reuse_outputs_and_forward_remote_refs() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let array = array_info(&[2], DType::F32);
     let ty = VarInfo::new(array.clone());
     let mut vars = VarScope::new();
@@ -108,7 +108,7 @@ fn compile_nested_call_reuse_outputs_and_forward_remote_refs() {
     )
     .build()
     .unwrap();
-    let compiled = device.compile(&program).unwrap();
+    let compiled = futures_executor::block_on(device.compile(&program)).unwrap();
     let foreign = LocalAllocations::new();
     let reference = foreign.insert(());
     let remote_id = reference.id();
@@ -208,7 +208,7 @@ register_xla_lowering!(LessThan);
 
 #[test]
 fn runs_structured_regions() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let f32_scalar = VarInfo::new(array_info(&[], DType::F32));
     let bool_scalar = VarInfo::new(array_info(&[], DType::Bool));
     let values = |t: &Trace| unpack(&device, t.try_concrete().unwrap());
@@ -256,14 +256,14 @@ fn runs_structured_regions() {
 
 #[test]
 fn generic_reducers_execute_with_mixed_results_and_windows() {
-    use gnx_expr::pass::Builder;
+    use gnx_common::pass::Builder;
     use gnx_math::ops::{
         creation::constant,
         elementwise::{max_op, min_op},
         reduction,
     };
 
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let tensor = VarInfo::new(array_info(&[5], DType::F32));
     let scalar = VarInfo::new(array_info(&[], DType::F32));
     let mut b = Builder::new();
@@ -311,8 +311,7 @@ fn generic_reducers_execute_with_mixed_results_and_windows() {
         )
         .unwrap(),
     );
-    let result = device
-        .compile(&b.finish(out).build().unwrap())
+    let result = futures_executor::block_on(device.compile(&b.finish(out).build().unwrap()))
         .unwrap()
         .run(&[Value::new(floats(&[5], &[5., 3., 7., 9., 6.]))], COPY)
         .unwrap();
@@ -324,7 +323,7 @@ fn generic_reducers_execute_with_mixed_results_and_windows() {
 
 #[test]
 fn differentiates_and_batches_axis_and_window_reductions() {
-    use gnx_expr::pass::Builder;
+    use gnx_common::pass::Builder;
     use gnx_math::ops::{
         creation::constant,
         elementwise::{max_op, min_op},
@@ -395,9 +394,8 @@ fn differentiates_and_batches_axis_and_window_reductions() {
     );
     results.extend(batched);
 
-    let device = XlaDevice::cpu().unwrap();
-    let output = device
-        .compile(&b.finish(results).build().unwrap())
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let output = futures_executor::block_on(device.compile(&b.finish(results).build().unwrap()))
         .unwrap()
         .run(
             &[
@@ -439,21 +437,21 @@ fn differentiates_and_batches_axis_and_window_reductions() {
 
 #[test]
 fn popcount_uses_the_operand_width() {
-    use gnx_expr::pass::Builder;
+    use gnx_common::pass::Builder;
     use gnx_math::ops::bitwise::population_count;
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let info = VarInfo::new(array_info(&[4], DType::I8));
     let mut builder = Builder::new();
     let x = builder.input(info.clone());
     let y = builder.emit1(population_count(), &[x], info);
-    let result = device
-        .compile(&builder.finish(vec![y]).build().unwrap())
-        .unwrap()
-        .run(
-            &[Value::new(host(&[4], DType::I8, vec![255, 128, 13, 0]))],
-            COPY,
-        )
-        .unwrap();
+    let result =
+        futures_executor::block_on(device.compile(&builder.finish(vec![y]).build().unwrap()))
+            .unwrap()
+            .run(
+                &[Value::new(host(&[4], DType::I8, vec![255, 128, 13, 0]))],
+                COPY,
+            )
+            .unwrap();
     let data = result[0].downcast::<DataHandle>().unwrap();
     assert_eq!(device.download(data).unwrap().bytes(), &[8, 1, 3, 0]);
 }
@@ -461,9 +459,9 @@ fn popcount_uses_the_operand_width() {
 #[test]
 #[cfg(feature = "lapack")]
 fn lapack_factorizations_execute_on_the_local_device() {
-    use gnx_expr::pass::Builder;
+    use gnx_common::pass::Builder;
     use gnx_math::ops::linalg::{lu, svd};
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let matrix = VarInfo::new(array_info(&[2, 2], DType::F32));
     let pivot = VarInfo::new(array_info(&[2], DType::I32));
     let singular = VarInfo::new(array_info(&[2], DType::F32));
@@ -471,8 +469,7 @@ fn lapack_factorizations_execute_on_the_local_device() {
     let x = builder.input(matrix.clone());
     let mut out = builder.emit(lu(), &[x], [matrix, pivot.clone(), pivot], vec![]);
     out.push(builder.emit1(svd(false, false), &[x], singular));
-    let result = device
-        .compile(&builder.finish(out).build().unwrap())
+    let result = futures_executor::block_on(device.compile(&builder.finish(out).build().unwrap()))
         .unwrap()
         .run(&[Value::new(floats(&[2, 2], &[0., 2., 3., 0.]))], COPY)
         .unwrap();
@@ -494,10 +491,10 @@ fn lapack_factorizations_execute_on_the_local_device() {
 
 #[test]
 fn window_vjp_accumulates_overlapping_winners_and_additive_windows() {
-    use gnx_expr::pass::Builder;
+    use gnx_common::pass::Builder;
     use gnx_math::ops::{creation::constant, elementwise::max_op, reduction};
 
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let input_info = VarInfo::new(array_info(&[3], DType::F32));
     let output_info = VarInfo::new(array_info(&[2], DType::F32));
     let scalar_info = VarInfo::new(array_info(&[], DType::F32));
@@ -535,28 +532,28 @@ fn window_vjp_accumulates_overlapping_winners_and_additive_windows() {
             vec![region],
         );
 
-        let outputs = device
-            .compile(&main.finish(outputs).build().unwrap())
-            .unwrap()
-            .run(
-                &[
-                    Value::new(floats(&[3], &[1., 8., 3.])),
-                    Value::new(floats(&[2], &[1., 2.])),
-                ],
-                COPY,
-            )
-            .unwrap();
+        let outputs =
+            futures_executor::block_on(device.compile(&main.finish(outputs).build().unwrap()))
+                .unwrap()
+                .run(
+                    &[
+                        Value::new(floats(&[3], &[1., 8., 3.])),
+                        Value::new(floats(&[2], &[1., 2.])),
+                    ],
+                    COPY,
+                )
+                .unwrap();
         assert_eq!(unpack(&device, &outputs[1]), expected);
     }
 }
 
 #[test]
 fn convolution_vjp_uses_the_forward_window_geometry() {
-    use gnx_expr::pass::Builder;
+    use gnx_common::pass::Builder;
     use gnx_math::ops::contraction::{
         ConvAxes, ConvKernelAxes, ConvParameters, conv_general_dilated,
     };
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let input = VarInfo::new(array_info(&[1, 1, 3], DType::F32));
     let kernel = VarInfo::new(array_info(&[1, 1, 2], DType::F32));
     let output = kernel.clone();
@@ -597,8 +594,7 @@ fn convolution_vjp_uses_the_forward_window_geometry() {
         [output, input, kernel],
         vec![SubExprBuilder::new(body.finish(vec![out]))],
     );
-    let result = device
-        .compile(&b.finish(results).build().unwrap())
+    let result = futures_executor::block_on(device.compile(&b.finish(results).build().unwrap()))
         .unwrap()
         .run(
             &[
@@ -616,12 +612,12 @@ fn convolution_vjp_uses_the_forward_window_geometry() {
 
 #[test]
 fn real_fft_and_top_k_return_the_expected_values_and_dtypes() {
-    use gnx_expr::pass::Builder;
+    use gnx_common::pass::Builder;
     use gnx_math::ops::{
         fft::{FftKind, fft},
         ordering::top_k,
     };
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let mut b = Builder::new();
     let x = b.input(VarInfo::new(array_info(&[4], DType::F32)));
     let spectrum = b.emit1(
@@ -639,8 +635,7 @@ fn real_fft_and_top_k_return_the_expected_values_and_dtypes() {
         vec![],
     );
     out.push(spectrum);
-    let outputs = device
-        .compile(&b.finish(out).build().unwrap())
+    let outputs = futures_executor::block_on(device.compile(&b.finish(out).build().unwrap()))
         .unwrap()
         .run(&[Value::new(floats(&[4], &[1., 2., 3., 4.]))], COPY)
         .unwrap();
@@ -654,10 +649,10 @@ fn real_fft_and_top_k_return_the_expected_values_and_dtypes() {
 
 #[test]
 fn sort_treats_signed_zeros_as_ties_and_stably_orders_integer_keys() {
-    use gnx_expr::pass::Builder;
+    use gnx_common::pass::Builder;
     use gnx_math::ops::ordering::sort;
 
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let data = VarInfo::new(array_info(&[4], DType::F32));
     let indices = VarInfo::new(array_info(&[4], DType::I32));
     let mut b = Builder::new();
@@ -674,8 +669,7 @@ fn sort_treats_signed_zeros_as_ties_and_stably_orders_integer_keys() {
         .into_iter()
         .flat_map(i32::to_le_bytes)
         .collect();
-    let outputs = device
-        .compile(&b.finish(out).build().unwrap())
+    let outputs = futures_executor::block_on(device.compile(&b.finish(out).build().unwrap()))
         .unwrap()
         .run(
             &[
@@ -699,9 +693,9 @@ fn sort_treats_signed_zeros_as_ties_and_stably_orders_integer_keys() {
 
 #[test]
 fn qr_and_cholesky_jvps_run_on_cpu() {
-    use gnx_expr::pass::Builder;
+    use gnx_common::pass::Builder;
     use gnx_math::ops::linalg::{cholesky, qr};
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let meta = VarInfo::new(array_info(&[2, 2], DType::F32));
     let mut b = Builder::new();
     let a = b.input(meta.clone());
@@ -718,8 +712,7 @@ fn qr_and_cholesky_jvps_run_on_cpu() {
         std::iter::repeat_n(meta, 6),
         vec![body],
     );
-    let output = device
-        .compile(&b.finish(out).build().unwrap())
+    let output = futures_executor::block_on(device.compile(&b.finish(out).build().unwrap()))
         .unwrap()
         .run(
             &[
@@ -738,4 +731,45 @@ fn qr_and_cholesky_jvps_run_on_cpu() {
     assert_eq!(dr[3].abs(), 6.);
     assert_eq!(r[0].is_sign_negative(), dr[0].is_sign_negative());
     assert_eq!(r[3].is_sign_negative(), dr[3].is_sign_negative());
+}
+
+#[test]
+fn compiling_again_reads_the_program_from_the_cache() {
+    use futures_util::TryStreamExt;
+    use gnx_common::cache::Cache;
+    use gnx_common::store::ObjectStore;
+
+    // A device of its own, so that the cache is the one given here.
+    let cache = Cache::in_memory();
+    let device = XlaDevice::cpu_on(HostId::fresh(), cache.clone()).unwrap();
+    let stored = || {
+        let objects: Vec<_> = block_on(cache.store().inner().list(None).try_collect()).unwrap();
+        objects.len()
+    };
+
+    let ty = VarInfo::new(array_info(&[2], DType::F32));
+    let mut b = gnx_common::pass::Builder::new();
+    let x = b.input(ty.clone());
+    let y = b.emit1(add_op(), &[x, x], ty);
+    let program = b.finish(vec![y]).build().unwrap();
+    assert_eq!(stored(), 0);
+
+    let run = |device: &XlaDevice| {
+        let compiled = block_on(device.compile(&program)).unwrap();
+        let args = [Value::new(floats(&[2], &[1., 2.]))];
+        unpack(device, &compiled.run(&args, COPY).unwrap()[0])
+    };
+    assert_eq!(run(&device), [2., 4.]);
+    // Every stage left its result and a binding to it.
+    let after_first = stored();
+    assert!(after_first > 0);
+
+    // Nothing new is stored, and the cached program computes the same.
+    assert_eq!(run(&device), [2., 4.]);
+    assert_eq!(stored(), after_first);
+
+    // Another device with the same cache compiles from it as well.
+    let other = XlaDevice::cpu_on(HostId::fresh(), cache.clone()).unwrap();
+    assert_eq!(run(&other), [2., 4.]);
+    assert_eq!(stored(), after_first);
 }

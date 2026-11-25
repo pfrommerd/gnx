@@ -1,6 +1,6 @@
 # Torch operation support
 
-`TorchDevice::cpu()` and `TorchDevice::cuda(ordinal)` use the same GNX lowering
+`TorchDevice::cpu(cache)` and `TorchDevice::cuda(ordinal, cache)` use the same GNX lowering
 rules. `cargo build -p gnx-torch` installs checksum-verified CPU LibTorch;
 add `--features cuda` on Linux x86_64 (GNU) for the managed CUDA 13 SDK and the NVIDIA runtime shared with XLA.
 CUDA execution requires a compatible NVIDIA driver. See the [build and cache

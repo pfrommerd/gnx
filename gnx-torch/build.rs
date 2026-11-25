@@ -48,6 +48,7 @@ fn linux_cxx_runpaths(compiler: &cc::Tool) -> Vec<PathBuf> {
 fn main() {
     println!("cargo:rerun-if-changed=native/control_flow.cpp");
     println!("cargo:rerun-if-changed=native/cuda.cpp");
+    println!("cargo:rerun-if-changed=native/save.cpp");
     // torch-sys resolves the runtime before compiling libtch. Reuse its
     // exact configuration, including for explicit/Python installations.
     let includes = env::var_os("DEP_TCH_GNX_INCLUDES").expect("torch-sys header directories");
@@ -62,7 +63,8 @@ fn main() {
         .define("_GLIBCXX_USE_CXX11_ABI", abi.as_str())
         .define("GNX_TORCH_LIB_DIR", format!("{lib:?}").as_str())
         .file("native/control_flow.cpp")
-        .file("native/cuda.cpp");
+        .file("native/cuda.cpp")
+        .file("native/save.cpp");
     let Some(archive) = env::var_os("DEP_TCH_GNX_ARCHIVE") else {
         bridge.compile("gnx_torch_control_flow");
         return;

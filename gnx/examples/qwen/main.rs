@@ -112,8 +112,8 @@ fn main() -> Result<()> {
         #[cfg(feature = "qwen-example")]
         Backend::Xla => {
             let device = match args.cuda {
-                Some(n) => gnx_xla::XlaDevice::cuda(n)?,
-                None => gnx_xla::XlaDevice::cpu()?,
+                Some(n) => gnx_xla::XlaDevice::cuda(n, gnx::cache::Cache::in_memory())?,
+                None => gnx_xla::XlaDevice::cpu(gnx::cache::Cache::in_memory())?,
             };
             let upload = args.cuda.is_some();
             run(args, device, upload)
@@ -123,8 +123,8 @@ fn main() -> Result<()> {
         #[cfg(feature = "qwen-torch")]
         Backend::Torch => {
             let device = match args.cuda {
-                Some(n) => gnx_torch::TorchDevice::cuda(n)?,
-                None => gnx_torch::TorchDevice::cpu()?,
+                Some(n) => gnx_torch::TorchDevice::cuda(n, gnx::cache::Cache::in_memory())?,
+                None => gnx_torch::TorchDevice::cpu(gnx::cache::Cache::in_memory())?,
             };
             run(args, device, true)
         }

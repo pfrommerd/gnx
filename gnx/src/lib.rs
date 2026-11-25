@@ -6,6 +6,8 @@ pub use gnx_transforms::callable;
 pub use gnx_expr as expr;
 pub use gnx_graph as graph;
 
+pub use gnx_common::{cache, pass, store};
+
 pub use gnx_math::{array, buffer, device, shard};
 /// Constructors for operations in expression macros.
 ///

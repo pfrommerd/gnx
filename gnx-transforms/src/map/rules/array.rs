@@ -34,7 +34,7 @@ use crate::map::{BatchRule, Batched};
 use crate::util::{output_infos, with_axis};
 use crate::{TransformError, TransformResult};
 use gnx_common::ops::reduction::{ReduceAddOperation, ReduceOperation, reduce_add_op, reduce_op};
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{Eqn, Op, SubExprBuilder};
 
 defbatch!(ReduceAddOperation, |op| Ok(reduce_add_op(&shifted(

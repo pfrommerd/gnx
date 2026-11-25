@@ -1,5 +1,6 @@
 mod support;
-use gnx_expr::{VarInfo, pass::Builder};
+use gnx_common::pass::Builder;
+use gnx_expr::VarInfo;
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::eig};
 use gnx_torch::TorchDevice;
 use tch::{CModule, Kind, Tensor};
@@ -20,13 +21,15 @@ fn compiled(shape: &[usize], dtype: DType, left: bool, right: bool) -> Vec<CModu
         }
     }
     let results = b.emit(eig(left, right), &[x], out, vec![]);
-    TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(results).build().unwrap())
-        .unwrap()
-        .modules()
-        .map(support::reload)
-        .collect()
+    futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(results).build().unwrap()),
+    )
+    .unwrap()
+    .modules()
+    .map(support::reload)
+    .collect()
 }
 fn run(modules: &[CModule], x: &Tensor) -> Vec<Tensor> {
     modules

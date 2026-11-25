@@ -1,5 +1,6 @@
 mod support;
-use gnx_expr::{VarInfo, pass::Builder};
+use gnx_common::pass::Builder;
+use gnx_expr::VarInfo;
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::tridiagonal_solve};
 use gnx_torch::TorchDevice;
 use tch::{CModule, Kind, Tensor};
@@ -11,10 +12,12 @@ fn compile(dims: &[usize], cols: usize, k: DType, perturb: bool) -> CModule {
     let d = std::array::from_fn::<_, 3, _>(|_| b.input(ty(dims)));
     let r = b.input(rhs.clone());
     let x = b.emit1(tridiagonal_solve(perturb), &[d[0], d[1], d[2], r], rhs);
-    let p = TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(vec![x]).build().unwrap())
-        .unwrap();
+    let p = futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(vec![x]).build().unwrap()),
+    )
+    .unwrap();
     support::reload(p.modules().next().unwrap())
 }
 fn dense(dl: &Tensor, d: &Tensor, du: &Tensor) -> Tensor {

@@ -9,7 +9,7 @@ use crate::ops::{
     shape::concatenate,
 };
 use gnx_common::DType;
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{Eqn, Op, Var};
 use gnx_transforms::ad::def::deftranspose;
 use gnx_transforms::ad::jvp::{instantiate, jvp_expr};

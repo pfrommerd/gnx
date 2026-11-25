@@ -74,7 +74,7 @@ pub fn pad(padding: &[(i64, i64, usize)]) -> Op {
 }
 
 use gnx_common::{ArrayInfo, DType, Shape, fixed_dims};
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{Var, VarInfo};
 
 fn metadata(b: &Builder, operand: Var) -> Result<(Vec<usize>, DType)> {

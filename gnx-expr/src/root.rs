@@ -26,8 +26,8 @@ use rkyv::{
 use crate::check::BuildError;
 use crate::op::{OpData, OpRef, OpTypeCtx, OpTypeImpls, OpTypeTable, Operation};
 use crate::util::{
-    ArchivedTypeTable, Blake3Hash, DynTyped, OwnedArchive, OwnedDyn, TypeIdx, TypeImpls, TypeName,
-    TypeTableContext,
+    ArchivedTypeTable, Blake3Hash, DynTyped, OwnedArchive, OwnedDyn, SharedBytes, TypeIdx,
+    TypeImpls, TypeName, TypeTableContext,
 };
 use crate::var::{Info, InfoTypeCtx, InfoTypeImpls, InfoTypeTable, VarInfoData, VarInfoRef};
 
@@ -584,5 +584,79 @@ where
                 name: name.name().into(),
             })
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Storing and loading
+// ---------------------------------------------------------------------------
+
+impl<B: ExprSource> Root<B> {
+    /// The archived data, whose hash identifies this root. Storing these
+    /// bytes is enough to load the root again, given the roots it refers to.
+    pub fn bytes(&self) -> &[u8] {
+        self.data.bytes()
+    }
+
+    /// The other roots this root refers to expressions of.
+    pub fn external_roots(&self) -> impl Iterator<Item = &Arc<Root<B>>> {
+        self.external.iter().map(|handle| &handle.root)
+    }
+}
+
+/// The stored data of a root, before the roots it refers to are known.
+pub struct UnresolvedRoot<B: ExprSource> {
+    data: OwnedArchive<RootData<B>>,
+    hash: Blake3Hash,
+}
+
+impl<B: ExprSource> UnresolvedRoot<B> {
+    /// # Safety
+    /// `bytes` must be the bytes of a root of this kind of expression (see
+    /// [`Root::bytes`]), written by a compatible build, and `hash` their
+    /// hash. Nothing is validated.
+    ///
+    /// # Panics
+    /// If the bytes are not aligned (see `OwnedArchive::from_shared`).
+    pub unsafe fn new(bytes: SharedBytes, hash: Blake3Hash) -> Self {
+        let len = (*bytes).as_ref().len();
+        // The root data is what a root's serializer writes last.
+        let pos = rkyv::api::root_position::<RootData<B>>(len);
+        // SAFETY: the caller certifies that bytes holds a root.
+        let data = unsafe { OwnedArchive::from_shared(bytes, pos) };
+        Self { data, hash }
+    }
+
+    pub fn hash(&self) -> Blake3Hash {
+        self.hash
+    }
+
+    /// The hashes of the roots this root refers to, which
+    /// [`UnresolvedRoot::resolve`] needs.
+    pub fn external_hashes(&self) -> impl Iterator<Item = Blake3Hash> + '_ {
+        self.data.exprs.external.iter().map(|ext| ext.root_hash)
+    }
+
+    /// Completes the root, looking up the roots it refers to by hash and
+    /// the implementations of its operations and infos in the dialects.
+    pub fn resolve(
+        self,
+        mut external: impl FnMut(Blake3Hash) -> Option<Arc<Root<B>>>,
+    ) -> Result<Arc<Root<B>>, BuildError> {
+        let external = (self.data.exprs.external.iter())
+            .map(|ext| {
+                let root = external(ext.root_hash).ok_or(BuildError::UnknownRoot(ext.root_hash))?;
+                Ok(Handle { root, idx: ext.idx })
+            })
+            .collect::<Result<_, BuildError>>()?;
+        let op_impls = resolve_types(&self.data.op_types)?;
+        let info_impls = resolve_types(&self.data.info_types)?;
+        Ok(Arc::new(Root {
+            data: self.data,
+            hash: self.hash,
+            op_impls,
+            info_impls,
+            external,
+        }))
     }
 }

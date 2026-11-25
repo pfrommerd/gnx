@@ -2,7 +2,7 @@
 
 use gnx_common::ops::reduction::{array, check_region, emit};
 use gnx_common::{ArrayInfo, Shape, fixed_dims};
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{ExprHandle, Var, VarInfo};
 
 use super::{Op, Result, native, signature, stored_exactly};

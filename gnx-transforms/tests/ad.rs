@@ -1,5 +1,5 @@
+use gnx_common::pass::{Builder, Dce, Pipeline};
 use gnx_common::{ArrayInfo, DType, Shape};
-use gnx_expr::pass::{Builder, Dce, Pipeline};
 use std::sync::Arc;
 
 use gnx_common::ops::reduction::{ReduceAddOperation, reduce_add};
@@ -167,11 +167,13 @@ fn transformations_survive_lowering_and_expand_away() {
         }
     );
 
-    let expanded = Pipeline::new()
-        .with(ExpandTransforms)
-        .with(Dce)
-        .run(expr)
-        .unwrap();
+    let expanded = futures_executor::block_on(
+        Pipeline::new()
+            .with(ExpandTransforms)
+            .with(Dce)
+            .run(expr, &gnx_common::cache::Cache::in_memory()),
+    )
+    .unwrap();
     assert!(!contains_ad(expanded.view()));
 }
 
@@ -190,7 +192,12 @@ fn nested_transformations_expand_innermost_first() {
     assert!(is::<MapOperation>(first.op()));
     let body = first.subexprs().next().unwrap().expr();
     assert!(is::<JvpOperation>(body.eqns().next().unwrap().op()));
-    let expanded = Pipeline::new().with(ExpandTransforms).run(expr).unwrap();
+    let expanded = futures_executor::block_on(
+        Pipeline::new()
+            .with(ExpandTransforms)
+            .run(expr, &gnx_common::cache::Cache::in_memory()),
+    )
+    .unwrap();
     assert!(!contains_ad(expanded.view()));
 }
 
@@ -259,11 +266,13 @@ fn call_boundaries_survive_transformations() {
             .count()
     };
     let expand = |expr: Arc<RootExpr>| {
-        Pipeline::new()
-            .with(ExpandTransforms)
-            .with(Dce)
-            .run(expr)
-            .unwrap()
+        futures_executor::block_on(
+            Pipeline::new()
+                .with(ExpandTransforms)
+                .with(Dce)
+                .run(expr, &gnx_common::cache::Cache::in_memory()),
+        )
+        .unwrap()
     };
     let no_top_level_mul = |expr: Expr<'_>| !expr.eqns().any(|eqn| eqn.op() == mul_op());
 

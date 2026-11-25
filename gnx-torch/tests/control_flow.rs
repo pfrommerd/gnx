@@ -1,5 +1,6 @@
 mod support;
-use gnx_expr::{VarInfo, pass::Builder};
+use gnx_common::pass::Builder;
+use gnx_expr::VarInfo;
 use gnx_math::{
     ArrayInfo, DType, Shape,
     ops::{add_op, elementwise, linalg::lu_pivots_to_permutation},
@@ -31,10 +32,12 @@ fn reloaded_cond_executes_only_the_selected_branch() {
         );
     }
     let out = b.emit(cond_op(), &[pred, arg], [row], branches);
-    let p = TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(out).build().unwrap())
-        .unwrap();
+    let p = futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(out).build().unwrap()),
+    )
+    .unwrap();
     assert_eq!(p.modules().len(), 1);
     let m = support::reload(p.modules().next().unwrap());
     let run = |flag: bool, l: i32, r: i32| {
@@ -79,10 +82,12 @@ fn reloaded_switch_clamps_and_executes_only_one_branch() {
         })
         .collect();
     let out = b.emit(switch_op(), &[selector], [row], branches);
-    let p = TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(out).build().unwrap())
-        .unwrap();
+    let p = futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(out).build().unwrap()),
+    )
+    .unwrap();
     let m = support::reload(p.modules().next().unwrap());
     for (i, which, expected) in [
         (-4, 0, [0, 1, 2]),
@@ -126,10 +131,12 @@ fn reloaded_while_handles_zero_one_and_many_iterations_with_live_captures() {
     // start initializes two independent carries and is a loop-invariant capture.
     let carry = b.emit(while_op(), &[start, start], types, vec![cond, body]);
     let result = b.emit1(elementwise::sub(), &[carry[1], carry[0]], val);
-    let p = TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(vec![result]).build().unwrap())
-        .unwrap();
+    let p = futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(vec![result]).build().unwrap()),
+    )
+    .unwrap();
     let m = support::reload(p.modules().next().unwrap());
     for (s, l, k) in [(4, 2, 1), (3, 5, 2), (2, 8, 2), (-3, 12, 1)] {
         let y = m
@@ -165,14 +172,15 @@ fn failed_branch_lowering_preserves_error_and_restores_tracer() {
         let out = b.emit(cond_op(), &[pred, x], [ty], vec![yes, no]);
         b.finish(out).build().unwrap()
     };
-    let device = TorchDevice::cpu().unwrap();
-    let err = device
-        .compile(&build(Sharding::new(vec![vec!["mesh".into()]]).unwrap()))
-        .err()
-        .unwrap();
+    let device = TorchDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let err = futures_executor::block_on(
+        device.compile(&build(Sharding::new(vec![vec!["mesh".into()]]).unwrap())),
+    )
+    .err()
+    .unwrap();
     assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     assert!(err.to_string().contains("device mesh"));
-    let p = device.compile(&build(Sharding::replicated(1))).unwrap();
+    let p = futures_executor::block_on(device.compile(&build(Sharding::replicated(1)))).unwrap();
     let m = support::reload(p.modules().next().unwrap());
     let out = m
         .forward_ts(&[Tensor::from(true), Tensor::from_slice(&[8i32])])
@@ -219,10 +227,12 @@ fn nested_cond_preserves_captures_and_forwarded_result_bindings() {
     );
     let delta = b.emit1(elementwise::sub(), &pair, val.clone());
     let out = b.emit1(add_op(), &[delta, x], val);
-    let p = TorchDevice::cpu()
-        .unwrap()
-        .compile(&b.finish(vec![out]).build().unwrap())
-        .unwrap();
+    let p = futures_executor::block_on(
+        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            .unwrap()
+            .compile(&b.finish(vec![out]).build().unwrap()),
+    )
+    .unwrap();
     let m = support::reload(p.modules().next().unwrap());
     for (outer, inner, expected) in [
         (true, true, 3),

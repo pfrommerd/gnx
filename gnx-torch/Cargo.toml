@@ -9,6 +9,8 @@ cuda = ["torch-sys/gnx-cuda"]
 
 [dependencies]
 futures-channel = "0.3"
+futures-executor = "0.3"
+rkyv = "0.8.18"
 gnx-common = { path = "../gnx-common" }
 gnx-expr = { path = "../gnx-expr" }
 gnx-math = { path = "../gnx-math" }
@@ -20,4 +22,3 @@ torch-sys = { version = "=0.22.0", features = ["gnx-managed"] }
 cc = "1"
 
 [dev-dependencies]
-futures-executor = "0.3"

@@ -1,7 +1,7 @@
 //! Expand function-transformation operations (`map.map`, `ad.jvp`, `ad.vjp`,
 //! and any other operation implementing [`Transform`]) into ordinary ones.
 
-use gnx_expr::pass::{Builder, Pass, PassError, rewrite};
+use gnx_common::pass::{Builder, Pass, PassError, rewrite};
 use std::sync::Arc;
 
 use gnx_expr::{EqnSource, Expr, ExprBuilder, InterfaceError, RootExpr, Var};
@@ -48,4 +48,8 @@ pub fn expand_transforms(expr: Expr<'_>) -> TransformResult<ExprBuilder> {
                 source: Box::new(error),
             })
     })
+}
+
+impl gnx_common::anyhash::Hash for ExpandTransforms {
+    fn hash<H: gnx_common::anyhash::HasherWrite>(&self, _: &mut H) {}
 }

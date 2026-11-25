@@ -1,7 +1,8 @@
 //! Exercise each load order in a fresh process; both devices stay live in each child.
 #![cfg(all(target_os = "linux", target_arch = "x86_64", feature = "qwen-example"))]
 
-use gnx_expr::{Value, VarInfo, pass::Builder};
+use gnx_common::pass::Builder;
+use gnx_expr::{Value, VarInfo};
 use gnx_math::{
     ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, Shape, TransferPolicy,
     ops::{
@@ -23,7 +24,7 @@ fn torch_conv(d: &TorchDevice, scale: f32) {
     let ones = |shape| {
         let mut b = Builder::new();
         let v = b.emit1(ones_op(), &[], VarInfo::new(info(shape)));
-        let p = d.compile(&b.finish(vec![v]).build().unwrap()).unwrap();
+        let p = futures_executor::block_on(d.compile(&b.finish(vec![v]).build().unwrap())).unwrap();
         p.modules()
             .next()
             .unwrap()
@@ -76,8 +77,7 @@ fn xla_conv(d: &XlaDevice, scale: f32) {
             .unwrap(),
         ))
     };
-    let out = d
-        .compile(&b.finish(vec![y]).build().unwrap())
+    let out = futures_executor::block_on(d.compile(&b.finish(vec![y]).build().unwrap()))
         .unwrap()
         .run(
             &[arg(X, scale), arg(W, 1.)],
@@ -129,19 +129,19 @@ fn same_process_convolutions() {
     const ORDER: &str = "GNX_TEST_CUDA_LOAD_ORDER";
     match std::env::var(ORDER).as_deref() {
         Ok("torch-first") => {
-            let torch = TorchDevice::cuda(0).unwrap();
+            let torch = TorchDevice::cuda(0, gnx::cache::Cache::in_memory()).unwrap();
             torch_conv(&torch, 1.);
             let dir = check_cudnn();
-            let xla = XlaDevice::cuda(0).unwrap();
+            let xla = XlaDevice::cuda(0, gnx::cache::Cache::in_memory()).unwrap();
             xla_conv(&xla, 2.);
             torch_conv(&torch, 3.);
             assert_eq!(dir, check_cudnn());
         }
         Ok("xla-first") => {
-            let xla = XlaDevice::cuda(0).unwrap();
+            let xla = XlaDevice::cuda(0, gnx::cache::Cache::in_memory()).unwrap();
             xla_conv(&xla, 1.);
             let dir = check_cudnn();
-            let torch = TorchDevice::cuda(0).unwrap();
+            let torch = TorchDevice::cuda(0, gnx::cache::Cache::in_memory()).unwrap();
             torch_conv(&torch, 2.);
             xla_conv(&xla, 3.);
             assert_eq!(dir, check_cudnn());

@@ -53,7 +53,7 @@ defbroadcasting!(
 
 use crate::ops::reduction::{ReduceWindowOperation, reduce_window_op};
 use gnx_expr::Eqn;
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_transforms::map::batch::materialize;
 use gnx_transforms::map::{BatchRule, Batched};
 use gnx_transforms::{TransformError, TransformResult};

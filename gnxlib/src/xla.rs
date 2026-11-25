@@ -64,5 +64,7 @@ impl PyXlaDevice {
 /// Discover the process's single-device CPU XLA backend.
 #[pyfunction]
 pub fn xla_devices(py: Python<'_>) -> PyResult<Vec<PyXlaDevice>> {
-    Ok(vec![PyXlaDevice(py.detach(XlaDevice::cpu)?)])
+    Ok(vec![PyXlaDevice(py.detach(|| {
+        XlaDevice::cpu(gnx::cache::Cache::in_memory())
+    })?)])
 }

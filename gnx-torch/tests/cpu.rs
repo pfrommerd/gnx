@@ -49,7 +49,7 @@ fn tensor_stream_round_trip_across_native_bridge() {
 
 #[test]
 fn replay_with_fresh_captures_and_inputs() {
-    let d = TorchDevice::cpu().unwrap();
+    let d = TorchDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let mut vars = VarScope::new();
     let [x, y, s, p] = std::array::from_fn(|_| vars.create_var());
     let t = ty(&[2]);
@@ -65,7 +65,7 @@ fn replay_with_fresh_captures_and_inputs() {
     )
     .build()
     .unwrap();
-    let compiled = d.compile(&body).unwrap();
+    let compiled = futures_executor::block_on(d.compile(&body)).unwrap();
     for (xs, ys, product, sum) in [
         ([1., 2.], [3., 4.], [4., 12.], [4., 6.]),
         ([-1., 4.], [2., 3.], [-1., 28.], [1., 7.]),
@@ -87,7 +87,7 @@ fn replay_with_fresh_captures_and_inputs() {
 
 #[test]
 fn device_executes_shape_ops_and_reduction() {
-    let d = TorchDevice::cpu().unwrap();
+    let d = TorchDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let mut vars = VarScope::new();
     let [x, t, r, b, s] = std::array::from_fn(|_| vars.create_var());
     let body = ExprBuilder::from_parts(
@@ -121,7 +121,7 @@ fn device_executes_shape_ops_and_reduction() {
 
 #[test]
 fn unsupported_live_op_fails_but_dead_op_is_pruned() {
-    let d = TorchDevice::cpu().unwrap();
+    let d = TorchDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let mut vars = VarScope::new();
     gnx_common::unit_operations! {
         struct Unknown;
@@ -153,10 +153,11 @@ fn unsupported_live_op_fails_but_dead_op_is_pruned() {
         .build()
         .unwrap()
     };
-    let err = d.compile(&body(unknown)).err().unwrap();
+    let err = futures_executor::block_on(d.compile(&body(unknown)))
+        .err()
+        .unwrap();
     assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
-    let out = d
-        .compile(&body(one))
+    let out = futures_executor::block_on(d.compile(&body(one)))
         .unwrap()
         .run(&[array(&[2], &[3., 4.])], ExecOpts::default())
         .unwrap();

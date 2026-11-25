@@ -3,7 +3,7 @@
 
 use futures_executor::block_on;
 use gnx::Eval;
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{
     Capture, Eqn, ObjectTracer, Op, Operation, Trace, TraceContext, Value, VarInfo,
     register_op_interface,
@@ -166,7 +166,7 @@ fn less(a: &Trace, b: &Trace) -> Trace {
 
 #[test]
 fn map_vectorizes_with_captures_and_axes() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let offset = floats(&[3], &[10., 20., 30.]);
     let body = region(&[info(&[3], DType::F32)], |x| {
         vec![add(&mul(&x[0], &x[0]), &offset)]
@@ -184,7 +184,7 @@ fn map_vectorizes_with_captures_and_axes() {
 
 #[test]
 fn jvp_and_vjp_of_a_polynomial() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let scalar = info(&[2], DType::F32);
     // f(x, y) = x * y + x
     let body = region(&[scalar.clone(), scalar.clone()], |a| {
@@ -215,7 +215,7 @@ fn jvp_and_vjp_of_a_polynomial() {
 
 #[test]
 fn vjp_through_scan_and_cond() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let scalar = info(&[], DType::F32);
     // f(c0, xs) = c0 * prod(xs), also stacking the running product.
     let step = region(&[scalar.clone(), scalar.clone()], |a| {
@@ -286,7 +286,7 @@ fn vjp_through_scan_and_cond() {
 
 #[test]
 fn map_over_data_dependent_control_flow() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let scalar = info(&[], DType::F32);
     let limit = floats(&[], &[5.]);
     let predicate = region(&[scalar.clone()], |a| vec![less(&a[0], &limit)]);
@@ -317,7 +317,7 @@ fn map_over_data_dependent_control_flow() {
 
 #[test]
 fn jvp_through_while_and_nested_transformations() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let scalar = info(&[], DType::F32);
     let limit = floats(&[], &[5.]);
     let predicate = region(&[scalar.clone()], |a| vec![less(&a[0], &limit)]);
@@ -398,7 +398,7 @@ fn jvp_through_while_and_nested_transformations() {
 /// the inlined computation.
 #[test]
 fn transformations_through_a_call() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let vector = info(&[2], DType::F32);
     // g(x, y) = x * y behind a call; f(x, y) = g(x, y) * x + y.
     let g = region(&[vector.clone(), vector.clone()], |a| {
@@ -447,7 +447,7 @@ fn transformations_through_a_call() {
 /// every instance, with zero tangents.
 #[test]
 fn transformations_with_operand_free_operations() {
-    let device = XlaDevice::cpu().unwrap();
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let matrix = info(&[2, 2], DType::F32);
     // f(x) = x * eye + ones + zeros
     let f = region(std::slice::from_ref(&matrix), |a| {

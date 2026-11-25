@@ -425,16 +425,6 @@ fn holes_discard_results() {
     assert!(eqns[0].outputs().nth(1).unwrap().var().is_hole());
     assert_eq!(view.value_info(Var::hole()), None);
 
-    // An equation that only discards is dead.
-    let pruned = gnx_expr::pass::dce(view).build().unwrap();
-    assert_eq!(pruned.view().eqns().len(), 1);
-    // Holes survive a rewrite.
-    let copy = gnx_expr::pass::rewrite::<(), _>(view, &mut |_, _| Ok(None))
-        .unwrap()
-        .build()
-        .unwrap();
-    assert_eq!(copy.view().to_string(), view.to_string());
-
     // A hole cannot be used, returned, or stand for a parameter.
     let hole = Var::hole();
     let mut b = ExprBuilder::new();

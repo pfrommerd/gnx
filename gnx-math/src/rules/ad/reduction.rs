@@ -2,7 +2,7 @@ use crate::ops::indexing::{BoundsMode, GatherDimensions, GatherParameters, gathe
 use crate::ops::reduction::{ReduceOperation, ReduceWindowOperation, Window, reduce_window};
 use crate::ops::shape::pad;
 use crate::ops::{broadcast_in_dim_op, reshape_op};
-use gnx_expr::pass::Builder;
+use gnx_common::pass::Builder;
 use gnx_expr::{Eqn, Expr, Op, Var};
 
 use gnx_transforms::ad::jvp::{instantiate, jvp_expr};

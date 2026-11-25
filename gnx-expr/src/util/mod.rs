@@ -34,6 +34,9 @@ impl Blake3Hash {
     pub fn of(bytes: &[u8]) -> Self {
         Self(*blake3::hash(bytes).as_bytes())
     }
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }

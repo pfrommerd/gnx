@@ -27,6 +27,7 @@ pub use gnx_derive::{grad, hessian, jvp, map, value_and_grad, vjp};
 
 #[doc(hidden)]
 pub mod __private {
+    pub use gnx_common;
     pub use gnx_expr;
 }
 
