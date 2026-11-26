@@ -29,25 +29,27 @@ pub const MAP: Transform = Transform {
         ("axis_size", ""),
     ],
 };
+const AD_OPTIONS: &[(&str, &str)] = &[("wrt", ""), ("wrt_arg", ""), ("wrt_args", "")];
+
 pub const JVP: Transform = Transform {
     function: "jvp",
-    options: &[("wrt", "bool")],
+    options: AD_OPTIONS,
 };
 pub const VJP: Transform = Transform {
     function: "vjp",
-    options: &[("wrt", "bool")],
+    options: AD_OPTIONS,
 };
 pub const GRAD: Transform = Transform {
     function: "grad",
-    options: &[("wrt", "bool")],
+    options: AD_OPTIONS,
 };
 pub const VALUE_AND_GRAD: Transform = Transform {
     function: "value_and_grad",
-    options: &[("wrt", "bool")],
+    options: AD_OPTIONS,
 };
 pub const HESSIAN: Transform = Transform {
     function: "hessian",
-    options: &[("wrt", "bool")],
+    options: AD_OPTIONS,
 };
 
 enum OptionValue {
@@ -81,27 +83,17 @@ fn parse_input(input: ParseStream<'_>, transform: &Transform) -> syn::Result<Inp
                 ),
             ));
         };
+        if transform.options == AD_OPTIONS && !options.is_empty() {
+            return Err(syn::Error::new(
+                name.span(),
+                "choose only one differentiation selector",
+            ));
+        }
         if !seen.insert(name.to_string()) {
             return Err(syn::Error::new(name.span(), "option given more than once"));
         }
         input.parse::<Token![=]>()?;
-        // A flat `wrt = [a, b]` may be argument indices or a legacy mask.
-        // Let Rust choose by element type; nested specs and `*` keep DAG syntax.
-        let flat_wrt = name == "wrt"
-            && input.peek(syn::token::Bracket)
-            && input.fork().parse::<syn::ExprArray>().is_ok_and(|a| {
-                a.elems
-                    .iter()
-                    .all(|e| !matches!(e, Expr::Array(_) | Expr::Tuple(_)))
-            });
-        let value = if flat_wrt {
-            let list: syn::ExprArray = input.parse()?;
-            if list.elems.is_empty() {
-                OptionValue::Expr(syn::parse_quote!([0usize; 0]))
-            } else {
-                OptionValue::Expr(syn::parse_quote!(&#list[..]))
-            }
-        } else if leaf.is_empty() {
+        let value = if leaf.is_empty() {
             OptionValue::Expr(input.parse()?)
         } else {
             OptionValue::Spec(parse_value(input)?)

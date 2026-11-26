@@ -98,33 +98,33 @@ pub fn map(input: ProcTokenStream) -> ProcTokenStream {
 }
 
 /// Forward-mode derivative of a closure, called with `(primals, tangents)`.
-/// Option: `wrt = <dag>`.
+/// Selector: `wrt = filter`, `wrt_arg = index`, or `wrt_args = indices`.
 #[proc_macro]
 pub fn jvp(input: ProcTokenStream) -> ProcTokenStream {
     transform_fn::transform_fn(input, &transform_fn::JVP)
 }
 
 /// Reverse-mode derivative of a closure, called with `(primals, cotangents)`.
-/// Option: `wrt = <dag>`.
+/// Selector: `wrt = filter`, `wrt_arg = index`, or `wrt_args = indices`.
 #[proc_macro]
 pub fn vjp(input: ProcTokenStream) -> ProcTokenStream {
     transform_fn::transform_fn(input, &transform_fn::VJP)
 }
 
-/// Gradient of a scalar closure. Option: `wrt = <dag>`.
+/// Gradient of a scalar closure. Selector: `wrt = filter`, `wrt_arg = index`, or `wrt_args = indices`.
 #[proc_macro]
 pub fn grad(input: ProcTokenStream) -> ProcTokenStream {
     transform_fn::transform_fn(input, &transform_fn::GRAD)
 }
 
-/// Value and gradient of a scalar closure. Option: `wrt = <dag>`.
+/// Value and gradient of a scalar closure. Selector: `wrt = filter`, `wrt_arg = index`, or `wrt_args = indices`.
 #[proc_macro]
 pub fn value_and_grad(input: ProcTokenStream) -> ProcTokenStream {
     transform_fn::transform_fn(input, &transform_fn::VALUE_AND_GRAD)
 }
 
 /// Hessian of a scalar closure with respect to one array argument.
-/// Option: `wrt = <dag>`.
+/// Selector: `wrt = filter`, `wrt_arg = index`, or `wrt_args = indices`.
 #[proc_macro]
 pub fn hessian(input: ProcTokenStream) -> ProcTokenStream {
     transform_fn::transform_fn(input, &transform_fn::HESSIAN)

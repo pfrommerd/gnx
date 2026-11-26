@@ -58,27 +58,15 @@ impl<L: Leaf, F: Filter<L>> FilterType for ByFilter<L, F> {
     type Filter = F;
 }
 pub type DefaultAxes = ByFilter<(), OnAxis<All>>;
-pub type DefaultWrt = ByFilter<(), All>;
 
 /// Convert an axis number, positional axis DAG, or annotated filter into a graph filter.
 pub trait IntoAxisFilter<K> {
     type Binding: AxisType;
     fn into_axis_filter(self) -> <Self::Binding as FilterType>::Filter;
 }
-/// Convert argument indices, a boolean mask, or a graph filter into a differentiation filter.
-pub trait IntoWrtFilter<K> {
-    type Binding: FilterType;
-    fn into_wrt_filter(self) -> <Self::Binding as FilterType>::Filter;
-}
 impl<L: Leaf, F: for<'g> Filter<L, Annotation<'g> = usize>> IntoAxisFilter<ByFilter<L>> for F {
     type Binding = ByFilter<L, F::Owned>;
     fn into_axis_filter(self) -> F::Owned {
-        self.owned()
-    }
-}
-impl<L: Leaf, F: Filter<L>> IntoWrtFilter<ByFilter<L>> for F {
-    type Binding = ByFilter<L, F::Owned>;
-    fn into_wrt_filter(self) -> F::Owned {
         self.owned()
     }
 }
@@ -134,24 +122,11 @@ impl IntoAxisFilter<Positional> for Dag<usize> {
         self.map_leaves(|&axis| Gate(Some(axis)))
     }
 }
-impl IntoWrtFilter<Positional> for bool {
-    type Binding = ByFilter<(), Gate<()>>;
-    fn into_wrt_filter(self) -> Gate<()> {
-        Gate(self.then_some(()))
-    }
-}
-impl IntoWrtFilter<Positional> for Dag<bool> {
-    type Binding = PositionalDag<()>;
-    fn into_wrt_filter(self) -> Dag<Gate<()>> {
-        self.map_leaves(|&yes| Gate(yes.then_some(())))
-    }
-}
-
 /// Select complete top-level positional arguments. A child gate never inspects nested indices.
 #[derive(Clone)]
 pub struct Arguments(Option<Arc<[usize]>>);
 impl Arguments {
-    fn new(mut indices: Vec<usize>) -> Self {
+    pub(crate) fn new(mut indices: Vec<usize>) -> Self {
         indices.sort_unstable();
         indices.dedup();
         Self(Some(indices.into()))
@@ -182,11 +157,11 @@ impl Filter<()> for Arguments {
         })
     }
 }
-impl FilterType for Arguments {
-    type Leaf = ();
-    type Filter = Self;
-    fn validate<G: Graph>(f: &Self, graph: &G, _: &[Vec<Key>], _: &str) -> TransformResult<()> {
-        let Some(indices) = &f.0 else { return Ok(()) };
+impl Arguments {
+    pub(crate) fn validate(&self, graph: &impl Graph) -> TransformResult<()> {
+        let Some(indices) = &self.0 else {
+            return Ok(());
+        };
         if indices.is_empty() {
             return Ok(());
         }
@@ -207,37 +182,5 @@ impl FilterType for Arguments {
             }
         }
         Ok(())
-    }
-}
-impl IntoWrtFilter<Positional> for usize {
-    type Binding = Arguments;
-    fn into_wrt_filter(self) -> Arguments {
-        Arguments::new(vec![self])
-    }
-}
-#[doc(hidden)]
-pub struct ArgumentList;
-impl<I: AsRef<[usize]>> IntoWrtFilter<ArgumentList> for I {
-    type Binding = Arguments;
-    fn into_wrt_filter(self) -> Arguments {
-        Arguments::new(self.as_ref().to_vec())
-    }
-}
-
-// Flat bracket options in transform macros can also be legacy boolean/filter masks.
-#[doc(hidden)]
-pub struct MaskSlice<K>(PhantomData<K>);
-impl<T: Clone, K> IntoWrtFilter<MaskSlice<K>> for &[T]
-where
-    Dag<T>: IntoWrtFilter<K>,
-{
-    type Binding = <Dag<T> as IntoWrtFilter<K>>::Binding;
-    fn into_wrt_filter(self) -> <Self::Binding as FilterType>::Filter {
-        Dag::Node(DagNode::List(
-            self.iter()
-                .map(|v| gnx_graph::util::DagChild::Owned(Dag::from(v.clone())))
-                .collect(),
-        ))
-        .into_wrt_filter()
     }
 }

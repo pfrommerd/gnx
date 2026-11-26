@@ -234,11 +234,6 @@ impl TryJitable<PyGraph> for ArgnumsFunction {
     }
 }
 
-/// Differentiate the selected arguments (`true`), not the rest (`false`).
-fn argnums_wrt() -> Dag<bool> {
-    list_dag([Dag::from(true), Dag::from(false)])
-}
-
 /// The cotangents of the selected arguments from a cotangent of the split
 /// input graph: one value for an int `argnums`, a tuple otherwise.
 fn selected_cotangents(cotangents: PyGraph, single: bool) -> PyGraph {
@@ -438,7 +433,7 @@ pub fn grad(py: Python<'_>, f: Py<PyAny>, argnums: &Bound<'_, PyAny>) -> PyResul
         function: PythonFunction(function.clone()),
         argnums: argnums.clone(),
     })
-    .wrt(argnums_wrt());
+    .wrt_arg(0);
     Ok(transformed("grad", function, move |input| {
         let input = ArgnumsFunction::split(&argnums, input)?;
         let cotangents = builder.try_invoke(input).map_err(apply_error)?;
@@ -459,7 +454,7 @@ pub fn value_and_grad(
         function: PythonFunction(function.clone()),
         argnums: argnums.clone(),
     })
-    .wrt(argnums_wrt());
+    .wrt_arg(0);
     Ok(transformed("value_and_grad", function, move |input| {
         let input = ArgnumsFunction::split(&argnums, input)?;
         let (value, cotangents) = builder.try_invoke(input).map_err(apply_error)?;
@@ -481,7 +476,7 @@ pub fn hessian(py: Python<'_>, f: Py<PyAny>, argnums: usize) -> PyResult<PyTrans
         function: PythonFunction(function.clone()),
         argnums: argnums.clone(),
     })
-    .wrt(argnums_wrt());
+    .wrt_arg(0);
     Ok(transformed("hessian", function, move |input| {
         let input = ArgnumsFunction::split(&argnums, input)?;
         let hessian: Array = builder.try_invoke(input).map_err(apply_error)?;

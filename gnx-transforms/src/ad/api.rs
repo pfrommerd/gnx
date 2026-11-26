@@ -8,13 +8,29 @@ use std::sync::Arc;
 use gnx_common::Array;
 use gnx_common::ops::{eye_op, reshape_op};
 use gnx_expr::{Kind, ObjectTracer, Trace, VarInfo};
-use gnx_graph::All;
+use gnx_graph::{All, Filter};
 use gnx_graph::{Graph, GraphEq, GraphHash, Leaf, OwnedGraph};
+use std::marker::PhantomData;
 
 use super::region;
 use crate::cache::{TraceEntry, TracerBuilder, rebuild_graph};
 use crate::error::ApplyError;
-use crate::filters::{DefaultWrt, FilterType, IntoWrtFilter};
+use crate::filters::Arguments;
+
+struct Wrt<L, F> {
+    filter: F,
+    positional: Option<Arguments>,
+    leaf: PhantomData<fn() -> L>,
+}
+impl<L, F> Wrt<L, F> {
+    fn new(filter: F) -> Self {
+        Self {
+            filter,
+            positional: None,
+            leaf: PhantomData,
+        }
+    }
+}
 use crate::traced::{
     Leaves, body, constant, differentiated, objects, ones, trace_region, value, zeros, zeros_like,
 };
@@ -34,8 +50,8 @@ struct Prepared<I: Graph, O: Graph> {
 }
 
 impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
-    fn new<W: FilterType, A, E>(
-        wrt: &W::Filter,
+    fn new<L: Leaf, W: Filter<L>, A, E>(
+        wrt: &Wrt<L, W>,
         input: &A,
         trace: impl FnOnce(TracerBuilder<I>, Vec<(Kind, VarInfo)>) -> Result<Arc<TraceEntry<O>>, E>,
     ) -> Result<Self, ApplyError<E>>
@@ -43,7 +59,10 @@ impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
         let leaves = Leaves::<I>::of(input);
-        let selected = crate::spec::wrt::<W>(wrt, input, &leaves.paths)?;
+        if let Some(args) = &wrt.positional {
+            args.validate(input)?;
+        }
+        let selected = crate::spec::wrt(&wrt.filter, input, &leaves.paths);
         let differentiate = differentiated(&leaves.objects, &leaves.paths, &selected)?;
         let entry = trace(leaves.builder.clone(), leaves.kinds()).map_err(ApplyError::Body)?;
         let outputs = crate::cf::value_results(entry.expr.view()).map_err(TransformError::from)?;
@@ -178,15 +197,26 @@ impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
 
 macro_rules! builder_methods {
     ($ty:ident) => {
-        impl<I: Graph, F: Function<I>, W: FilterType> $ty<I, F, W> {
-            /// Differentiate arguments by zero-based index (`1`, `[0, 2]`), graph
-            /// filter, or positional boolean mask. Indices select whole argument
-            /// subtrees. The result keeps its usual structure for every selector.
-            pub fn wrt<K, S: IntoWrtFilter<K>>(self, wrt: S) -> $ty<I, F, S::Binding> {
+        impl<I: Graph, F: Function<I>, L: Leaf, W: Filter<L>> $ty<I, F, L, W> {
+            /// Differentiate the tracer leaves matched by a graph filter.
+            pub fn wrt<T: Leaf, S: Filter<T>>(self, filter: S) -> $ty<I, F, T, S::Owned> {
                 $ty {
                     jit: self.jit,
-                    wrt: wrt.into_wrt_filter(),
+                    wrt: Wrt::new(filter.owned()),
                 }
+            }
+
+            /// Differentiate one complete top-level positional argument (zero-based).
+            pub fn wrt_arg(self, index: usize) -> $ty<I, F, (), Arguments> {
+                self.wrt_args([index])
+            }
+
+            /// Differentiate the specified top-level arguments; duplicates are ignored.
+            pub fn wrt_args(self, indices: impl AsRef<[usize]>) -> $ty<I, F, (), Arguments> {
+                let args = Arguments::new(indices.as_ref().to_vec());
+                let mut result = self.wrt(&args);
+                result.wrt.positional = Some(args);
+                result
             }
 
             /// Label the traced body for display.
@@ -201,7 +231,7 @@ macro_rules! builder_methods {
 /// Implement the four call traits for a wrapper from one `apply` method.
 macro_rules! call_traits {
     ($ty:ident, $input:ty, $owned:ty, $output:ty, $name:literal) => {
-        impl<I: Graph, F: Function<I>, W: FilterType> Function<$input> for $ty<I, F, W>
+        impl<I: Graph, F: Function<I>, L: Leaf, W: Filter<L>> Function<$input> for $ty<I, F, L, W>
         where
             $input: Graph,
             $output: Graph,
@@ -209,7 +239,7 @@ macro_rules! call_traits {
             type Output = $output;
         }
 
-        impl<I, F, W: FilterType> Callable<$input> for $ty<I, F, W>
+        impl<I, F, L: Leaf, W: Filter<L>> Callable<$input> for $ty<I, F, L, W>
         where
             I: Graph,
             I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -227,7 +257,7 @@ macro_rules! call_traits {
             }
         }
 
-        impl<I, F, W: FilterType> Jitable<$input> for $ty<I, F, W>
+        impl<I, F, L: Leaf, W: Filter<L>> Jitable<$input> for $ty<I, F, L, W>
         where
             I: Graph,
             I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -244,7 +274,7 @@ macro_rules! call_traits {
             }
         }
 
-        impl<I, F, W: FilterType> TryCallable<$input> for $ty<I, F, W>
+        impl<I, F, L: Leaf, W: Filter<L>> TryCallable<$input> for $ty<I, F, L, W>
         where
             I: Graph,
             I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -259,7 +289,7 @@ macro_rules! call_traits {
             }
         }
 
-        impl<I, F, W: FilterType> TryJitable<$input> for $ty<I, F, W>
+        impl<I, F, L: Leaf, W: Filter<L>> TryJitable<$input> for $ty<I, F, L, W>
         where
             I: Graph,
             I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -279,9 +309,9 @@ macro_rules! call_traits {
 // ----- jvp --------------------------------------------------------------------
 
 /// Forward mode; see [`jvp`].
-pub struct Jvp<I: Graph, F: Function<I>, W: FilterType = DefaultWrt> {
+pub struct Jvp<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
     jit: Jit<I, F>,
-    wrt: W::Filter,
+    wrt: Wrt<L, W>,
 }
 
 /// Forward-mode differentiation (JAX's `jvp`). Call with `(primals, tangents)`,
@@ -290,12 +320,12 @@ pub struct Jvp<I: Graph, F: Function<I>, W: FilterType = DefaultWrt> {
 pub fn jvp<I: Graph, F: Function<I>>(func: F) -> Jvp<I, F> {
     Jvp {
         jit: jit(func),
-        wrt: All,
+        wrt: Wrt::new(All),
     }
 }
 builder_methods!(Jvp);
 
-impl<I, F, W: FilterType> Jvp<I, F, W>
+impl<I, F, L: Leaf, W: Filter<L>> Jvp<I, F, L, W>
 where
     I: Graph,
     F: Function<I>,
@@ -313,7 +343,7 @@ where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
         T: Graph,
     {
-        let prepared = Prepared::<I, F::Output>::new::<W, _, _>(&self.wrt, &primals, trace)?;
+        let prepared = Prepared::<I, F::Output>::new(&self.wrt, &primals, trace)?;
         let (outputs, tangents) = prepared.jvp(&objects(&tangents))?;
         Ok((
             prepared.rebuild_output(outputs),
@@ -332,9 +362,9 @@ call_traits!(
 // ----- vjp --------------------------------------------------------------------
 
 /// Reverse mode; see [`vjp`].
-pub struct Vjp<I: Graph, F: Function<I>, W: FilterType = DefaultWrt> {
+pub struct Vjp<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
     jit: Jit<I, F>,
-    wrt: W::Filter,
+    wrt: Wrt<L, W>,
 }
 
 /// Reverse-mode differentiation (JAX's `vjp`). Call with `(primals,
@@ -345,12 +375,12 @@ pub struct Vjp<I: Graph, F: Function<I>, W: FilterType = DefaultWrt> {
 pub fn vjp<I: Graph, F: Function<I>>(func: F) -> Vjp<I, F> {
     Vjp {
         jit: jit(func),
-        wrt: All,
+        wrt: Wrt::new(All),
     }
 }
 builder_methods!(Vjp);
 
-impl<I, F, W: FilterType> Vjp<I, F, W>
+impl<I, F, L: Leaf, W: Filter<L>> Vjp<I, F, L, W>
 where
     I: Graph,
     F: Function<I>,
@@ -368,7 +398,7 @@ where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
         C: Graph,
     {
-        let prepared = Prepared::<I, F::Output>::new::<W, _, _>(&self.wrt, &primals, trace)?;
+        let prepared = Prepared::<I, F::Output>::new(&self.wrt, &primals, trace)?;
         let cotangents = objects(&cotangents);
         if cotangents.len() != prepared.outputs.len() {
             return Err(TransformError::invalid(
@@ -395,7 +425,7 @@ call_traits!(
     "vjp"
 );
 
-impl<I, F, W: FilterType> Vjp<I, F, W>
+impl<I, F, L: Leaf, W: Filter<L>> Vjp<I, F, L, W>
 where
     I: Graph,
     I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -418,9 +448,9 @@ where
 // ----- grad / value_and_grad --------------------------------------------------
 
 /// The gradient of a scalar function; see [`grad`].
-pub struct Grad<I: Graph, F: Function<I>, W: FilterType = DefaultWrt> {
+pub struct Grad<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
     jit: Jit<I, F>,
-    wrt: W::Filter,
+    wrt: Wrt<L, W>,
 }
 
 /// The gradient of a function returning one floating-point scalar (JAX's
@@ -429,12 +459,12 @@ pub struct Grad<I: Graph, F: Function<I>, W: FilterType = DefaultWrt> {
 pub fn grad<I: Graph, F: Function<I>>(func: F) -> Grad<I, F> {
     Grad {
         jit: jit(func),
-        wrt: All,
+        wrt: Wrt::new(All),
     }
 }
 builder_methods!(Grad);
 
-impl<I, F, W: FilterType> Grad<I, F, W>
+impl<I, F, L: Leaf, W: Filter<L>> Grad<I, F, L, W>
 where
     I: Graph,
     F: Function<I>,
@@ -451,7 +481,7 @@ where
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
-        let prepared = Prepared::<I, F::Output>::new::<W, _, _>(&self.wrt, &primals, trace)?;
+        let prepared = Prepared::<I, F::Output>::new(&self.wrt, &primals, trace)?;
         let (_, input_cts) = prepared.grad()?;
         Ok(prepared.leaves.rebuild(input_cts))
     }
@@ -459,21 +489,21 @@ where
 call_traits!(Grad, I, <I as Graph>::Owned, <I as Graph>::Owned, "grad");
 
 /// The value and gradient of a scalar function; see [`value_and_grad`].
-pub struct ValueAndGrad<I: Graph, F: Function<I>, W: FilterType = DefaultWrt> {
+pub struct ValueAndGrad<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
     jit: Jit<I, F>,
-    wrt: W::Filter,
+    wrt: Wrt<L, W>,
 }
 
 /// Like [`grad`], also returning the function's result.
 pub fn value_and_grad<I: Graph, F: Function<I>>(func: F) -> ValueAndGrad<I, F> {
     ValueAndGrad {
         jit: jit(func),
-        wrt: All,
+        wrt: Wrt::new(All),
     }
 }
 builder_methods!(ValueAndGrad);
 
-impl<I, F, W: FilterType> ValueAndGrad<I, F, W>
+impl<I, F, L: Leaf, W: Filter<L>> ValueAndGrad<I, F, L, W>
 where
     I: Graph,
     F: Function<I>,
@@ -490,7 +520,7 @@ where
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
-        let prepared = Prepared::<I, F::Output>::new::<W, _, _>(&self.wrt, &primals, trace)?;
+        let prepared = Prepared::<I, F::Output>::new(&self.wrt, &primals, trace)?;
         let (outputs, input_cts) = prepared.grad()?;
         Ok((
             prepared.rebuild_output(outputs),
@@ -509,9 +539,9 @@ call_traits!(
 // ----- hessian ----------------------------------------------------------------
 
 /// The Hessian of a scalar function; see [`hessian`].
-pub struct Hessian<I: Graph, F: Function<I>, W: FilterType = DefaultWrt> {
+pub struct Hessian<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
     jit: Jit<I, F>,
-    wrt: W::Filter,
+    wrt: Wrt<L, W>,
 }
 
 /// The Hessian of a function returning one floating-point scalar, with respect
@@ -523,12 +553,12 @@ pub struct Hessian<I: Graph, F: Function<I>, W: FilterType = DefaultWrt> {
 pub fn hessian<I: Graph, F: Function<I>>(func: F) -> Hessian<I, F> {
     Hessian {
         jit: jit(func),
-        wrt: All,
+        wrt: Wrt::new(All),
     }
 }
 builder_methods!(Hessian);
 
-impl<I, F, W: FilterType> Hessian<I, F, W>
+impl<I, F, L: Leaf, W: Filter<L>> Hessian<I, F, L, W>
 where
     I: Graph,
     F: Function<I>,
@@ -545,7 +575,7 @@ where
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
-        let prepared = Prepared::<I, F::Output>::new::<W, _, _>(&self.wrt, &primals, trace)?;
+        let prepared = Prepared::<I, F::Output>::new(&self.wrt, &primals, trace)?;
         let [x] = prepared.primals.as_slice() else {
             return Err(TransformError::invalid(
                 "hessian differentiates exactly one array argument; select it with wrt",

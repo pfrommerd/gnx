@@ -150,54 +150,39 @@ fn macro_accepts_filters_and_ad_distinguishes_exact_from_prefix() {
 
 #[test]
 fn wrt_indices_select_top_level_arguments_only() {
-    use gnx_graph::{Key, util::GraphExt};
-    use gnx_transforms::IntoWrtFilter;
-    let graph = ((1u8, 2u8), (3u8, 4u8), 5u8);
-    assert!(
-        graph
-            .collect_leaves_with_paths([].into_wrt_filter())
-            .is_empty()
-    );
-    assert_eq!(
-        graph.collect_leaves_with_paths(1usize.into_wrt_filter()),
-        vec![(vec![Key::Index(1)], ())]
-    );
-    assert_eq!(
-        graph.collect_leaves_with_paths([2, 0, 2].into_wrt_filter()),
-        vec![(vec![Key::Index(0)], ()), (vec![Key::Index(2)], ())]
-    );
-
     let _scope = TraceContext::enter();
     let f = |x: Array, _: Array, _: Array| x;
     let integer: Array =
         Tracer::<Array>::placeholder(VarInfo::new(ArrayInfo::new(Shape::fixed([]), DType::I32)))
             .into();
     let args = (array(&[]), integer, array(&[]));
-    let (dx, dy, dz) = gnx_transforms::grad(f).wrt([0, 2]).invoke(args.clone());
+    let (dx, dy, dz) = gnx_transforms::grad(f)
+        .wrt_args([0, 2])
+        .invoke(args.clone());
     assert_eq!(
         (shape(&dx), shape(&dy), shape(&dz)),
         (vec![], vec![], vec![])
     );
     let err = gnx_transforms::grad(f)
-        .wrt(1)
+        .wrt_arg(1)
         .try_invoke(args.clone())
         .err()
         .unwrap()
         .to_string();
     assert!(err.contains("not a floating-point array"), "{err}");
     let err = gnx_transforms::grad(f)
-        .wrt(3)
+        .wrt_arg(3)
         .try_invoke(args.clone())
         .err()
         .unwrap()
         .to_string();
     assert!(err.contains("argument index 3 is out of range"), "{err}");
     let last = 2usize;
-    let df = gnx_transforms::grad!(|x: Array, _y: Array, _z: Array| x, wrt = [0, last]);
+    let df = gnx_transforms::grad!(|x: Array, _y: Array, _z: Array| x, wrt_args = [0, last]);
     df(args.0.clone(), args.1.clone(), args.2.clone());
     let masked = gnx_transforms::grad!(
         |x: Array, _y: Array, _z: Array| x,
-        wrt = [true, false, true]
+        wrt = dag!(gnx_graph::All, *, gnx_graph::All)
     );
     masked(args.0, args.1, args.2);
 }

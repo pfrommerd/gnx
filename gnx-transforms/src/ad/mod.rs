@@ -1,14 +1,13 @@
 //! Automatic differentiation.
 //!
 //! Builders wrap a function with JAX's defaults; builder methods override them,
-//! with `wrt` specified by a positional argument index, a list of indices, a boolean
-//! [`Dag`], or any graph [`Filter`](gnx_graph::Filter). Indices are zero-based:
-//! `.wrt(1)` selects the second argument and `.wrt([0, 2])` selects the first and
+//! with `.wrt(filter)`, `.wrt_arg(index)`, or `.wrt_args(indices)`.
+//! Indices are zero-based: `.wrt_arg(1)` selects the second argument and `.wrt_args([0, 2])` selects the first and
 //! third. Filters select by match location; their annotations are not evaluated.
 //! Gradients retain the full argument structure, with zeros for unselected leaves.
 //!
 //! ```ignore
-//! let df = grad(|x: Array, y: Array| f(x, y)).wrt(dag!(true, false));
+//! let df = grad(|x: Array, y: Array| f(x, y)).wrt_arg(0);
 //! let (y, ty) = jvp(f).invoke((primals, tangents));
 //! let (y, dx) = vjp(f).invoke((primals, cotangents));
 //! let h = hessian(f);

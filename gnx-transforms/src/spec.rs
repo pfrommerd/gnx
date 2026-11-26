@@ -2,11 +2,11 @@
 //! differentiation uses match locations and preserves exact-versus-prefix semantics.
 
 use gnx_graph::{
-    Graph, Key,
+    Filter, Graph, Key, Leaf,
     util::{Dag, DagChild, DagNode},
 };
 
-use crate::filters::{AxisType, FilterType};
+use crate::filters::AxisType;
 use crate::{TransformError, TransformResult};
 
 /// The spec entry for one leaf. `exact` is whether the spec leaf sits on the
@@ -26,16 +26,12 @@ pub(crate) fn axes<B: AxisType>(
     B::validate(filter, graph, paths, name)?;
     Ok(project(crate::axis_matches::axes(graph, filter), paths))
 }
-pub(crate) fn wrt<B: FilterType>(
-    filter: &B::Filter,
+pub(crate) fn wrt<L: Leaf, F: Filter<L>>(
+    filter: &F,
     graph: &impl Graph,
     paths: &[Vec<Key>],
-) -> TransformResult<Vec<Resolved<()>>> {
-    B::validate(filter, graph, paths, "wrt")?;
-    Ok(project(
-        crate::axis_matches::locations(graph, filter),
-        paths,
-    ))
+) -> Vec<Resolved<()>> {
+    project(crate::axis_matches::locations(graph, filter), paths)
 }
 fn project<T: Copy>(matches: Vec<(Vec<Key>, T)>, paths: &[Vec<Key>]) -> Vec<Resolved<T>> {
     // Only remove transparent keys when comparing a graph path to the canonical tracer paths.

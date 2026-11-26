@@ -23,7 +23,7 @@ pub use filters::on_axis;
 pub use jit::{Jit, jit, jit_fn, jittable, try_jit_fn};
 pub use map::map;
 pub mod filters;
-pub use filters::{ByFilter, IntoAxisFilter, IntoWrtFilter};
+pub use filters::{ByFilter, IntoAxisFilter};
 
 // Macros: `map!`, `jvp!`, ... wrap a closure like `jit_fn!` and take builder
 // options in `dag!` syntax.

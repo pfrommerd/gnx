@@ -204,11 +204,11 @@ fn grad_and_value_and_grad_follow_wrt() {
         sum(&mul(&mul(&x, &x), &y))
     };
     let both = grad(f);
-    let only_x = grad(f).wrt(dag!(true, false));
+    let only_x = grad(f).wrt_arg(0);
     let (x, y) = (floats(&[2], &[1., 2.]), floats(&[2], &[3., 4.]));
     let (dx, dy) = both.invoke((x.clone(), y.clone()));
     let (dx_only, dy_zero) = only_x.invoke((x.clone(), y.clone()));
-    let (dx_zero, dy_only) = grad(f).wrt(1).invoke((x.clone(), y.clone()));
+    let (dx_zero, dy_only) = grad(f).wrt_arg(1).invoke((x.clone(), y.clone()));
     eval(&device, &(dx_zero.clone(), dy_only.clone()));
     close(&values(&device, &dx_zero), &[0., 0.]);
     close(&values(&device, &dy_only), &[1., 4.]);
@@ -220,7 +220,7 @@ fn grad_and_value_and_grad_follow_wrt() {
     let (value, (gx, _)) = value_and_grad(f).invoke((x.clone(), y.clone()));
     let macro_grad = gnx_transforms::grad!(
         |x: Array, y: Array| sum(&mul(&mul(&x, &x), &y)),
-        wrt = (*, true)
+        wrt_arg = 1
     );
     let (_, dy_macro) = macro_grad(x, y);
 
@@ -249,7 +249,7 @@ fn jvp_vjp_and_pullback() {
         (floats(&[2], &[1., 0.5]), floats(&[2], &[-1., 2.])),
     ));
     let (_, (cx, cy)) = vjp(f).invoke(((x.clone(), y.clone()), floats(&[2], &[1., 2.])));
-    let pullbacks = vjp(f).wrt(dag!(false, true));
+    let pullbacks = vjp(f).wrt_arg(1);
     let (primal, pullback) = pullbacks.pullback((x, y));
     let (zero, cy_only) = pullback(floats(&[2], &[1., 1.]));
 
@@ -281,8 +281,7 @@ fn transformations_compose() {
     let h = hessian(|x: Array| sum(&cube(x))).invoke((floats(&[2], &[1., 2.]),));
     assert_eq!(h.shape(), Shape::fixed([2, 2]));
     // Per-example gradients of w * x with respect to the shared w.
-    let per_example =
-        map(grad(|w: Array, x: Array| mul(&w, &x)).wrt(dag!(true, false))).in_axes(dag!(*, 0));
+    let per_example = map(grad(|w: Array, x: Array| mul(&w, &x)).wrt_arg(0)).in_axes(dag!(*, 0));
     let (dw, _) = per_example.invoke((scalar(3.), floats(&[4], &[1., 2., 3., 4.])));
     // jit of grad.
     let jitted = jit(grad(cube));
