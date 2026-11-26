@@ -1,0 +1,8 @@
+[package]
+name = "gnx-nn"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gnx-graph = { path = "../gnx-graph", version = "0.1.0" }
+gnx-math = { path = "../gnx-math", version = "0.1.0" }

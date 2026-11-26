@@ -844,6 +844,7 @@ dependencies = [
  "gnx-graph",
  "gnx-io",
  "gnx-math",
+ "gnx-nn",
  "gnx-torch",
  "gnx-transforms",
  "gnx-xla",
@@ -937,6 +938,14 @@ dependencies = [
  "gnx-expr",
  "gnx-transforms",
  "rkyv",
+]
+
+[[package]]
+name = "gnx-nn"
+version = "0.1.0"
+dependencies = [
+ "gnx-graph",
+ "gnx-math",
 ]
 
 [[package]]

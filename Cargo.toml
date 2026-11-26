@@ -12,6 +12,7 @@ members = [
     "gnx-xla",
     "gnx-xla-sys",
     "gnxlib", "gnx-math",
+    "gnx-nn",
 ]
 exclude = ["gnx-torch/vendor/torch-sys"]
 resolver = "3"

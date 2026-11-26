@@ -1,8 +1,7 @@
 use proc_macro::TokenStream as ProcTokenStream;
-use quote::quote;
-use syn::{DeriveInput, parse_macro_input};
 
 mod dag;
+mod graph;
 mod graph_traits;
 mod leaf;
 mod lifetime_free;
@@ -59,18 +58,11 @@ pub fn derive_lifetime_free(input: ProcTokenStream) -> ProcTokenStream {
     lifetime_free::derive_lifetime_free(input)
 }
 
+/// Derive named-field graph traversal, reconstruction, hashing, and equality
+/// for a concrete struct of owned graph values.
 #[proc_macro_derive(Graph)]
 pub fn derive_graph(input: ProcTokenStream) -> ProcTokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let g = paths::graph_crate();
-    let err = paths::require_graph_crate();
-    let expanded = quote! {
-        #err
-        impl #g::Graph for #name {
-        }
-    };
-    ProcTokenStream::from(expanded)
+    graph::derive(input)
 }
 
 #[proc_macro_derive(GraphHash)]

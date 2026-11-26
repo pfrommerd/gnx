@@ -195,6 +195,44 @@ fn numpy_and_lax_agree_on_bias_values_and_gradients() {
 }
 
 #[test]
+fn affine_model_differentiates_only_params() {
+    use gnx::{
+        graph::Of,
+        nn::{Linear, Param},
+        np,
+    };
+
+    #[derive(Clone, Graph)]
+    struct Model {
+        head: Linear,
+        scale: Array,
+    }
+
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let model = Model {
+        head: Linear::new(
+            floats(&[2, 3], &[1., 2., 3., 3., 2., 1.]),
+            floats(&[2], &[1., -1.]),
+        ),
+        scale: scalar(2.),
+    };
+    let x = floats(&[2, 3], &[1., 0., 1., 0., 2., 1.]);
+    let loss = value_and_grad(|m: Model, x: Array| np::sum(&m.head.forward(x), np::ALL) * m.scale)
+        .wrt(Of::<Param>::filter());
+    let result = loss.invoke((model, x));
+    eval(&device, &result);
+    let (loss, (dm, dx)) = result;
+    close(&values(&device, &loss), &[40.]);
+    close(
+        &values(&device, dm.head.weight.value()),
+        &[2., 4., 4., 2., 4., 4.],
+    );
+    close(&values(&device, dm.head.bias.value()), &[4., 4.]);
+    close(&values(&device, &dm.scale), &[0.]);
+    close(&values(&device, &dx), &[0.; 6]);
+}
+
+#[test]
 fn grad_and_value_and_grad_follow_wrt() {
     let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let traces = AtomicUsize::new(0);
