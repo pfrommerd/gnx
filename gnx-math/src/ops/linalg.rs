@@ -10,7 +10,7 @@ impl CholeskyOperation {
         self.symmetrize
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     CholeskyOperation,
     "cholesky",
     |_op, eqn| arity(eqn, 1),
@@ -42,7 +42,7 @@ impl TriangularSolveOperation {
         self.options
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     TriangularSolveOperation,
     "triangular_solve",
     |_op, eqn| arity(eqn, 2),
@@ -76,7 +76,7 @@ impl OrmqrOperation {
         self.options
     }
 }
-gnx_common::array_operation!(OrmqrOperation, "ormqr", |_op, eqn| arity(eqn, 3), options);
+gnx_base::array_operation!(OrmqrOperation, "ormqr", |_op, eqn| arity(eqn, 3), options);
 pub fn ormqr(options: OrmqrOptions) -> Op {
     Op::new(Ormqr { options })
 }
@@ -125,7 +125,7 @@ macro_rules! matrix_operation {
         #[rkyv(archived = $ty)]
         pub struct $builder { $($field: bool),* }
         impl $ty { $(pub fn $field(&self) -> bool { self.$field })* }
-        gnx_common::array_operation!($ty, $name, |$op, eqn| signature_count(eqn, $inputs, $outputs));
+        gnx_base::array_operation!($ty, $name, |$op, eqn| signature_count(eqn, $inputs, $outputs));
         pub fn $ctor($($field: bool),*) -> Op { Op::new($builder { $($field),* }) }
     };
 }
@@ -147,7 +147,7 @@ impl EigOperation {
         self.differentiate_vectors
     }
 }
-gnx_common::array_operation!(EigOperation, "eig", |op, eqn| signature_count(
+gnx_base::array_operation!(EigOperation, "eig", |op, eqn| signature_count(
     eqn,
     1,
     1 + usize::from(op.left) + usize::from(op.right)
@@ -170,14 +170,14 @@ matrix_operation!(Svd => SvdOperation, "svd", svd, [full, vectors], 1, |op| if o
 matrix_operation!(Tridiagonal => TridiagonalOperation, "tridiagonal", tridiagonal, [lower], 1, |_op| 4);
 matrix_operation!(TridiagonalSolve => TridiagonalSolveOperation, "tridiagonal_solve", tridiagonal_solve, [perturb_singular], 4, |_op| 1);
 
-gnx_common::unit_operations! {
+gnx_base::unit_operations! {
     pub struct HessenbergOperation;
     pub struct LuOperation;
 }
-gnx_common::array_operation!(HessenbergOperation, "hessenberg", |eqn| signature_count(
+gnx_base::array_operation!(HessenbergOperation, "hessenberg", |eqn| signature_count(
     eqn, 1, 2
 ));
-gnx_common::array_operation!(LuOperation, "lu", |eqn| signature_count(eqn, 1, 3));
+gnx_base::array_operation!(LuOperation, "lu", |eqn| signature_count(eqn, 1, 3));
 pub fn hessenberg() -> Op {
     Op::new(HessenbergOperation)
 }
@@ -195,7 +195,7 @@ impl LuPivotsOperation {
         count(self.size)
     }
 }
-gnx_common::array_operation!(LuPivotsOperation, "lu_pivots_to_permutation", |eqn| {
+gnx_base::array_operation!(LuPivotsOperation, "lu_pivots_to_permutation", |eqn| {
     signature_count(eqn, 1, 1)
 });
 pub fn lu_pivots_to_permutation(size: usize) -> Op {
@@ -217,7 +217,7 @@ impl CustomLinearSolveOperation {
     }
 }
 
-gnx_common::array_operation!(CustomLinearSolveOperation, "custom_linear_solve", |op, eqn| {
+gnx_base::array_operation!(CustomLinearSolveOperation, "custom_linear_solve", |op, eqn| {
     let n = eqn.outputs().len();
     let regions = eqn.subexprs();
     if n == 0 || eqn.inputs().len() != op.parameters() + n || !(regions.len() == 2 || regions.len() == 3) {

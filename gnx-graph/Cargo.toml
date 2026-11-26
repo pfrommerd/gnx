@@ -7,7 +7,7 @@ edition = "2024"
 anyhash = { version = "0.1.4", features = ["alloc"] }
 gnx-derive = { version = "0.1.0", path = "../gnx-derive" }
 gnx-expr = { version = "0.1.0", path = "../gnx-expr" }
-gnx-common = { version = "0.1.0", path = "../gnx-common" }
+gnx-base = { version = "0.1.0", path = "../gnx-base" }
 indexmap = "2.13.0"
 ordered-float = "5.1.0"
 paste = "1.0.15"

@@ -1,5 +1,5 @@
 use super::{Op, arity, result_rank, signature};
-use gnx_common::ops::{indices, stored_indices};
+use gnx_base::ops::{indices, stored_indices};
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Portable,
@@ -27,7 +27,7 @@ impl FftOperation {
         indices(&self.lengths)
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     FftOperation,
     "fft",
     |op, eqn| {

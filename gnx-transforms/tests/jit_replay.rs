@@ -1,4 +1,4 @@
-use gnx_common::{Array, ArrayInfo, ArrayRef, DType, Shape};
+use gnx_base::{Array, ArrayInfo, ArrayRef, DType, Shape};
 use gnx_expr::{
     Capture, CellKey, HInstr, Invocation, ObjectTracer, TraceContext, Tracer, TracerKey, VarInfo,
 };
@@ -280,7 +280,7 @@ fn nested_call_resolves_capture_and_input_aliases_when_the_caller_lowers() {
     assert_eq!(aliased.inputs[1], gnx_expr::InputId::Input(2));
 }
 
-gnx_common::unit_operations! {
+gnx_base::unit_operations! {
     struct TestOperation;
 }
 impl gnx_expr::Operation for TestOperation {}

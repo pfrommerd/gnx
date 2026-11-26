@@ -1,9 +1,9 @@
-use gnx_common::pass::{Builder, Dce, Pipeline};
-use gnx_common::{ArrayInfo, DType, Shape};
+use gnx_base::pass::{Builder, Dce, Pipeline};
+use gnx_base::{ArrayInfo, DType, Shape};
 use std::sync::Arc;
 
-use gnx_common::ops::reduction::{ReduceAddOperation, reduce_add};
-use gnx_common::ops::{add_op, mul_op};
+use gnx_base::ops::reduction::{ReduceAddOperation, reduce_add};
+use gnx_base::ops::{add_op, mul_op};
 use gnx_expr::util::TypedIn;
 use gnx_expr::{
     Capture, CellTrace, Expr, InputSpec, Invocation, LoweringError, ObjectTracer, Op, OpRef,
@@ -171,7 +171,7 @@ fn transformations_survive_lowering_and_expand_away() {
         Pipeline::new()
             .with(ExpandTransforms)
             .with(Dce)
-            .run(expr, &gnx_common::cache::Cache::in_memory()),
+            .run(expr, &gnx_base::cache::Cache::in_memory()),
     )
     .unwrap();
     assert!(!contains_ad(expanded.view()));
@@ -195,7 +195,7 @@ fn nested_transformations_expand_innermost_first() {
     let expanded = futures_executor::block_on(
         Pipeline::new()
             .with(ExpandTransforms)
-            .run(expr, &gnx_common::cache::Cache::in_memory()),
+            .run(expr, &gnx_base::cache::Cache::in_memory()),
     )
     .unwrap();
     assert!(!contains_ad(expanded.view()));
@@ -270,7 +270,7 @@ fn call_boundaries_survive_transformations() {
             Pipeline::new()
                 .with(ExpandTransforms)
                 .with(Dce)
-                .run(expr, &gnx_common::cache::Cache::in_memory()),
+                .run(expr, &gnx_base::cache::Cache::in_memory()),
         )
         .unwrap()
     };

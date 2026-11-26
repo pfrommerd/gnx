@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, EqnSource, Expr, ExprBuilder, RootExpr, Var, VarInfo};
 
 use super::DiffParameters;

@@ -1,5 +1,5 @@
 use crate::ops::indexing::*;
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, Op};
 
 use gnx_transforms::map::batch::{BatchRule, Batched, materialize};

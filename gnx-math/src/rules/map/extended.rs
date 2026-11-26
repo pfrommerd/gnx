@@ -6,7 +6,7 @@ use crate::ops::{
     ordering::*,
 };
 use gnx_expr::Eqn;
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 
 use gnx_transforms::TransformResult;
 use gnx_transforms::map::batch::{BatchRule, Batched, batch_region, materialize};

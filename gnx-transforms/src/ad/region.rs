@@ -2,7 +2,7 @@
 //! wrappers ([`jvp`](super::jvp), [`vjp`](super::vjp), [`grad`](super::grad),
 //! ...) are built on these.
 
-use gnx_common::ops::{signature, strictly_increasing};
+use gnx_base::ops::{signature, strictly_increasing};
 use gnx_expr::{ApplyRegion, Invocation, LoweringError, Trace};
 
 use super::DiffParameters;

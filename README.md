@@ -276,7 +276,7 @@ owned or borrowed arrays. For example, `(&a - &b) * &scale` builds a trace;
 broadcast from the right. Use `try_add`, `try_sub`, `try_mul`, `try_div`, or
 `try_rem` to handle incompatible operands without a panic.
 
-`gnx_common::ops` defines the core array dialect and its primitive constructors.
+`gnx_base::ops` defines the core array dialect and its primitive constructors.
 `gnx_math::ops` re-exports those primitives and adds modules for
 elementwise math, bitwise operations, dtypes, creation, shape, indexing,
 reductions, ordering, contractions, FFT, linear algebra, and special functions.

@@ -140,10 +140,10 @@ fn move_axis(trace: Trace, from: usize, to: usize) -> TransformResult<Trace> {
     let mut perm: Vec<_> = (0..shape.len()).collect();
     perm.remove(from);
     perm.insert(to, from);
-    let shape: gnx_common::Shape = perm.iter().map(|&i| shape[i]).collect();
-    let info = gnx_expr::VarInfo::new(gnx_common::ArrayInfo::new(shape, array.dtype()));
+    let shape: gnx_base::Shape = perm.iter().map(|&i| shape[i]).collect();
+    let info = gnx_expr::VarInfo::new(gnx_base::ArrayInfo::new(shape, array.dtype()));
     Ok(Invocation::invoke(
-        gnx_common::ops::transpose_op(&perm),
+        gnx_base::ops::transpose_op(&perm),
         vec![],
         vec![trace],
         vec![info],

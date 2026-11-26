@@ -10,8 +10,8 @@ use crate::ops::{
     mul_op, ones_op, reshape_op,
     shape::{concatenate, pad},
 };
-use gnx_common::DType;
-use gnx_common::pass::Builder;
+use gnx_base::DType;
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, Op, Var};
 
 use gnx_transforms::ad::jvp::instantiate;

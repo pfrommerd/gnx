@@ -1,5 +1,5 @@
 mod support;
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::VarInfo;
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::schur};
 use gnx_torch::TorchDevice;
@@ -16,7 +16,7 @@ fn compiled(dims: &[usize], dtype: DType, vectors: bool) -> Vec<CModule> {
         vec![],
     );
     futures_executor::block_on(
-        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+        TorchDevice::cpu(gnx_base::cache::Cache::in_memory())
             .unwrap()
             .compile(&b.finish(out).build().unwrap()),
     )

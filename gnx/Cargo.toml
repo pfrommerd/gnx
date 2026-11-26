@@ -9,7 +9,7 @@ clap = { version = "4", features = ["derive"], optional = true }
 gnx-transforms = { version = "0.1.0", path = "../gnx-transforms" }
 gnx-graph = { version = "0.1.0", path = "../gnx-graph" }
 gnx-expr = { version = "0.1.0", path = "../gnx-expr" }
-gnx-common = { version = "0.1.0", path = "../gnx-common" }
+gnx-base = { version = "0.1.0", path = "../gnx-base" }
 gnx-math = { version = "0.1.0", path = "../gnx-math" }
 gnx-nn = { version = "0.1.0", path = "../gnx-nn" }
 gnx-io = { version = "0.1.0", path = "../gnx-io" }

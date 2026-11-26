@@ -1,4 +1,4 @@
-use gnx_common::{Array, ArrayInfo, ArrayRef, DType, Shape};
+use gnx_base::{Array, ArrayInfo, ArrayRef, DType, Shape};
 use gnx_expr::{
     Capture, CellKey, CellTrace, HInstr, ObjectTracer, ObjectTracerRef, Trace, TraceContext,
     Tracer, TracerKey, VarInfo,

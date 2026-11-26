@@ -237,7 +237,7 @@ pub(super) fn inline_calls(
     if !needs(expr) {
         return Ok(None);
     }
-    let body = gnx_common::pass::rewrite(expr, &mut |b, eq| {
+    let body = gnx_base::pass::rewrite(expr, &mut |b, eq| {
         for r in eq.subexprs() {
             let body = gnx_transforms::util::region_body(r).map_err(io::Error::other)?;
             if has_bounded(body.view()) {

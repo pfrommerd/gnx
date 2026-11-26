@@ -3,7 +3,7 @@
 //! New region operations are emitted without the `state` attribute: once an
 //! expression is lowered, private cell state is just more carry.
 
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, Expr, SubExprBuilder, Var, VarInfo, register_op_interface};
 
 use crate::ad::jvp::{Dual, JvpRule, Linearized, Tangent, instantiate, jvp_expr, linearize};

@@ -36,7 +36,7 @@
 use std::cell::{Cell, RefCell};
 use std::ops;
 
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::util::TypedIn;
 use gnx_expr::{Eqn, Op, OpRef, Operation, Var, VarInfo};
 
@@ -169,7 +169,7 @@ impl<'a> Val<'a> {
     /// Operand axis `i` becomes result axis `mapping[i]` of `shape`.
     pub fn broadcast_in_dim(
         self,
-        shape: impl gnx_common::IntoShape,
+        shape: impl gnx_base::IntoShape,
         mapping: &[usize],
     ) -> TransformResult<Self> {
         self.map(|b, x| util::broadcast_in_dim(b, x, shape, mapping))
@@ -189,7 +189,7 @@ impl<'a> Val<'a> {
     }
 
     pub fn reshape(self, info: VarInfo) -> Self {
-        self.cx.emit(gnx_common::ops::reshape_op(), &[self], info)
+        self.cx.emit(gnx_base::ops::reshape_op(), &[self], info)
     }
 }
 
@@ -558,7 +558,7 @@ macro_rules! __ad_def {
         impl $crate::ad::JvpRule for $op {
             fn jvp(
                 &self,
-                b: &mut $crate::__private::gnx_common::pass::Builder,
+                b: &mut $crate::__private::gnx_base::pass::Builder,
                 eqn: $crate::__private::gnx_expr::Eqn<'_>,
                 inputs: &[$crate::ad::Dual],
                 captures: &[::std::vec::Vec<$crate::ad::Dual>],
@@ -586,7 +586,7 @@ macro_rules! __ad_def {
         impl $crate::ad::TransposeRule for $op {
             fn transpose(
                 &self,
-                b: &mut $crate::__private::gnx_common::pass::Builder,
+                b: &mut $crate::__private::gnx_base::pass::Builder,
                 eqn: $crate::__private::gnx_expr::Eqn<'_>,
                 operands: &[$crate::ad::Operand],
                 _captures: &[::std::vec::Vec<$crate::__private::gnx_expr::Var>],
@@ -613,7 +613,7 @@ macro_rules! __ad_def {
         impl $crate::ad::JvpRule for $op {
             fn jvp(
                 &self,
-                b: &mut $crate::__private::gnx_common::pass::Builder,
+                b: &mut $crate::__private::gnx_base::pass::Builder,
                 eqn: $crate::__private::gnx_expr::Eqn<'_>,
                 inputs: &[$crate::ad::Dual],
                 captures: &[::std::vec::Vec<$crate::ad::Dual>],

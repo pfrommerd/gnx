@@ -2,7 +2,7 @@ use crate::ops::indexing::{BoundsMode, GatherDimensions, GatherParameters, gathe
 use crate::ops::reduction::{ReduceOperation, ReduceWindowOperation, Window, reduce_window};
 use crate::ops::shape::pad;
 use crate::ops::{broadcast_in_dim_op, reshape_op};
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, Expr, Op, Var};
 
 use gnx_transforms::ad::jvp::{instantiate, jvp_expr};
@@ -37,7 +37,7 @@ impl ReduceJvpRule for NonAdditiveReduce {
             let indicator = b.emit1(
                 crate::ops::elementwise::eq_op(),
                 &[x, result],
-                info(&input_shape, gnx_common::DType::Bool),
+                info(&input_shape, gnx_base::DType::Bool),
             );
             let indicator = b.emit1(
                 crate::ops::dtype::convert_element_type_op(),
@@ -347,7 +347,7 @@ fn gather_window_winners(
         elementwise::{ge_op, le_op},
         select_op,
     };
-    use gnx_common::DType;
+    use gnx_base::DType;
     let input = b.info(operand).clone();
     let scalar = info(&[], dtype(&input)?);
     let index_scalar = info(&[], DType::I64);

@@ -1,4 +1,4 @@
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Op, VarInfo};
 use gnx_math::{
     ArrayInfo, DType, Shape,
@@ -15,7 +15,7 @@ fn program(op: Op, args: &[VarInfo], out: VarInfo) -> gnx_torch::TorchExecutable
     let args: Vec<_> = args.iter().map(|t| b.input(t.clone())).collect();
     let out = b.emit1(op, &args, out);
     futures_executor::block_on(
-        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+        TorchDevice::cpu(gnx_base::cache::Cache::in_memory())
             .unwrap()
             .compile(&b.finish(vec![out]).build().unwrap()),
     )
@@ -55,7 +55,7 @@ fn single_cpu_accepts_replicated_but_not_named_sharding() {
     );
     assert_eq!(
         futures_executor::block_on(
-            TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+            TorchDevice::cpu(gnx_base::cache::Cache::in_memory())
                 .unwrap()
                 .compile(&b.finish(vec![y]).build().unwrap())
         )
@@ -220,7 +220,7 @@ fn scan_replays_live_carry_and_stacks_outputs() {
         vec![body],
     );
     let p = futures_executor::block_on(
-        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+        TorchDevice::cpu(gnx_base::cache::Cache::in_memory())
             .unwrap()
             .compile(&b.finish(ys).build().unwrap()),
     )
@@ -286,7 +286,7 @@ fn cholesky_lower_factor_and_pivoted_qr_reconstruct_inputs() {
         vec![],
     );
     let p = futures_executor::block_on(
-        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+        TorchDevice::cpu(gnx_base::cache::Cache::in_memory())
             .unwrap()
             .compile(&b.finish(outputs).build().unwrap()),
     )
@@ -356,7 +356,7 @@ fn stable_lexicographic_sort_permutates_payloads() {
         vec![],
     );
     let p = futures_executor::block_on(
-        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+        TorchDevice::cpu(gnx_base::cache::Cache::in_memory())
             .unwrap()
             .compile(&b.finish(vec![outputs[2]]).build().unwrap()),
     )

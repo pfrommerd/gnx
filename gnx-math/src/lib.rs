@@ -1,4 +1,4 @@
-pub use gnx_common::{array, buffer};
+pub use gnx_base::{array, buffer};
 pub mod device;
 pub mod lax;
 pub mod np;

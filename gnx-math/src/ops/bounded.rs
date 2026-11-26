@@ -1,8 +1,8 @@
 //! Operations on uniform, symbol-bound axes. The execution boundary supplies
 //! actual extents as scalar operands before backend lowering.
 use super::*;
-gnx_common::unit_operations! { pub struct PadToBoundOperation; }
-gnx_common::array_operation!(PadToBoundOperation, "pad_to_bound", |eqn| arity(eqn, 1));
+gnx_base::unit_operations! { pub struct PadToBoundOperation; }
+gnx_base::array_operation!(PadToBoundOperation, "pad_to_bound", |eqn| arity(eqn, 1));
 
 #[derive(Archive, rkyv::Serialize)]
 #[rkyv(archived=AxisLengthOperation)]
@@ -14,7 +14,7 @@ impl AxisLengthOperation {
         self.axis.to_native() as usize
     }
 }
-gnx_common::array_operation!(AxisLengthOperation, "axis_length", |eqn| arity(eqn, 1));
+gnx_base::array_operation!(AxisLengthOperation, "axis_length", |eqn| arity(eqn, 1));
 
 fn invoke(op: Op, args: &[&crate::Array], info: crate::ArrayInfo) -> crate::Array {
     gnx_expr::Invocation::invoke(

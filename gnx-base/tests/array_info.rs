@@ -1,4 +1,4 @@
-use gnx_common::{ArrayInfo, DType, Dim, Shape};
+use gnx_base::{ArrayInfo, DType, Dim, Shape};
 
 #[test]
 fn array_info_displays_the_compact_dtype_before_the_shape() {

@@ -11,7 +11,7 @@ cuda = ["torch-sys/gnx-cuda"]
 futures-channel = "0.3"
 futures-executor = "0.3"
 rkyv = "0.8.18"
-gnx-common = { path = "../gnx-common" }
+gnx-base = { path = "../gnx-base" }
 gnx-expr = { path = "../gnx-expr" }
 gnx-math = { path = "../gnx-math" }
 gnx-transforms = { path = "../gnx-transforms" }

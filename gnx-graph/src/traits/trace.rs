@@ -1,6 +1,6 @@
 use anyhash::{Hash, HasherWrite};
 
-use gnx_common::{Array, ArrayInfo, ArrayRef};
+use gnx_base::{Array, ArrayInfo, ArrayRef};
 use gnx_expr::{CellKey, CellTrace, ObjectTracer, Trace, TracerKey};
 
 use super::hash::CoreHash;

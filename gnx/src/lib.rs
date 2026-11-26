@@ -28,7 +28,7 @@ pub use gnx_graph as graph;
 /// ```
 pub use gnx_nn as nn;
 
-pub use gnx_common::{cache, pass, store};
+pub use gnx_base::{cache, pass, store};
 
 pub use gnx_math::{array, buffer, device, lax, np, random, shard};
 /// Constructors for operations in expression macros.

@@ -18,7 +18,7 @@ impl DotGeneralOperation {
         native(&self.dimensions)
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     DotGeneralOperation,
     "dot_general",
     |op, eqn| {
@@ -80,7 +80,7 @@ impl ConvGeneralDilatedOperation {
         native(&self.parameters)
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     ConvGeneralDilatedOperation,
     "conv_general_dilated",
     |op, eqn| {
@@ -142,7 +142,7 @@ impl ScaledDotOperation {
         self.rhs_scaled
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     ScaledDotOperation,
     "scaled_dot",
     |op, eqn| {
@@ -181,7 +181,7 @@ impl RaggedDotGeneralOperation {
         native(&self.dimensions)
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     RaggedDotGeneralOperation,
     "ragged_dot_general",
     |_op, eqn| arity(eqn, 3),

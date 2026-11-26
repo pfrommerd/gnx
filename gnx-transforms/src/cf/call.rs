@@ -11,7 +11,7 @@ use gnx_expr::{
     Operation, Trace, TraceInput, Var, VarInfo,
 };
 
-gnx_common::unit_operations! {
+gnx_base::unit_operations! {
     pub struct CallOperation;
 }
 

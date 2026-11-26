@@ -1,4 +1,4 @@
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::VarInfo;
 use gnx_math::{
     ArrayInfo, DType, Shape,
@@ -43,7 +43,7 @@ fn maximum(shape: &[usize], axes: &[usize], window: Option<Window>) -> TorchExec
     }
     .unwrap();
     futures_executor::block_on(
-        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+        TorchDevice::cpu(gnx_base::cache::Cache::in_memory())
             .unwrap()
             .compile(&p.finish(out).build().unwrap()),
     )

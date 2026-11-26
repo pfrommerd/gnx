@@ -38,8 +38,8 @@ pub use batch::{BatchRule, Batched};
 
 use std::fmt;
 
-use gnx_common::ops::{indices, stored_indices};
-use gnx_common::pass::Builder;
+use gnx_base::ops::{indices, stored_indices};
+use gnx_base::pass::Builder;
 use gnx_expr::lower::LoweringContext;
 use gnx_expr::{
     Eqn, EqnSource, HEqn, LoweringError, Op, OpRef, Operation, Var, VarInfo, register_op_interface,
@@ -48,7 +48,7 @@ use rkyv::{Archive, Serialize};
 
 use crate::expand::Transform;
 use crate::{TransformResult, util};
-use gnx_common::ops::signature;
+use gnx_base::ops::signature;
 
 /// Builds a `map::map`, stored as a [`MapOperation`].
 #[derive(Archive, Serialize)]

@@ -1,13 +1,13 @@
 //! Reductions with a scalar combiner region.
 
-use gnx_common::ops::reduction::{array, check_region, emit};
-use gnx_common::{ArrayInfo, Shape, fixed_dims};
-use gnx_common::pass::Builder;
+use gnx_base::ops::reduction::{array, check_region, emit};
+use gnx_base::{ArrayInfo, Shape, fixed_dims};
+use gnx_base::pass::Builder;
 use gnx_expr::{ExprHandle, Var, VarInfo};
 
 use super::{Op, Result, native, signature, stored_exactly};
 
-pub use gnx_common::ops::reduction::{ReduceOperation, reduce, reduce_add_op, reduce_op};
+pub use gnx_base::ops::reduction::{ReduceOperation, reduce, reduce_add_op, reduce_op};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct Window {
@@ -30,7 +30,7 @@ impl ReduceWindowOperation {
     }
 }
 
-gnx_common::array_operation!(ReduceWindowOperation, "reduce_window", |op, eqn| {
+gnx_base::array_operation!(ReduceWindowOperation, "reduce_window", |op, eqn| {
     op.window().check(check_region(eqn)?)
 }, window;
     fn lower(&self, eqn: gnx_expr::HEqn<'_>, ctx: &mut gnx_expr::lower::LoweringContext<'_>) -> Result<()> {
@@ -119,7 +119,7 @@ fn arg_extreme(
     b: &mut Builder,
     input: Var,
     axis: usize,
-    index_dtype: gnx_common::DType,
+    index_dtype: gnx_base::DType,
     max: bool,
 ) -> Result<Var> {
     use super::{
@@ -128,7 +128,7 @@ fn arg_extreme(
         elementwise::{eq_op, gt_op, lt_op, ne_op},
         select_op,
     };
-    use gnx_common::DType;
+    use gnx_base::DType;
     let x = array(b.info(input))?;
     let shape = fixed_dims(&x).map_err(|_| signature("arg reduction requires fixed dimensions"))?;
     if shape.get(axis).is_none_or(|&dim| dim == 0) {
@@ -183,7 +183,7 @@ pub fn argmin(
     b: &mut Builder,
     input: Var,
     axis: usize,
-    index_dtype: gnx_common::DType,
+    index_dtype: gnx_base::DType,
 ) -> Result<Var> {
     arg_extreme(b, input, axis, index_dtype, false)
 }
@@ -191,7 +191,7 @@ pub fn argmax(
     b: &mut Builder,
     input: Var,
     axis: usize,
-    index_dtype: gnx_common::DType,
+    index_dtype: gnx_base::DType,
 ) -> Result<Var> {
     arg_extreme(b, input, axis, index_dtype, true)
 }

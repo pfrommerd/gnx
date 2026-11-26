@@ -12,7 +12,7 @@ impl IotaOperation {
         count(self.axis)
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     IotaOperation,
     "iota",
     |op, eqn| {
@@ -46,7 +46,7 @@ impl ConstantOperation {
         self.bits.to_native()
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     ConstantOperation,
     "constant",
     |_op, eqn| {
@@ -75,7 +75,7 @@ impl ScalarBoundOperation {
         self.lower
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     ScalarBoundOperation,
     "scalar_bound",
     |_op, eqn| {

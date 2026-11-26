@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use gnx_common::DType;
+use gnx_base::DType;
 use gnx_expr::lower::{LoweringContext, RegionArgument};
 use gnx_expr::{
     ApplyRegion, Capture, CellAccess, Eqn, HEqn, Invocation, Kind, ObjectTracer, Op, Operation,

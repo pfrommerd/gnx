@@ -1,8 +1,8 @@
 use super::{Op, arity};
 
 pub use super::{add_op as add, mul_op as mul};
-pub use gnx_common::ops::{DivOperation, RemOperation, SubOperation, div_op, rem_op, sub_op};
-pub use gnx_common::ops::{div_op as div, rem_op as rem, sub_op as sub};
+pub use gnx_base::ops::{DivOperation, RemOperation, SubOperation, div_op, rem_op, sub_op};
+pub use gnx_base::ops::{div_op as div, rem_op as rem, sub_op as sub};
 
 simple_operations! {
     NegOperation, neg_op, neg, "neg", 1;
@@ -73,7 +73,7 @@ impl RoundOperation {
         self.method
     }
 }
-gnx_common::array_operation!(RoundOperation, "round", |eqn| arity(eqn, 1));
+gnx_base::array_operation!(RoundOperation, "round", |eqn| arity(eqn, 1));
 pub fn round(method: RoundingMethod) -> Op {
     Op::new(Round { method })
 }
@@ -88,7 +88,7 @@ impl IntegerPowOperation {
         self.exponent.to_native()
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     IntegerPowOperation,
     "integer_pow",
     |op, eqn| {
@@ -101,10 +101,10 @@ pub fn integer_pow(exponent: i64) -> Op {
     Op::new(IntegerPow { exponent })
 }
 
-gnx_common::unit_operations! {
+gnx_base::unit_operations! {
     pub struct PolynomialOperation;
 }
-gnx_common::array_operation!(PolynomialOperation, "polynomial", |eqn| {
+gnx_base::array_operation!(PolynomialOperation, "polynomial", |eqn| {
     if eqn.inputs().is_empty() {
         return Err(super::signature("polynomial needs an evaluation point"));
     }

@@ -24,7 +24,7 @@ impl<'src, 'buf> Text<'src, 'buf> {
         }
     }
 
-    pub fn visit<V: gnx_common::DataVisitor<'src>, E: gnx_common::Error>(
+    pub fn visit<V: gnx_base::DataVisitor<'src>, E: gnx_base::Error>(
         self,
         visitor: V,
     ) -> std::result::Result<V::Value, E> {

@@ -1,7 +1,7 @@
 use crate::util::impl_lifetime_free;
 use crate::*;
 
-use gnx_common::{Array, ArrayInfo, ArrayRef};
+use gnx_base::{Array, ArrayInfo, ArrayRef};
 use gnx_expr::trace::{CellTrace, CellTracer, Generic, ObjectTracer, Tracer};
 
 use super::trace::{cell_ref, into_cell_ref, into_value_ref, value_ref};

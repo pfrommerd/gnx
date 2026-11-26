@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use gnx_common::{ArrayInfo, DType, Shape};
+use gnx_base::{ArrayInfo, DType, Shape};
 use gnx_expr::lower::{FixedRegion, LoweringContext, RegionCell, StructuredRegion};
 use gnx_expr::{
     Eqn, Expr, HEqn, HExpr, HParam, Kind, LoweringError, ObjectTracer, Op, Operation, Var, VarInfo,

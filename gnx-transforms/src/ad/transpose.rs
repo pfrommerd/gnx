@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, EqnSource, Expr, Var, VarInfo};
 
 use super::DiffParameters;

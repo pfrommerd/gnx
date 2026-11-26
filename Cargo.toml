@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "gnx",
-    "gnx-common",
+    "gnx-base",
     "gnx-cuda-build",
     "gnx-transforms",
     "gnx-derive",

@@ -1,6 +1,6 @@
 use std::io;
 
-use gnx_common::ops::reduction::ReduceAddOperation;
+use gnx_base::ops::reduction::ReduceAddOperation;
 use gnx_expr::{Eqn, Expr};
 use gnx_math::ops::reduction::{ReduceOperation, ReduceWindowOperation};
 use xla::{ElementType, XlaBuilder, XlaComputation, XlaOp};

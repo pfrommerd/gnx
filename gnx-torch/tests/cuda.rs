@@ -1,5 +1,5 @@
 mod support;
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Value, VarInfo};
 use gnx_math::{
     ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, MemoryLocation, Shape, TransferPolicy,
@@ -10,7 +10,7 @@ use tch::{Device, Tensor};
 
 #[test]
 fn unavailable_cuda_or_invalid_ordinal_returns_an_error() {
-    let err = TorchDevice::cuda(usize::MAX, gnx_common::cache::Cache::in_memory())
+    let err = TorchDevice::cuda(usize::MAX, gnx_base::cache::Cache::in_memory())
         .err()
         .expect("invalid ordinal");
     assert_eq!(
@@ -25,8 +25,8 @@ fn unavailable_cuda_or_invalid_ordinal_returns_an_error() {
 #[test]
 #[ignore = "requires a visible NVIDIA GPU and CUDA-enabled LibTorch"]
 fn cuda_import_compile_replay_and_readback() {
-    let d = TorchDevice::cuda(0, gnx_common::cache::Cache::in_memory()).unwrap();
-    let same = TorchDevice::cuda(0, gnx_common::cache::Cache::in_memory()).unwrap();
+    let d = TorchDevice::cuda(0, gnx_base::cache::Cache::in_memory()).unwrap();
+    let same = TorchDevice::cuda(0, gnx_base::cache::Cache::in_memory()).unwrap();
     assert_eq!(d.id(), same.id());
     let info = ArrayInfo::new(Shape::fixed([3]), DType::F32);
     let ty = VarInfo::new(info.clone());

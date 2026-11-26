@@ -97,9 +97,9 @@ fn fft_weights<'a>(cx: &'a Ctx<'a>, value: Val<'a>, size: usize) -> TransformRes
     let ordinal = cx.emit(
         iota(shape.len() - 1),
         &[],
-        info(&shape, gnx_common::DType::I64),
+        info(&shape, gnx_base::DType::I64),
     );
-    let bool_shape = info(&shape, gnx_common::DType::Bool);
+    let bool_shape = info(&shape, gnx_base::DType::Bool);
     let first = cx.emit(
         eq_op(),
         &[ordinal, ordinal.zeros_like()],
@@ -155,7 +155,7 @@ deflinear!(FftOperation, |cx, ct, [input]| {
 });
 
 use crate::ops::{elementwise::sub_op, linalg::CustomLinearSolveOperation};
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, Var};
 use gnx_transforms::ad::jvp::{instantiate, jvp_expr};
 use gnx_transforms::ad::{Dual, JvpRule, Operand, Tangent, TransposeRule};
@@ -324,7 +324,7 @@ fn shift_group<'a>(
 fn conv_cast<'a>(
     cx: &'a Ctx<'a>,
     value: Val<'a>,
-    ty: gnx_common::DType,
+    ty: gnx_base::DType,
 ) -> TransformResult<Val<'a>> {
     if dtype(&value.info())? == ty {
         return Ok(value);

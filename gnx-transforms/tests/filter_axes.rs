@@ -1,4 +1,4 @@
-use gnx_common::{Array, ArrayInfo, DType, Shape};
+use gnx_base::{Array, ArrayInfo, DType, Shape};
 use gnx_expr::{TraceContext, Tracer, VarInfo};
 use gnx_graph::{Filter, Graph, KeyRef, Leaf, Of, util::dag};
 use gnx_transforms::on_axis;
@@ -150,7 +150,7 @@ fn macro_accepts_filters_and_ad_distinguishes_exact_from_prefix() {
 
 #[test]
 fn grad_rejects_unresolved_cell_aliases_instead_of_assuming_distinct_inputs() {
-    use gnx_common::ArrayRef;
+    use gnx_base::ArrayRef;
     use gnx_expr::CellTracer;
     let _scope = TraceContext::enter();
     let input = || {

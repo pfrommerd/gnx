@@ -1,6 +1,6 @@
-use gnx_common::ops::reduction::{ReduceAddOperation, ReduceOperation, reduce_add};
-use gnx_common::ops::{AddOperation, broadcast_in_dim_op};
-use gnx_common::pass::Builder;
+use gnx_base::ops::reduction::{ReduceAddOperation, ReduceOperation, reduce_add};
+use gnx_base::ops::{AddOperation, broadcast_in_dim_op};
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, Expr, Var};
 
 use crate::ad::{Dual, JvpRule, Operand, Tangent, TransposeRule, def::deflinear};

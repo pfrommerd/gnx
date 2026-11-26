@@ -1,6 +1,6 @@
 // Reference values generated with jax.lax and jax.jvp on CPU (JAX 0.12.0.1).
 
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Op, Value, VarInfo};
 use gnx_math::ops::{dtype, elementwise, special};
 use gnx_math::{ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, Shape, TransferPolicy};
@@ -90,7 +90,7 @@ fn check(
 
 #[test]
 fn elementwise_values_and_differentials_match_jax_cpu() {
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     check(
         &device,
         elementwise::neg(),

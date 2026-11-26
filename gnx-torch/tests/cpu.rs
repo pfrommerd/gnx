@@ -1,5 +1,5 @@
 use futures_executor::block_on;
-use gnx_common::ops::reduction::reduce_add_op;
+use gnx_base::ops::reduction::reduce_add_op;
 use gnx_expr::{EqnSource, ExprBuilder, Value, VarInfo, VarScope};
 use gnx_math::{
     ArrayInfo, DType, DataHandle, Device, ExecOpts, HostBuffer, Shape, TransferPolicy, ops::*,
@@ -49,7 +49,7 @@ fn tensor_stream_round_trip_across_native_bridge() {
 
 #[test]
 fn replay_with_fresh_captures_and_inputs() {
-    let d = TorchDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let d = TorchDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let mut vars = VarScope::new();
     let [x, y, s, p] = std::array::from_fn(|_| vars.create_var());
     let t = ty(&[2]);
@@ -87,7 +87,7 @@ fn replay_with_fresh_captures_and_inputs() {
 
 #[test]
 fn device_executes_shape_ops_and_reduction() {
-    let d = TorchDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let d = TorchDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let mut vars = VarScope::new();
     let [x, t, r, b, s] = std::array::from_fn(|_| vars.create_var());
     let body = ExprBuilder::from_parts(
@@ -121,9 +121,9 @@ fn device_executes_shape_ops_and_reduction() {
 
 #[test]
 fn unsupported_live_op_fails_but_dead_op_is_pruned() {
-    let d = TorchDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let d = TorchDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let mut vars = VarScope::new();
-    gnx_common::unit_operations! {
+    gnx_base::unit_operations! {
         struct Unknown;
     }
     impl gnx_expr::Operation for Unknown {
@@ -132,7 +132,7 @@ fn unsupported_live_op_fails_but_dead_op_is_pruned() {
         }
     }
     gnx_expr::dialect! { dyn gnx_expr::Operation, "array" => { "unknown" => Unknown } }
-    assert_eq!(gnx_common::ops::array_dialect(), "array");
+    assert_eq!(gnx_base::ops::array_dialect(), "array");
     let [x, unknown, one] = std::array::from_fn(|_| vars.create_var());
     let body = |result| {
         ExprBuilder::from_parts(

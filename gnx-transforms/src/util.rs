@@ -1,10 +1,10 @@
 //! Array metadata helpers and typed emitters shared by transformation rules.
 
-use gnx_common::ops::{
+use gnx_base::ops::{
     add_op, broadcast_in_dim_op, mul_op, rev_op, select_op, transpose_op, zeros_op,
 };
-use gnx_common::pass::Builder;
-use gnx_common::{ArrayInfo, DType, IntoShape, fixed_dims};
+use gnx_base::pass::Builder;
+use gnx_base::{ArrayInfo, DType, IntoShape, fixed_dims};
 use gnx_expr::{Eqn, ExprHandle, Ref, SubExprBuilder, Var, VarInfo};
 
 use crate::{TransformError, TransformResult};
@@ -84,7 +84,7 @@ pub fn broadcast_in_dim(
 }
 
 pub fn reduce_sum(b: &mut Builder, x: Var, axes: &[usize]) -> TransformResult<Var> {
-    Ok(gnx_common::ops::reduction::reduce_add(b, x, axes)?)
+    Ok(gnx_base::ops::reduction::reduce_add(b, x, axes)?)
 }
 
 /// Result axis `i` is operand axis `perm[i]`.

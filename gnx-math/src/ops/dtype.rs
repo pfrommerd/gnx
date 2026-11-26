@@ -23,7 +23,7 @@ impl ReducePrecisionOperation {
         self.mantissa_bits
     }
 }
-gnx_common::array_operation!(ReducePrecisionOperation, "reduce_precision", |eqn| arity(
+gnx_base::array_operation!(ReducePrecisionOperation, "reduce_precision", |eqn| arity(
     eqn, 1
 ));
 pub fn reduce_precision(exponent_bits: u8, mantissa_bits: u8) -> Op {

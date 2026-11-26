@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use futures_executor::block_on;
-use gnx_common::cache::{Cache, CacheError, Key};
-use gnx_common::pass::Builder;
-use gnx_common::store::{GetResultPayload, ObjectStoreExt, Path, Store};
+use gnx_base::cache::{Cache, CacheError, Key};
+use gnx_base::pass::Builder;
+use gnx_base::store::{GetResultPayload, ObjectStoreExt, Path, Store};
 use gnx_expr::{Op, Operation, RootExpr, SubExprBuilder, VarInfo, dialect};
 use rkyv::{Archive, Portable, Serialize};
 

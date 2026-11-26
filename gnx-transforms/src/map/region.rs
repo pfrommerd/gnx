@@ -3,7 +3,7 @@
 //!
 //! [`map`]: super::map
 
-use gnx_common::ops::signature;
+use gnx_base::ops::signature;
 use gnx_expr::{ApplyRegion, Invocation, Kind, LoweringError, Trace};
 
 use super::MapParameters;

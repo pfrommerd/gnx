@@ -1,4 +1,4 @@
-use gnx_common::{
+use gnx_base::{
     DataVisitor, Deserialize, Deserializer, Error, Expecting, MapAccess, SeqAccess, Serialize,
     Serializer,
 };

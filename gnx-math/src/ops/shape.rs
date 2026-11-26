@@ -15,7 +15,7 @@ impl ConcatenateOperation {
         count(self.axis)
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     ConcatenateOperation,
     "concatenate",
     |op, eqn| {
@@ -53,7 +53,7 @@ impl PadOperation {
         .collect()
     }
 }
-gnx_common::array_operation!(
+gnx_base::array_operation!(
     PadOperation,
     "pad",
     |op, eqn| {
@@ -73,8 +73,8 @@ pub fn pad(padding: &[(i64, i64, usize)]) -> Op {
     })
 }
 
-use gnx_common::{ArrayInfo, DType, Shape, fixed_dims};
-use gnx_common::pass::Builder;
+use gnx_base::{ArrayInfo, DType, Shape, fixed_dims};
+use gnx_base::pass::Builder;
 use gnx_expr::{Var, VarInfo};
 
 fn metadata(b: &Builder, operand: Var) -> Result<(Vec<usize>, DType)> {

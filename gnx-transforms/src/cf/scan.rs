@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use gnx_common::{ArrayInfo, Dim};
+use gnx_base::{ArrayInfo, Dim};
 use gnx_expr::lower::{LoweringContext, RegionArgument};
 use gnx_expr::{
     Capture, Eqn, HEqn, Invocation, Kind, ObjectTracer, Op, OpRef, Operation, Trace, VarInfo,
@@ -100,7 +100,7 @@ pub(super) fn slice(info: &VarInfo) -> RegionResult<(usize, VarInfo)> {
     Ok((
         *length,
         VarInfo::new(ArrayInfo::new(
-            tail.iter().copied().collect::<gnx_common::Shape>(),
+            tail.iter().copied().collect::<gnx_base::Shape>(),
             array.dtype(),
         )),
     ))
@@ -109,7 +109,7 @@ pub(super) fn slice(info: &VarInfo) -> RegionResult<(usize, VarInfo)> {
 fn stack(info: &VarInfo, length: usize) -> RegionResult<VarInfo> {
     let array =
         ArrayInfo::from_info(info).ok_or_else(|| signature("scan step outputs must be arrays"))?;
-    let shape: gnx_common::Shape = std::iter::once(Dim::Fixed(length))
+    let shape: gnx_base::Shape = std::iter::once(Dim::Fixed(length))
         .chain(array.shape().dims().iter().copied())
         .collect();
     Ok(VarInfo::new(ArrayInfo::new(shape, array.dtype())))

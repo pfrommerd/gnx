@@ -3,7 +3,7 @@
 //! Once an expression is lowered, private cell state is part of the carry.
 //! New region operations start with a private state count of zero.
 
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, Expr, ExprBuilder, Ref, SubExprBuilder, Var, register_op_interface};
 
 use crate::cf::{

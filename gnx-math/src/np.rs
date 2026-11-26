@@ -11,7 +11,7 @@
 //! ```
 
 use crate::{Array, lax};
-use gnx_common::ops::signature;
+use gnx_base::ops::signature;
 use gnx_expr::LoweringError;
 
 pub use lax::{

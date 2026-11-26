@@ -1,5 +1,5 @@
 //! Expand static regions into tensor equations before checking Torch support.
-use gnx_common::pass::{Pass, PassError, rewrite};
+use gnx_base::pass::{Pass, PassError, rewrite};
 use gnx_expr::{RootExpr, Var};
 use gnx_math::ops::{linalg::CustomLinearSolveOperation, shape, zeros_op};
 use gnx_transforms::cf::{CallOperation, ScanOperation};
@@ -81,6 +81,6 @@ impl Pass for StaticRegions {
     }
 }
 
-impl gnx_common::anyhash::Hash for StaticRegions {
-    fn hash<H: gnx_common::anyhash::HasherWrite>(&self, _: &mut H) {}
+impl gnx_base::anyhash::Hash for StaticRegions {
+    fn hash<H: gnx_base::anyhash::HasherWrite>(&self, _: &mut H) {}
 }

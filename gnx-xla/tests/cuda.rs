@@ -11,12 +11,12 @@ fn cuda_device_transfers_evaluates_and_reuses_buffers() -> Result<(), Box<dyn st
     };
     use gnx_xla::XlaDevice;
 
-    let gpu = XlaDevice::cuda(0, gnx_common::cache::Cache::in_memory())?;
+    let gpu = XlaDevice::cuda(0, gnx_base::cache::Cache::in_memory())?;
     assert_eq!(gpu.platform(), "cuda");
     assert_eq!(gpu.ordinal(), 0);
     assert_eq!(
         gpu.id(),
-        XlaDevice::cuda(0, gnx_common::cache::Cache::in_memory())?.id()
+        XlaDevice::cuda(0, gnx_base::cache::Cache::in_memory())?.id()
     );
     let bytes = [2i32, -3, 7].map(i32::to_le_bytes).concat();
     let host = DataHandle::new(HostBuffer::copy_from_slice(

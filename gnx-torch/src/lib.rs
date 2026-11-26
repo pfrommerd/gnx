@@ -6,8 +6,8 @@ use std::future::Future;
 use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use gnx_common::cache::Cache;
-use gnx_common::pass::{
+use gnx_base::cache::Cache;
+use gnx_base::pass::{
     CheckSupported, Dce, Pass, PassError, Pipeline, PipelineError, RuntimePipeline,
 };
 use gnx_expr::{RootExpr, Value};
@@ -419,8 +419,8 @@ pub struct TraceTorch {
     pub joint: bool,
 }
 
-impl gnx_common::anyhash::Hash for TraceTorch {
-    fn hash<H: gnx_common::anyhash::HasherWrite>(&self, state: &mut H) {
+impl gnx_base::anyhash::Hash for TraceTorch {
+    fn hash<H: gnx_base::anyhash::HasherWrite>(&self, state: &mut H) {
         // Tracing runs on the target, and a module may depend on it.
         state.write_str(&format!("{:?}", self.target));
         state.write_u8(self.joint as u8);

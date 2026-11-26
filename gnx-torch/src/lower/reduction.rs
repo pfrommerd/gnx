@@ -1,5 +1,5 @@
 use super::{TorchLowering, axes, emit_results, invalid, layout, metadata};
-use gnx_common::ops::reduction::ReduceOperation;
+use gnx_base::ops::reduction::ReduceOperation;
 use gnx_expr::Eqn;
 use gnx_math::ops::reduction::ReduceWindowOperation;
 use std::io;

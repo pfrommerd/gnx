@@ -26,7 +26,7 @@ fn words(device: &XlaDevice, x: Array) -> Vec<u32> {
 
 #[test]
 fn reference_vectors() {
-    let d = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let d = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     // JAX 0.4.38, jax_threefry_partitionable=True, seed 0, key_data(split(key, 2)).
     let k = random::key(0, ThreeFry2x32);
     let split = random::split(&k, 2);
@@ -58,7 +58,7 @@ fn reference_vectors() {
 
 #[test]
 fn sample_dtypes_and_named_state() {
-    let d = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let d = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let root = random::key(42, Philox4x32);
     for dtype in [DType::F16, DType::BF16, DType::F32, DType::F64] {
         let u = random::uniform(&root, (32, 32), dtype);

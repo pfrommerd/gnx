@@ -1,7 +1,7 @@
 use crate::ops::elementwise::neg_op;
 use crate::ops::indexing::*;
 use crate::ops::mul_op;
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, Var};
 
 use gnx_transforms::ad::jvp::instantiate;
@@ -365,7 +365,7 @@ fn equal(b: &mut Builder, a: Var, c: Var) -> TransformResult<Var> {
     Ok(b.emit1(
         crate::ops::elementwise::eq_op(),
         &[a, c],
-        info(&shape, gnx_common::DType::Bool),
+        info(&shape, gnx_base::DType::Bool),
     ))
 }
 
@@ -432,7 +432,7 @@ fn replacement(
     p: &ScatterParameters,
 ) -> TransformResult<Vec<Dual>> {
     use crate::ops::{add_op, creation::iota, ones_op, reshape_op};
-    use gnx_common::DType;
+    use gnx_base::DType;
     let output = b.info(x.primal).clone();
     let x_shape = dims(&output)?;
     let update_shape = dims(b.info(u.primal))?;

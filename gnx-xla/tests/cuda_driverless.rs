@@ -6,9 +6,9 @@
 #[ignore = "requires a managed CUDA build with the NVIDIA driver absent"]
 fn cpu_available_without_driver() -> std::io::Result<()> {
     use gnx_xla::XlaDevice;
-    let cpu = XlaDevice::cpu(gnx_common::cache::Cache::in_memory())?;
+    let cpu = XlaDevice::cpu(gnx_base::cache::Cache::in_memory())?;
     assert_eq!(cpu.platform(), "cpu");
-    let err = XlaDevice::cuda(0, gnx_common::cache::Cache::in_memory())
+    let err = XlaDevice::cuda(0, gnx_base::cache::Cache::in_memory())
         .expect_err("test requires no CUDA driver");
     assert!(
         err.to_string().contains("could not load the NVIDIA driver"),

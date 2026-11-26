@@ -5,8 +5,8 @@ use std::borrow::Cow;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use gnx_common::Array;
-use gnx_common::ops::{eye_op, reshape_op};
+use gnx_base::Array;
+use gnx_base::ops::{eye_op, reshape_op};
 use gnx_expr::{Kind, ObjectTracer, Trace, VarInfo};
 use gnx_graph::{All, Filter};
 use gnx_graph::{Graph, GraphEq, GraphHash, Leaf, OwnedGraph};

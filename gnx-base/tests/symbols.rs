@@ -1,4 +1,4 @@
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::lower::LoweringContext;
 use gnx_expr::{
     Capture, CaptureError, HEqn, HExprBuilder, HRootExpr, Info, InputId, InputSpec, Invocation,

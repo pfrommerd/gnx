@@ -1,5 +1,5 @@
 mod support;
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::VarInfo;
 use gnx_math::{ArrayInfo, DType, Shape, ops::linalg::tridiagonal_solve};
 use gnx_torch::TorchDevice;
@@ -13,7 +13,7 @@ fn compile(dims: &[usize], cols: usize, k: DType, perturb: bool) -> CModule {
     let r = b.input(rhs.clone());
     let x = b.emit1(tridiagonal_solve(perturb), &[d[0], d[1], d[2], r], rhs);
     let p = futures_executor::block_on(
-        TorchDevice::cpu(gnx_common::cache::Cache::in_memory())
+        TorchDevice::cpu(gnx_base::cache::Cache::in_memory())
             .unwrap()
             .compile(&b.finish(vec![x]).build().unwrap()),
     )

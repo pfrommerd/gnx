@@ -1,5 +1,5 @@
 use super::{invalid, unsupported};
-use gnx_common::ops::reduction::ReduceAddOperation;
+use gnx_base::ops::reduction::ReduceAddOperation;
 use gnx_expr::{Eqn, Expr, ExprBuilder, VarInfoRef};
 use gnx_math::{
     ArrayInfo, ArrayInfoData, DType, Dim,
@@ -238,7 +238,7 @@ pub(super) fn trace(expr: Expr<'_>, device: tch::Device, joint: bool) -> io::Res
             )
             .build()
             .map_err(invalid)?;
-            let body = gnx_common::pass::dce(body.view())
+            let body = gnx_base::pass::dce(body.view())
                 .build()
                 .map_err(invalid)?;
             let mut error = None;

@@ -1,7 +1,7 @@
 //! Exercise each load order in a fresh process; both devices stay live in each child.
 #![cfg(all(target_os = "linux", target_arch = "x86_64", feature = "qwen-example"))]
 
-use gnx_common::pass::Builder;
+use gnx_base::pass::Builder;
 use gnx_expr::{Value, VarInfo};
 use gnx_math::{
     ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, Shape, TransferPolicy,

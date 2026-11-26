@@ -2,7 +2,7 @@
 //! Binary arithmetic requires matching shapes and dtypes; use [`crate::np`] for broadcasting.
 
 use crate::{Array, ArrayInfo, DType, Dim, IntoShape, Shape, ops};
-use gnx_common::{
+use gnx_base::{
     invoke_array,
     ops::{signature, strictly_increasing},
 };

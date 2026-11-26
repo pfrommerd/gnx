@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use gnx_common::DType;
+use gnx_base::DType;
 use gnx_expr::lower::{LoweringContext, RegionArgument};
 use gnx_expr::{Capture, Eqn, HEqn, Invocation, Kind, ObjectTracer, Op, Operation, Trace};
 use rkyv::{Archive, Serialize};
@@ -33,19 +33,19 @@ pub fn while_op() -> Op {
 /// Trace a while loop with one array carry. The body can also update captured
 /// `ArrayRef`s; these become loop state just as in the capture-level API.
 pub fn while_array(
-    carry: &gnx_common::Array,
-    predicate: impl FnOnce(&gnx_common::Array) -> gnx_common::Array,
-    body: impl FnOnce(&gnx_common::Array) -> gnx_common::Array,
-) -> crate::TransformResult<gnx_common::Array> {
-    fn array(t: Trace) -> gnx_common::Array {
+    carry: &gnx_base::Array,
+    predicate: impl FnOnce(&gnx_base::Array) -> gnx_base::Array,
+    body: impl FnOnce(&gnx_base::Array) -> gnx_base::Array,
+) -> crate::TransformResult<gnx_base::Array> {
+    fn array(t: Trace) -> gnx_base::Array {
         gnx_expr::Tracer::<gnx_expr::Generic>::from(t)
-            .try_cast::<gnx_common::Array>()
+            .try_cast::<gnx_base::Array>()
             .expect("array carry")
             .into()
     }
     fn region(
         carry: &Trace,
-        f: impl FnOnce(&gnx_common::Array) -> gnx_common::Array,
+        f: impl FnOnce(&gnx_base::Array) -> gnx_base::Array,
     ) -> crate::TransformResult<Capture> {
         crate::traced::trace_region(std::slice::from_ref(carry.info()), |inputs| {
             Ok(vec![

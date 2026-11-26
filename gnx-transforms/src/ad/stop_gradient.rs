@@ -1,9 +1,9 @@
 use std::fmt;
 
-use gnx_common::Array;
+use gnx_base::Array;
 use gnx_expr::{Eqn, Invocation, LoweringError, Op, Operation};
 
-gnx_common::unit_operations! {
+gnx_base::unit_operations! {
     pub struct StopGradientOperation;
 }
 

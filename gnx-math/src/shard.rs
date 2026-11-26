@@ -5,7 +5,7 @@ use std::fmt;
 
 use gnx_expr::{Eqn, Invocation, LoweringError, Op, OpRef, Operation};
 
-use gnx_common::{Array, ArrayInfo};
+use gnx_base::{Array, ArrayInfo};
 
 /// Builds a `shard::constraint`, stored as a [`Constraint`].
 #[derive(rkyv::Archive, rkyv::Serialize)]
@@ -25,7 +25,7 @@ impl Constraint {
     }
 }
 
-gnx_common::unit_operations! {
+gnx_base::unit_operations! {
     pub struct Replicate;
 }
 

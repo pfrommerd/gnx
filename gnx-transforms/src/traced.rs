@@ -2,7 +2,7 @@
 //! [`crate::ad`]): split argument graphs into tracer leaves, trace the wrapped
 //! function once per signature, and rebuild result graphs.
 
-use gnx_common::ops::{ones_op, zeros_op};
+use gnx_base::ops::{ones_op, zeros_op};
 use gnx_expr::{
     Capture, CellTrace, Invocation, Kind, ObjectTracer, Op, Trace, TraceContext, VarInfo,
 };

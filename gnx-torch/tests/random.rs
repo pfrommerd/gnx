@@ -7,7 +7,7 @@ use gnx_torch::TorchDevice;
 
 #[test]
 fn torch_key_vectors_and_high_unsigned_words() {
-    let device = TorchDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = TorchDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let read = |x: Array| {
         futures_executor::block_on(device.eval(
             &x,

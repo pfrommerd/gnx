@@ -839,7 +839,7 @@ dependencies = [
  "castaway",
  "clap",
  "futures-executor",
- "gnx-common",
+ "gnx-base",
  "gnx-expr",
  "gnx-graph",
  "gnx-io",
@@ -857,7 +857,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "gnx-common"
+name = "gnx-base"
 version = "0.1.0"
 dependencies = [
  "anyhash",
@@ -912,7 +912,7 @@ name = "gnx-graph"
 version = "0.1.0"
 dependencies = [
  "anyhash",
- "gnx-common",
+ "gnx-base",
  "gnx-derive",
  "gnx-expr",
  "indexmap",
@@ -925,7 +925,7 @@ name = "gnx-io"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "gnx-common",
+ "gnx-base",
  "ordered-float",
  "paste",
 ]
@@ -934,7 +934,7 @@ dependencies = [
 name = "gnx-math"
 version = "0.1.0"
 dependencies = [
- "gnx-common",
+ "gnx-base",
  "gnx-expr",
  "gnx-transforms",
  "rkyv",
@@ -956,7 +956,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "gnx",
- "gnx-common",
+ "gnx-base",
  "gnx-expr",
  "gnx-math",
  "gnx-transforms",
@@ -971,7 +971,7 @@ version = "0.1.0"
 dependencies = [
  "dashmap",
  "futures-executor",
- "gnx-common",
+ "gnx-base",
  "gnx-derive",
  "gnx-expr",
  "gnx-graph",
@@ -988,7 +988,7 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "gnx",
- "gnx-common",
+ "gnx-base",
  "gnx-expr",
  "gnx-graph",
  "gnx-math",

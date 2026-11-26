@@ -1,4 +1,4 @@
-pub use gnx_common::{Error, GraphContext, GraphId, Key, KeyRef, Path};
+pub use gnx_base::{Error, GraphContext, GraphId, Key, KeyRef, Path};
 pub use gnx_derive::{Graph, Leaf, impl_leaf};
 
 mod filters;

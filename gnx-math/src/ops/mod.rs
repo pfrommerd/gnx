@@ -1,12 +1,12 @@
-pub use gnx_common::fixed_dims;
-pub use gnx_common::ops::{
+pub use gnx_base::fixed_dims;
+pub use gnx_base::ops::{
     AddOperation, BroadcastInDimOperation, EyeOperation, MulOperation, OnesOperation,
     ReshapeOperation, RevOperation, SelectOperation, TransposeOperation, ZerosOperation, add_op,
     array, broadcast_in_dim_op, eye_op, mul_op, ones_op, reshape_op, rev_op, select_op,
     transpose_op, zeros_op,
 };
 
-use gnx_common::ops::{arity, result_rank, signature, strictly_increasing};
+use gnx_base::ops::{arity, result_rank, signature, strictly_increasing};
 use gnx_expr::{Eqn, Op};
 use rkyv::rancor::{Panic, Strategy};
 use rkyv::rend::u64_le;
@@ -38,9 +38,9 @@ fn stored_exactly(exact: bool) {
 
 macro_rules! simple_operations {
     ($($ty:ident, $ctor:ident, $alias:ident, $name:literal, $arity:literal;)*) => {$(
-        gnx_common::unit_operations! { pub struct $ty; }
+        gnx_base::unit_operations! { pub struct $ty; }
 
-        gnx_common::array_operation!($ty, $name, |eqn| arity(eqn, $arity));
+        gnx_base::array_operation!($ty, $name, |eqn| arity(eqn, $arity));
 
         pub fn $ctor() -> Op {
             Op::new($ty)

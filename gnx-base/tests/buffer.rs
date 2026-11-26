@@ -1,4 +1,4 @@
-use gnx_common::{
+use gnx_base::{
     AllocationId, AllocationRef, Array, ArrayInfo, ByteOrder, DType, DataHandle, DlpackRequest,
     HostBuffer, HostId, Lease, LocalAllocations, MemoryLocation, MemoryView, OwnerId, Shape, Shard,
     ShardStorage, StridedLayout, TransferPolicy,
@@ -38,9 +38,9 @@ fn packed_host_buffer_rejects_invalid_storage() {
     let boolean = ArrayInfo::new(Shape::fixed([1]), DType::Bool);
     assert!(HostBuffer::new(boolean, vec![2]).is_err());
     let dynamic = ArrayInfo::new(
-        [gnx_common::Dim::Dynamic]
+        [gnx_base::Dim::Dynamic]
             .into_iter()
-            .collect::<gnx_common::Shape>(),
+            .collect::<gnx_base::Shape>(),
         DType::U8,
     );
     assert!(HostBuffer::new(dynamic, vec![]).is_err());

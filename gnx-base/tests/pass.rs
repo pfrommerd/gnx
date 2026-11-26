@@ -2,10 +2,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_executor::block_on;
-use gnx_common::cache::Cache;
-use gnx_common::store::Store;
+use gnx_base::cache::Cache;
+use gnx_base::store::Store;
 
-use gnx_common::pass::{
+use gnx_base::pass::{
     Builder, CheckSupported, Dce, Pass, PassError, Pipeline, PipelineError, dce, rewrite,
 };
 use gnx_expr::{
@@ -125,8 +125,8 @@ fn inline_binds_captures_and_inputs() {
 
 macro_rules! unhashed {
     ($($pass:ty),*) => {
-        $(impl gnx_common::anyhash::Hash for $pass {
-            fn hash<H: gnx_common::anyhash::HasherWrite>(&self, _: &mut H) {}
+        $(impl gnx_base::anyhash::Hash for $pass {
+            fn hash<H: gnx_base::anyhash::HasherWrite>(&self, _: &mut H) {}
         })*
     };
 }

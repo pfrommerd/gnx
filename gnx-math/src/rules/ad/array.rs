@@ -91,7 +91,7 @@ fn predicate<'a>(
     Ok(cx.emit(
         op,
         &[lhs, rhs],
-        gnx_transforms::util::info(&lhs.dims()?, gnx_common::DType::Bool),
+        gnx_transforms::util::info(&lhs.dims()?, gnx_base::DType::Bool),
     ))
 }
 
@@ -190,7 +190,7 @@ fn without_zero<'a>(cx: &'a Ctx<'a>, x: Val<'a>) -> gnx_transforms::TransformRes
 defjvp!(AbsOperation, |cx, t, [x]| {
     if matches!(
         gnx_transforms::util::dtype(&x.info())?,
-        gnx_common::DType::C64 | gnx_common::DType::C128
+        gnx_base::DType::C64 | gnx_base::DType::C128
     ) {
         let real = cx.ans()?;
         let norm = without_zero(cx, real)?;
@@ -256,14 +256,14 @@ defjvp!(
         let power = binary(cx, pow_op(), x, sub(cx, y, one(cx, y)));
         let product = if matches!(
             raw,
-            gnx_common::DType::I8
-                | gnx_common::DType::I16
-                | gnx_common::DType::I32
-                | gnx_common::DType::I64
-                | gnx_common::DType::U8
-                | gnx_common::DType::U16
-                | gnx_common::DType::U32
-                | gnx_common::DType::U64
+            gnx_base::DType::I8
+                | gnx_base::DType::I16
+                | gnx_base::DType::I32
+                | gnx_base::DType::I64
+                | gnx_base::DType::U8
+                | gnx_base::DType::U16
+                | gnx_base::DType::U32
+                | gnx_base::DType::U64
         ) {
             let zero = y.zeros_like();
             cx.select(
@@ -339,7 +339,7 @@ defjvp!(
 deflinear!(ConjOperation, |cx, ct, [input]| {
     if matches!(
         gnx_transforms::util::dtype(&input.info())?,
-        gnx_common::DType::C64 | gnx_common::DType::C128
+        gnx_base::DType::C64 | gnx_base::DType::C128
     ) {
         Ok(cx.emit(conj_op(), &[ct], input.info()))
     } else {
@@ -446,9 +446,9 @@ defjvp!(BesselI0eOperation, |cx, t, [x]| {
 });
 defjvp!(BesselI1eOperation, |cx, t, [x]| {
     let epsilon = match gnx_transforms::util::dtype(&x.info())? {
-        gnx_common::DType::F64 => f64::EPSILON,
-        gnx_common::DType::F16 => 0.0009765625,
-        gnx_common::DType::BF16 => 0.0078125,
+        gnx_base::DType::F64 => f64::EPSILON,
+        gnx_base::DType::F16 => 0.0009765625,
+        gnx_base::DType::BF16 => 0.0078125,
         _ => f32::EPSILON as f64,
     };
     let eps = constant(cx, epsilon, x)?;
@@ -472,12 +472,12 @@ defjvp!(extern RemOperation, |_, t, _| Ok(t), |cx, t, [x, y]| {
 impl gnx_transforms::ad::JvpRule for PolynomialOperation {
     fn jvp(
         &self,
-        b: &mut gnx_common::pass::Builder,
+        b: &mut gnx_base::pass::Builder,
         eqn: gnx_expr::Eqn<'_>,
         inputs: &[gnx_transforms::ad::Dual],
         _: &[Vec<gnx_transforms::ad::Dual>],
     ) -> gnx_transforms::TransformResult<Vec<gnx_transforms::ad::Dual>> {
-        let mut recipe = gnx_common::pass::Builder::new();
+        let mut recipe = gnx_base::pass::Builder::new();
         let metadata = &gnx_transforms::util::output_infos(eqn)[0];
         let args: Vec<_> = inputs
             .iter()

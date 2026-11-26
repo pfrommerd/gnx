@@ -7,8 +7,8 @@ use std::io::{self, ErrorKind};
 use std::sync::{Arc, Mutex};
 
 use futures_channel::oneshot;
-use gnx_common::cache::Cache;
-use gnx_common::pass::{
+use gnx_base::cache::Cache;
+use gnx_base::pass::{
     CheckSupported, Dce, FinalPipeline, Pass, PassError, Pipeline, PipelineError, RuntimePipeline,
 };
 use gnx_expr::{RootExpr, Value};
@@ -33,8 +33,8 @@ pub struct HloModule {
 /// The portable lowering stage of the XLA pipeline.
 pub struct LowerXla;
 
-impl gnx_common::anyhash::Hash for LowerXla {
-    fn hash<H: gnx_common::anyhash::HasherWrite>(&self, _: &mut H) {}
+impl gnx_base::anyhash::Hash for LowerXla {
+    fn hash<H: gnx_base::anyhash::HasherWrite>(&self, _: &mut H) {}
 }
 
 impl Pass<HloModule> for LowerXla {
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn repeated_compile_reuses_the_loaded_pjrt_executable() {
-        use gnx_common::pass::Builder;
+        use gnx_base::pass::Builder;
         use gnx_math::Dim;
         let device = XlaDevice::cpu(Cache::in_memory()).unwrap();
         let mut b = Builder::new();
@@ -461,7 +461,7 @@ mod tests {
         let info = gnx_expr::VarInfo::new(ArrayInfo::new(
             [Dim::Bounded { symbol: s, max: 8 }]
                 .into_iter()
-                .collect::<gnx_common::Shape>(),
+                .collect::<gnx_base::Shape>(),
             DType::F32,
         ));
         let x = b.input(info.clone());
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn cpu_aliases_an_aligned_snapshot_and_retains_its_storage() {
-        let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+        let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
         let info = ArrayInfo::new(Shape::fixed([2]), DType::F32);
         let values = [1_f32, 2.]
             .into_iter()
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn strict_import_rejects_a_misaligned_view_before_copying() {
-        let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+        let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
         let source =
             HostBuffer::copy_from_slice(ArrayInfo::new(Shape::fixed([5]), DType::U8), &[0; 5])
                 .unwrap();

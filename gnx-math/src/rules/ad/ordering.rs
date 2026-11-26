@@ -8,8 +8,8 @@ use crate::ops::{
     reshape_op, rev_op,
     shape::concatenate,
 };
-use gnx_common::DType;
-use gnx_common::pass::Builder;
+use gnx_base::DType;
+use gnx_base::pass::Builder;
 use gnx_expr::{Eqn, Op, Var};
 use gnx_transforms::ad::def::deftranspose;
 use gnx_transforms::ad::jvp::{instantiate, jvp_expr};

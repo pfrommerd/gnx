@@ -41,7 +41,7 @@ fn unpack(device: &XlaDevice, value: &Value) -> Vec<f32> {
 #[test]
 fn array_arithmetic_broadcasts_and_evaluates_lazily() {
     use gnx::Array;
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let a = Array::from_data(floats(&[2, 1], &[-5., 8.]));
     let b = Array::from_data(floats(&[2], &[2., 4.]));
     let results = vec![
@@ -73,7 +73,7 @@ fn array_arithmetic_broadcasts_and_evaluates_lazily() {
 
 #[test]
 fn compile_nested_call_reuse_outputs_and_forward_remote_refs() {
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let array = array_info(&[2], DType::F32);
     let ty = VarInfo::new(array.clone());
     let mut vars = VarScope::new();
@@ -183,7 +183,7 @@ fn region(infos: &[VarInfo], build: impl FnOnce(&[Trace]) -> Vec<Trace>) -> Capt
     .unwrap()
 }
 
-gnx_common::unit_operations! {
+gnx_base::unit_operations! {
     struct LessThan;
 }
 impl Operation for LessThan {}
@@ -208,7 +208,7 @@ register_xla_lowering!(LessThan);
 
 #[test]
 fn runs_structured_regions() {
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let f32_scalar = VarInfo::new(array_info(&[], DType::F32));
     let bool_scalar = VarInfo::new(array_info(&[], DType::Bool));
     let values = |t: &Trace| unpack(&device, t.try_concrete().unwrap());
@@ -256,14 +256,14 @@ fn runs_structured_regions() {
 
 #[test]
 fn generic_reducers_execute_with_mixed_results_and_windows() {
-    use gnx_common::pass::Builder;
+    use gnx_base::pass::Builder;
     use gnx_math::ops::{
         creation::constant,
         elementwise::{max_op, min_op},
         reduction,
     };
 
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let tensor = VarInfo::new(array_info(&[5], DType::F32));
     let scalar = VarInfo::new(array_info(&[], DType::F32));
     let mut b = Builder::new();
@@ -323,7 +323,7 @@ fn generic_reducers_execute_with_mixed_results_and_windows() {
 
 #[test]
 fn differentiates_and_batches_axis_and_window_reductions() {
-    use gnx_common::pass::Builder;
+    use gnx_base::pass::Builder;
     use gnx_math::ops::{
         creation::constant,
         elementwise::{max_op, min_op},
@@ -394,7 +394,7 @@ fn differentiates_and_batches_axis_and_window_reductions() {
     );
     results.extend(batched);
 
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let output = futures_executor::block_on(device.compile(&b.finish(results).build().unwrap()))
         .unwrap()
         .run(
@@ -437,9 +437,9 @@ fn differentiates_and_batches_axis_and_window_reductions() {
 
 #[test]
 fn popcount_uses_the_operand_width() {
-    use gnx_common::pass::Builder;
+    use gnx_base::pass::Builder;
     use gnx_math::ops::bitwise::population_count;
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let info = VarInfo::new(array_info(&[4], DType::I8));
     let mut builder = Builder::new();
     let x = builder.input(info.clone());
@@ -459,9 +459,9 @@ fn popcount_uses_the_operand_width() {
 #[test]
 #[cfg(feature = "lapack")]
 fn lapack_factorizations_execute_on_the_local_device() {
-    use gnx_common::pass::Builder;
+    use gnx_base::pass::Builder;
     use gnx_math::ops::linalg::{lu, svd};
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let matrix = VarInfo::new(array_info(&[2, 2], DType::F32));
     let pivot = VarInfo::new(array_info(&[2], DType::I32));
     let singular = VarInfo::new(array_info(&[2], DType::F32));
@@ -491,10 +491,10 @@ fn lapack_factorizations_execute_on_the_local_device() {
 
 #[test]
 fn window_vjp_accumulates_overlapping_winners_and_additive_windows() {
-    use gnx_common::pass::Builder;
+    use gnx_base::pass::Builder;
     use gnx_math::ops::{creation::constant, elementwise::max_op, reduction};
 
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let input_info = VarInfo::new(array_info(&[3], DType::F32));
     let output_info = VarInfo::new(array_info(&[2], DType::F32));
     let scalar_info = VarInfo::new(array_info(&[], DType::F32));
@@ -549,11 +549,11 @@ fn window_vjp_accumulates_overlapping_winners_and_additive_windows() {
 
 #[test]
 fn convolution_vjp_uses_the_forward_window_geometry() {
-    use gnx_common::pass::Builder;
+    use gnx_base::pass::Builder;
     use gnx_math::ops::contraction::{
         ConvAxes, ConvKernelAxes, ConvParameters, conv_general_dilated,
     };
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let input = VarInfo::new(array_info(&[1, 1, 3], DType::F32));
     let kernel = VarInfo::new(array_info(&[1, 1, 2], DType::F32));
     let output = kernel.clone();
@@ -612,12 +612,12 @@ fn convolution_vjp_uses_the_forward_window_geometry() {
 
 #[test]
 fn real_fft_and_top_k_return_the_expected_values_and_dtypes() {
-    use gnx_common::pass::Builder;
+    use gnx_base::pass::Builder;
     use gnx_math::ops::{
         fft::{FftKind, fft},
         ordering::top_k,
     };
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let mut b = Builder::new();
     let x = b.input(VarInfo::new(array_info(&[4], DType::F32)));
     let spectrum = b.emit1(
@@ -649,10 +649,10 @@ fn real_fft_and_top_k_return_the_expected_values_and_dtypes() {
 
 #[test]
 fn sort_treats_signed_zeros_as_ties_and_stably_orders_integer_keys() {
-    use gnx_common::pass::Builder;
+    use gnx_base::pass::Builder;
     use gnx_math::ops::ordering::sort;
 
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let data = VarInfo::new(array_info(&[4], DType::F32));
     let indices = VarInfo::new(array_info(&[4], DType::I32));
     let mut b = Builder::new();
@@ -693,9 +693,9 @@ fn sort_treats_signed_zeros_as_ties_and_stably_orders_integer_keys() {
 
 #[test]
 fn qr_and_cholesky_jvps_run_on_cpu() {
-    use gnx_common::pass::Builder;
+    use gnx_base::pass::Builder;
     use gnx_math::ops::linalg::{cholesky, qr};
-    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let meta = VarInfo::new(array_info(&[2, 2], DType::F32));
     let mut b = Builder::new();
     let a = b.input(meta.clone());
@@ -736,8 +736,8 @@ fn qr_and_cholesky_jvps_run_on_cpu() {
 #[test]
 fn compiling_again_reads_the_program_from_the_cache() {
     use futures_util::TryStreamExt;
-    use gnx_common::cache::Cache;
-    use gnx_common::store::ObjectStore;
+    use gnx_base::cache::Cache;
+    use gnx_base::store::ObjectStore;
 
     // A device of its own, so that the cache is the one given here.
     let cache = Cache::in_memory();
@@ -748,7 +748,7 @@ fn compiling_again_reads_the_program_from_the_cache() {
     };
 
     let ty = VarInfo::new(array_info(&[2], DType::F32));
-    let mut b = gnx_common::pass::Builder::new();
+    let mut b = gnx_base::pass::Builder::new();
     let x = b.input(ty.clone());
     let y = b.emit1(add_op(), &[x, x], ty);
     let program = b.finish(vec![y]).build().unwrap();

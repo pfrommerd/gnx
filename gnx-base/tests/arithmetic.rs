@@ -1,4 +1,4 @@
-use gnx_common::{Array, ArrayInfo, DType, DataHandle, HostBuffer, Shape};
+use gnx_base::{Array, ArrayInfo, DType, DataHandle, HostBuffer, Shape};
 
 fn array(shape: &[usize], dtype: DType, bytes: &[u8]) -> Array {
     let info = ArrayInfo::new(Shape::fixed(shape.iter().copied()), dtype);

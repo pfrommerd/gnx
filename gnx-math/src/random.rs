@@ -2,7 +2,7 @@
 //! mutable generator. Reusing a key repeats a draw. Use `split` or `fold_in`
 //! to derive a new key, or `Rngs` to keep traced counters for named streams.
 use crate::{Array, ArrayInfo, ArrayRef, DType, IntoShape, Shape, lax, ops};
-use gnx_common::{fixed_dims, invoke_array};
+use gnx_base::{fixed_dims, invoke_array};
 use gnx_expr::{LoweringError, Op};
 use std::{collections::BTreeMap, sync::Mutex};
 
@@ -161,7 +161,7 @@ fn block(k: &Array, shape: &Shape) -> Result<[Array; 2], LoweringError> {
         .into_iter()
         .try_fold(1usize, usize::checked_mul)
         .filter(|&n| i64::try_from(n).is_ok())
-        .ok_or_else(|| gnx_common::ops::signature("random shape overflow"))?;
+        .ok_or_else(|| gnx_base::ops::signature("random shape overflow"))?;
     let idx = lax::iota([n], 0, DType::I64).reshape(shape);
     Ok(hash(k, right(&idx, 32), word(&idx)))
 }
@@ -195,7 +195,7 @@ pub fn bits(k: &Array, shape: impl IntoShape, dtype: DType) -> Array {
 pub fn try_bits(k: &Array, shape: impl IntoShape, dtype: DType) -> Result<Array, LoweringError> {
     validate(k)?;
     if dtype != DType::U32 {
-        return Err(gnx_common::ops::signature("bits requires U32"));
+        return Err(gnx_base::ops::signature("bits requires U32"));
     }
     let [a, b] = block(k, &shape.into_shape())?;
     Ok(lax::convert_element_type(&xor(&a, &b), dtype))
@@ -207,7 +207,7 @@ fn precision(dtype: DType) -> Result<(u32, DType), LoweringError> {
         DType::F32 => (24, DType::F32),
         DType::F64 => (53, DType::F64),
         _ => {
-            return Err(gnx_common::ops::signature(
+            return Err(gnx_base::ops::signature(
                 "random samples require BF16, F16, F32, or F64",
             ));
         }
@@ -224,7 +224,7 @@ fn fraction(k: &Array, shape: &Shape, p: u32, work: DType) -> Result<Array, Lowe
 }
 fn validate(k: &Array) -> Result<(), LoweringError> {
     if !k.dtype().is_key() || !k.shape().dims().is_empty() {
-        return Err(gnx_common::ops::signature("expected a scalar RNG key"));
+        return Err(gnx_base::ops::signature("expected a scalar RNG key"));
     }
     Ok(())
 }
