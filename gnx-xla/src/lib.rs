@@ -4,12 +4,12 @@ mod lower;
 use std::fmt;
 use std::future::Future;
 use std::io::{self, ErrorKind};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 
 use futures_channel::oneshot;
 use gnx_common::cache::Cache;
 use gnx_common::pass::{
-    CheckSupported, Dce, FinalPipeline, Pass, PassError, Pipeline, PipelineError,
+    CheckSupported, Dce, FinalPipeline, Pass, PassError, Pipeline, PipelineError, RuntimePipeline,
 };
 use gnx_expr::{RootExpr, Value};
 use gnx_math::{
@@ -30,7 +30,7 @@ pub struct HloModule {
     pub bytes: Vec<u8>,
 }
 
-/// The final stage of [`pipeline`]: lowers each equation to HLO.
+/// The portable lowering stage of the XLA pipeline.
 pub struct LowerXla;
 
 impl gnx_common::anyhash::Hash for LowerXla {
@@ -50,17 +50,20 @@ impl Pass<HloModule> for LowerXla {
     }
 }
 
-/// The passes `XlaDevice::compile` runs: expand transformations, remove dead
-/// code, check that each operation has an XLA lowering, and lower to HLO.
+/// The portable prefix, also available for inspecting HLO without a client.
+pub fn hlo_pipeline() -> FinalPipeline<HloModule> {
+    Pipeline::new()
+        .with(ExpandTransforms)
+        .with(Dce)
+        .with(CheckSupported::<dyn XlaLowering>::new())
+        .finalize(LowerXla)
+}
+
+/// Inspect the portable lowering stages without opening a PJRT client.
 pub fn pipeline() -> &'static FinalPipeline<HloModule> {
-    static PIPELINE: LazyLock<FinalPipeline<HloModule>> = LazyLock::new(|| {
-        Pipeline::new()
-            .with(ExpandTransforms)
-            .with(Dce)
-            .with(CheckSupported::<dyn XlaLowering>::new())
-            .finalize(LowerXla)
-    });
-    &PIPELINE
+    static HLO: std::sync::LazyLock<FinalPipeline<HloModule>> =
+        std::sync::LazyLock::new(hlo_pipeline);
+    &HLO
 }
 
 #[derive(Clone)]
@@ -80,6 +83,7 @@ struct Runtime {
     client: Arc<Client>,
     allocations: LocalAllocations<Buffer>,
     cache: Cache,
+    pipeline: RuntimePipeline<HloModule, Executable>,
 }
 
 impl XlaDevice {
@@ -131,6 +135,9 @@ impl XlaDevice {
             ));
         }
         let (ordinal, kind) = client.device_info()?;
+        let compiler = client.clone();
+        let pipeline =
+            hlo_pipeline().on_runtime("xla.compile", move |hlo| Ok(compiler.compile(&hlo.bytes)?));
         Ok(Self(Arc::new(Runtime {
             platform,
             host,
@@ -138,8 +145,15 @@ impl XlaDevice {
             kind,
             client,
             allocations: LocalAllocations::new(),
+            pipeline,
             cache,
         })))
+    }
+
+    /// The native compilation pipeline for a projected computation. Its final
+    /// `xla.compile` stage produces a loaded executable owned by this client.
+    pub fn pipeline(&self) -> &RuntimePipeline<HloModule, Executable> {
+        &self.0.pipeline
     }
 
     pub fn platform(&self) -> &'static str {
@@ -168,15 +182,26 @@ impl XlaDevice {
     /// the device's cache holds the program from an earlier compilation.
     pub async fn compile(&self, expr: &Arc<RootExpr>) -> io::Result<XlaExecutable> {
         let (projected, boundary) = ExecutionBoundary::project(expr.view())?;
+        let mut bounded_inputs = Vec::new();
         let program = match projected {
             Some(expr) => {
                 let view = expr.view();
+                for (i, p) in view.closure_inputs().chain(view.inputs()).enumerate() {
+                    if !p.info().symbols().is_empty() {
+                        bounded_inputs.push((i, lower::metadata(p.info_ref())?.capacity()));
+                    }
+                }
                 let output = (view.outputs().iter())
                     .map(|&var| lower::metadata(view.value_info(var).expect("checked SSA output")))
                     .collect::<io::Result<Vec<_>>>()?;
-                let module =
-                    (pipeline().run(expr.clone(), &self.0.cache).await).map_err(pipeline_error)?;
-                Some((self.0.client.compile(&module.bytes)?, output))
+                Some((
+                    self.0
+                        .pipeline
+                        .run(expr, &self.0.cache)
+                        .await
+                        .map_err(pipeline_error)?,
+                    output,
+                ))
             }
             None => None,
         };
@@ -184,6 +209,7 @@ impl XlaDevice {
             device: self.clone(),
             signature: expr.clone(),
             boundary,
+            bounded_inputs,
             program,
         })
     }
@@ -198,7 +224,16 @@ impl XlaDevice {
             .run(inputs, output.len())?
             .into_iter()
             .zip(output)
-            .map(|(buffer, info)| self.retain(info.clone(), buffer))
+            .map(|(buffer, info)| {
+                self.retain(
+                    if info.has_bounded_axes() {
+                        info.capacity()
+                    } else {
+                        info.clone()
+                    },
+                    buffer,
+                )
+            })
             .collect()
     }
 
@@ -286,31 +321,76 @@ pub struct XlaExecutable {
     device: XlaDevice,
     signature: Arc<RootExpr>,
     boundary: ExecutionBoundary,
-    program: Option<(Executable, Vec<ArrayInfo>)>,
+    bounded_inputs: Vec<(usize, ArrayInfo)>,
+    program: Option<(Arc<Executable>, Vec<ArrayInfo>)>,
 }
 
 impl XlaExecutable {
     pub fn run(&self, args: &[Value], opts: ExecOpts) -> io::Result<Vec<Value>> {
-        ExecutionBoundary::validate_arguments(self.signature.view(), args)?;
+        let sizes = ExecutionBoundary::bind_arguments(self.signature.view(), args)?;
         let Some((program, output_info)) = &self.program else {
             return self.boundary.finish(args, &[]);
         };
-        let inputs = self
+        let mut inputs = self
             .boundary
             .arguments(args)
-            .map(|value| {
-                let data = value?
-                    .downcast::<DataHandle>()
-                    .map_err(|_| invalid("XLA argument is not a concrete array"))?;
+            .enumerate()
+            .map(|(i, value)| {
+                let value = value?;
+                let data = if let Ok(buffer) = value.downcast::<gnx_math::BoundedBuffer>() {
+                    buffer.storage()
+                } else {
+                    value
+                        .downcast::<DataHandle>()
+                        .map_err(|_| invalid("XLA argument is not a concrete array"))?
+                };
+                if let Some((_, capacity)) =
+                    self.bounded_inputs.iter().find(|(index, _)| *index == i)
+                    && data.array_info() != capacity
+                {
+                    if opts.transfers == TransferPolicy::RequireZeroCopy {
+                        return Err(unsupported(
+                            "padding a compact bounded input requires AllowCopy",
+                        ));
+                    }
+                    let packed = self
+                        .device
+                        .download(data)?
+                        .resize_prefix(capacity.clone())?;
+                    return self
+                        .device
+                        .import_native(&DataHandle::new(packed), opts.transfers);
+                }
                 self.device.import_native(data, opts.transfers)
             })
             .collect::<io::Result<Vec<_>>>()?;
+        for scalar in self.boundary.witness_arguments(&sizes) {
+            inputs.push(self.device.import_native(&scalar?, opts.transfers)?);
+        }
         let computed: Vec<_> = self
             .device
             .run_native(program, &inputs, output_info)?
             .into_iter()
-            .map(Value::new)
-            .collect();
+            .zip(output_info)
+            .map(|(data, formal)| {
+                if formal.has_bounded_axes() {
+                    let logical = sizes.resolve(formal)?;
+                    if data.array_info() != &logical {
+                        if opts.transfers == TransferPolicy::RequireZeroCopy {
+                            return Err(unsupported(
+                                "unpadding a bounded result requires AllowCopy",
+                            ));
+                        }
+                        let compact = self.device.download(&data)?.resize_prefix(logical)?;
+                        return Ok(Value::new(
+                            self.device
+                                .import(&DataHandle::new(compact), opts.transfers)?,
+                        ));
+                    }
+                }
+                Ok(Value::new(data))
+            })
+            .collect::<io::Result<_>>()?;
         self.boundary.finish(args, &computed)
     }
 }
@@ -370,6 +450,25 @@ fn native<T>(result: xla::Result<T>) -> io::Result<T> {
 mod tests {
     use super::*;
     use gnx_math::{ByteOrder, DType, Lease, MemoryView, Shape, StridedLayout};
+
+    #[test]
+    fn repeated_compile_reuses_the_loaded_pjrt_executable() {
+        use gnx_common::pass::Builder;
+        use gnx_math::Dim;
+        let device = XlaDevice::cpu(Cache::in_memory()).unwrap();
+        let mut b = Builder::new();
+        let s = b.symbol_input();
+        let info = gnx_expr::VarInfo::new(ArrayInfo::new(
+            [Dim::Bounded { symbol: s, max: 8 }].into_iter().collect(),
+            DType::F32,
+        ));
+        let x = b.input(info.clone());
+        let y = b.emit1(gnx_math::ops::add_op(), &[x, x], info);
+        let expr = b.finish(vec![y]).build().unwrap();
+        let a = futures_executor::block_on(device.compile(&expr)).unwrap();
+        let b = futures_executor::block_on(device.compile(&expr)).unwrap();
+        assert!(Arc::ptr_eq(&a.program.unwrap().0, &b.program.unwrap().0));
+    }
 
     #[test]
     fn cpu_aliases_an_aligned_snapshot_and_retains_its_storage() {

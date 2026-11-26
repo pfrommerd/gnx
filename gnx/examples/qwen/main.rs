@@ -6,10 +6,10 @@ use clap::{Parser, ValueEnum};
 use futures_executor::block_on;
 use gnx::{
     Array, Eval, ExecOpts, Shape,
-    array::{ArrayInfo, DType},
+    array::{ArrayInfo, ArrayRef, DType},
     buffer::{DataHandle, HostBuffer, TransferPolicy},
 };
-use model::{Config, Weights};
+use model::{Config, DecodeState, Model, Weights};
 use safetensors::SafeTensors;
 use serde::Deserialize;
 use std::{
@@ -95,15 +95,22 @@ struct Args {
     /// Directory containing the checkpoint, config.json and tokenizer.json.
     #[arg(long, value_name = "DIR", default_value = "Qwen3.5-0.8B")]
     model_dir: PathBuf,
-    /// Text to complete in one-shot mode.
-    #[arg(long, value_name = "TEXT", default_value = "The capital of France is")]
+    /// Raw prompt for one-shot generation, which ends at <|im_end|>.
+    #[arg(
+        long,
+        value_name = "TEXT",
+        default_value = "<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    )]
     prompt: String,
     /// Start an interactive conversation.
     #[arg(long, conflicts_with = "prompt")]
     chat: bool,
-    /// Maximum tokens to generate per reply.
-    #[arg(long, value_name = "N", default_value_t = 16)]
-    max_new_tokens: usize,
+    /// Bound for the KV time axis, shared across all turns (capped by the checkpoint).
+    #[arg(long, default_value_t = 2048)]
+    context_length: usize,
+    /// Report time to first token and subsequent decode tokens/second.
+    #[arg(long)]
+    timings: bool,
 }
 
 fn main() -> Result<()> {
@@ -138,7 +145,6 @@ fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()>
         model_dir: dir,
         prompt,
         chat,
-        max_new_tokens: limit,
         ..
     } = args;
     let config_path = dir.join("config.json");
@@ -149,9 +155,17 @@ fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()>
         )
     })?;
     let Checkpoint { text_config: model } = serde_json::from_slice(&config)?;
+    let capacity = args.context_length.min(model.max_position_embeddings);
+    if capacity == 0 || capacity > i32::MAX as usize || model.vocab_size > i32::MAX as usize {
+        return Err("context and vocabulary must fit the decoder's i32 indices".into());
+    }
     let tokenizer_path = dir.join("tokenizer.json");
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| format!("cannot load {}: {e}", tokenizer_path.display()))?;
+    let end = tokenizer
+        .token_to_id("<|im_end|>")
+        .filter(|&id| (id as usize) < model.vocab_size)
+        .ok_or("tokenizer must define a valid <|im_end|> token")?;
     let mut w = weights(&dir)?;
     model.validate(&w)?;
     if import_weights {
@@ -161,28 +175,69 @@ fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()>
         }
     }
     let session = Decoder {
-        model,
-        w,
+        capacity,
+        timings: args.timings,
+        model: pack_model(model, w),
         device,
         tokenizer,
+        end,
     };
     if chat {
-        return session.chat(limit);
+        return session.chat();
     }
     let encoding = session.tokenizer.encode(prompt.as_str(), false)?;
-    let generated = session.generate(encoding.get_ids(), limit, |_| Ok(()))?;
+    let generated = session.generate(encoding.get_ids())?;
     println!("{prompt}{}", session.tokenizer.decode(&generated, true)?);
     Ok(())
 }
 
-struct Decoder<D> {
-    model: Config,
-    w: Weights,
+fn pack_model(config: Config, w: Weights) -> Model {
+    let mut weights: Vec<_> = w.into_iter().collect();
+    weights.sort_by(|a, b| a.0.cmp(&b.0));
+    (config, weights)
+}
+fn index(i: i32) -> io::Result<Array> {
+    Ok(Array::from_data(DataHandle::new(
+        HostBuffer::copy_from_slice(
+            ArrayInfo::new(Shape::fixed([]), DType::I32),
+            &i.to_le_bytes(),
+        )?,
+    )))
+}
+fn new_state<D: QwenDevice>(model: &Config, capacity: usize, device: &D) -> Result<DecodeState> {
+    let mut slots = model.state_shapes(capacity).map(|s| {
+        let host = HostBuffer::try_fill(ArrayInfo::new(Shape::fixed(s), DType::F32), |_| {
+            Ok::<_, io::Error>(())
+        })?;
+        Ok::<_, io::Error>(ArrayRef::new(Array::from_data(
+            device.upload(&DataHandle::new(host))?,
+        )))
+    });
+    let mut layers = Vec::new();
+    while let Some(a) = slots.next() {
+        layers.push((a?, slots.next().expect("two slots per layer")?));
+    }
+    Ok((ArrayRef::new(index(0)?), capacity, layers))
+}
+
+#[cfg(test)]
+mod tests;
+
+struct Decoder<D: QwenDevice> {
+    capacity: usize,
+    timings: bool,
+    model: Model,
     device: D,
     tokenizer: Tokenizer,
+    end: u32,
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("context exhausted ({0} tokens) before <|im_end|>")]
+struct ContextExhausted(usize);
+
 impl<D: QwenDevice> Decoder<D> {
-    fn chat(&self, limit: usize) -> Result<()> {
+    fn chat(&self) -> Result<()> {
         let mut history = String::new();
         eprintln!("Enter a message. /reset clears the conversation; /quit or Ctrl-D exits.");
         loop {
@@ -207,74 +262,85 @@ impl<D: QwenDevice> Decoder<D> {
             let turn = format!("<|im_start|>user\n{message}<|im_end|>\n<|im_start|>assistant\n");
             let prompt = format!("{history}{turn}<think>\n\n</think>\n\n");
             let encoded = self.tokenizer.encode(prompt.as_str(), false)?;
-            if !self.fits(encoded.len(), limit) {
+            if encoded.len() > self.capacity {
                 eprintln!("Context is full. Use /reset or enter a shorter message.");
                 continue;
             }
             print!("Assistant: ");
             io::stdout().flush()?;
-            let mut stream = self.tokenizer.decode_stream(true);
-            let ids = self.generate(encoded.get_ids(), limit, |id| {
-                if let Some(text) = stream.step(id)? {
-                    print!("{text}");
-                    io::stdout().flush()?;
+            let ids = match self.generate(encoded.get_ids()) {
+                Ok(ids) => ids,
+                Err(e) if e.is::<ContextExhausted>() => {
+                    println!("{e}. Use /reset or enter a shorter message.");
+                    continue;
                 }
-                Ok(())
-            })?;
-            println!();
+                Err(e) => return Err(e),
+            };
+            let reply = self.tokenizer.decode(&ids, true)?;
+            println!("{reply}");
             history.push_str(&turn);
-            history.push_str(self.tokenizer.decode(&ids, true)?.trim());
+            history.push_str(reply.trim());
             history.push_str("<|im_end|>\n");
         }
         Ok(())
     }
 
-    fn fits(&self, prompt_len: usize, limit: usize) -> bool {
-        prompt_len.saturating_add(limit.saturating_sub(1)) <= self.model.max_position_embeddings
-    }
-    fn generate(
-        &self,
-        ids: &[u32],
-        limit: usize,
-        mut on_token: impl FnMut(u32) -> Result<()>,
-    ) -> Result<Vec<u32>> {
+    fn generate(&self, ids: &[u32]) -> Result<Vec<u32>> {
         let Self {
-            model,
-            w,
-            device,
-            tokenizer,
+            model, device, end, ..
         } = self;
-        if ids.is_empty() || ids.iter().any(|&id| id as usize >= model.vocab_size) {
+        if ids.is_empty() || ids.iter().any(|&id| id as usize >= model.0.vocab_size) {
             return Err("expected a nonempty text prompt with valid token IDs".into());
         }
-        if !self.fits(ids.len(), limit) {
-            return Err("requested sequence exceeds model context length".into());
+        if ids.len() > self.capacity {
+            return Err(format!(
+                "prompt exceeds the configured context bound ({} tokens)",
+                self.capacity
+            )
+            .into());
         }
-        if limit == 0 {
-            return Ok(vec![]);
+        let opts = ExecOpts {
+            transfers: TransferPolicy::AllowCopy,
+        };
+        let started = std::time::Instant::now();
+        let state = new_state(&model.0, self.capacity, device)?;
+        let mut first = None;
+        for &id in ids {
+            let prediction = model::step(model, &index(id as i32)?, &state);
+            block_on(device.eval(&(&prediction, &state), opts))?;
+            first = Some(prediction);
         }
-        let mut cache = vec![];
-        let mut generated = vec![];
-        let mut id = ids[0];
-        for pos in 0..ids.len() + limit - 1 {
-            let predict = pos + 1 >= ids.len();
-            let (next, token) = model.step(w, id, pos, &cache, predict);
-            // Materialize all cache entries together, keeping the allocations on the device.
-            let mut roots = next.clone();
-            roots.extend(token.iter().cloned());
-            block_on(device.eval(&roots, ExecOpts::default()))?;
-            cache = next;
-            if let Some(token) = token {
-                id =
-                    u32::from_le_bytes(device.readback(token.data().unwrap())?.bytes().try_into()?);
-                if id == model.eos_token_id || Some(id) == tokenizer.token_to_id("<|im_end|>") {
-                    break;
-                }
-                on_token(id)?;
-                generated.push(id);
-            } else {
-                id = ids[pos + 1];
-            }
+        let first = first.expect("nonempty prompt");
+        if self.timings {
+            device.readback(first.data().expect("prefill evaluated"))?;
+            eprintln!("First token: {:.3} s", started.elapsed().as_secs_f64());
+        }
+        let decode_started = std::time::Instant::now();
+        let result = model::decode(model, &first, &state, &index(*end as i32)?);
+        drop(state);
+        block_on(device.eval(&result, opts))?;
+        let read = |x: &Array| device.readback(x.data().expect("decode evaluated"));
+        let (tokens, count, last) = result;
+        if u32::from_le_bytes(read(&last)?.bytes().try_into()?) != *end {
+            return Err(ContextExhausted(self.capacity).into());
+        }
+        let count = usize::try_from(i32::from_le_bytes(read(&count)?.bytes().try_into()?))?;
+        if count > self.capacity - ids.len() {
+            return Err("invalid decode length".into());
+        }
+        let buffer = read(&tokens)?;
+        let generated = buffer
+            .bytes()
+            .chunks_exact(4)
+            .take(count)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        if self.timings && count > 0 {
+            let elapsed = decode_started.elapsed().as_secs_f64();
+            eprintln!(
+                "Decode: {count} tokens in {elapsed:.3} s ({:.1} tokens/s, includes first-use compilation)",
+                count as f64 / elapsed
+            );
         }
         Ok(generated)
     }

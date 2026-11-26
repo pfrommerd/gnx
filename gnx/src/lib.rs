@@ -8,7 +8,7 @@ pub use gnx_graph as graph;
 
 pub use gnx_common::{cache, pass, store};
 
-pub use gnx_math::{array, buffer, device, shard};
+pub use gnx_math::{array, buffer, device, lax, np, shard};
 /// Constructors for operations in expression macros.
 ///
 /// ```
@@ -48,7 +48,8 @@ pub use gnx_math::device::{Device, ExecOpts};
 
 pub use gnx_transforms::{
     Callable, ExpandTransforms, Function, Jit, Jitable, TryCallable, TryJitable, grad, hessian,
-    jit, jit_fn, jittable, jvp, map, stop_gradient, try_jit_fn, value_and_grad, vjp,
+    jit, jit_fn, jittable, jvp, map, on_axis, scan_graph, stop_gradient, try_jit_fn,
+    value_and_grad, vjp,
 };
 
 extern crate self as gnx;

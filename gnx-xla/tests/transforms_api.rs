@@ -169,6 +169,32 @@ fn array_arithmetic_differentiates_through_broadcasts() {
 }
 
 #[test]
+fn numpy_and_lax_agree_on_bias_values_and_gradients() {
+    use gnx::{lax, np};
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let x = floats(&[2, 2], &[0., 1., -1., 2.]);
+    let bias = floats(&[2], &[1., -1.]);
+    let t = 1f32.tanh();
+    for explicit in [false, true] {
+        let scores = move |x: &Array, b: &Array| {
+            if explicit {
+                let b = lax::broadcast_in_dim(b, x.shape(), &[1]);
+                lax::reduce_sum(&lax::tanh(&lax::add(x, &b)), &[1])
+            } else {
+                np::sum(&np::tanh(&np::add(x, b)), -1)
+            }
+        };
+        let y = scores(&x, &bias);
+        let (_, db) = grad(move |x: Array, b: Array| np::sum(&scores(&x, &b), np::ALL))
+            .invoke((x.clone(), bias.clone()));
+        assert_eq!(y.shape(), Shape::fixed([2]));
+        eval(&device, &(y.clone(), db.clone()));
+        close(&values(&device, &y), &[t, t]);
+        close(&values(&device, &db), &[2. - t * t, 2. - t * t]);
+    }
+}
+
+#[test]
 fn grad_and_value_and_grad_follow_wrt() {
     let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
     let traces = AtomicUsize::new(0);
@@ -182,6 +208,10 @@ fn grad_and_value_and_grad_follow_wrt() {
     let (x, y) = (floats(&[2], &[1., 2.]), floats(&[2], &[3., 4.]));
     let (dx, dy) = both.invoke((x.clone(), y.clone()));
     let (dx_only, dy_zero) = only_x.invoke((x.clone(), y.clone()));
+    let (dx_zero, dy_only) = grad(f).wrt(1).invoke((x.clone(), y.clone()));
+    eval(&device, &(dx_zero.clone(), dy_only.clone()));
+    close(&values(&device, &dx_zero), &[0., 0.]);
+    close(&values(&device, &dy_only), &[1., 4.]);
     // Same signature: the wrapper's trace is reused.
     let before = traces.load(Ordering::Relaxed);
     let _ = both.invoke((x.clone(), y.clone()));

@@ -12,6 +12,14 @@ extern "C" bool gnx_torch_save_module(const torch::jit::Module *module,
                                       void *ctx, char *error,
                                       size_t capacity) noexcept {
   try {
+    // tch traces a vector of graph outputs. TorchScript methods have one
+    // return value; represent multiple tensor results as a tuple on export.
+    auto graph = module->get_method("forward").graph();
+    if (graph->outputs().size() > 1) {
+      auto *tuple = graph->appendNode(graph->createTuple(graph->outputs()));
+      while (!graph->outputs().empty()) graph->eraseOutput(graph->outputs().size() - 1);
+      graph->registerOutput(tuple->output());
+    }
     std::ostringstream out(std::ios::binary);
     module->save(out);
     const std::string bytes = out.str();

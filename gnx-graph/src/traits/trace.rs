@@ -1,7 +1,7 @@
 use anyhash::{Hash, HasherWrite};
 
-use gnx_expr::{CellKey, CellTrace, ObjectTracer, Trace, TracerKey};
 use gnx_common::{Array, ArrayInfo, ArrayRef};
+use gnx_expr::{CellKey, CellTrace, ObjectTracer, Trace, TracerKey};
 
 use super::hash::CoreHash;
 use crate::*;
@@ -75,18 +75,22 @@ macro_rules! impl_trace_traits {
 }
 
 struct IsSelected;
-impl<'g, G: Graph, L: Leaf> GraphVisitor<'g, G, L> for IsSelected {
+impl<'g, A, G: Graph, L: Leaf> GraphVisitor<'g, G, L, A> for IsSelected {
     type Output = bool;
-    fn visit_leaf(self, _: L::Ref<'g>) -> bool {
+    fn visit_leaf<F: Filter<L, Annotation<'g> = A>>(self, _: L::Ref<'g>, _: F) -> bool {
         true
     }
     fn visit_static<S: Leaf>(self, _: S::Ref<'g>) -> bool {
         false
     }
-    fn visit_node<N: Node, F: Filter<L>>(self, _: View<'g, N, F>) -> bool {
+    fn visit_node<N: Node, F: Filter<L, Annotation<'g> = A>>(self, _: View<'g, N, F>) -> bool {
         unreachable!("expected a leaf")
     }
-    fn visit_shared<S: Graph, F: Filter<L>>(self, _: GraphId, _: View<'g, S, F>) -> bool {
+    fn visit_shared<S: Graph, F: Filter<L, Annotation<'g> = A>>(
+        self,
+        _: GraphId,
+        _: View<'g, S, F>,
+    ) -> bool {
         unreachable!("expected a leaf")
     }
 }

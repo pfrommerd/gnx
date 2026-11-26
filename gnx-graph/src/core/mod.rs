@@ -1,5 +1,5 @@
-pub use gnx_derive::{Graph, Leaf, impl_leaf};
 pub use gnx_common::{Error, GraphContext, GraphId, Key, KeyRef, Path};
+pub use gnx_derive::{Graph, Leaf, impl_leaf};
 
 mod filters;
 mod source;
@@ -49,7 +49,7 @@ pub trait Graph: Clone {
     ) -> Result<Self::Builder<L>, E>;
 
     // Visitor functions for visiting the graph and its children.
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self, filter: F, visitor: V
     ) -> V::Output;
     fn visit_into<'g, L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
@@ -63,7 +63,7 @@ pub trait Node: Graph {
     where
         L: Leaf,
         F: Filter<L>,
-        V: ChildrenVisitor<'g, Self, L>;
+        V: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>;
     fn visit_into_children<L, F, C>(self, filter: F, consumer: C) -> C::Output
     where
         L: Leaf,

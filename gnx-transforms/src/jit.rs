@@ -70,6 +70,11 @@ impl<I: Graph, F: Function<I>> Jit<I, F> {
         self.name_hint = Some(name_hint);
     }
 
+    pub(crate) fn clear_traces(&mut self) {
+        self.traces = TraceCache::new();
+        self.try_traces = TraceCache::new();
+    }
+
     pub fn name_hint(&self) -> Option<&str> {
         self.name_hint.as_deref()
     }
@@ -156,6 +161,75 @@ where
     F: Function<I>,
     F::Output: Graph<Owned = F::Output>,
 {
+    /// Lower a pure callable using its usual trace cache. Pass example inputs
+    /// or metadata-only placeholders with bounded axes. Returns the expression
+    /// and its concrete captures; pass captures before the flattened input
+    /// leaves to the executable. Outputs follow tracer-leaf order.
+    pub fn lower(
+        &self,
+        input: I,
+    ) -> crate::TransformResult<(Arc<gnx_expr::RootExpr>, Vec<gnx_expr::Value>)>
+    where
+        F: Jitable<I>,
+    {
+        use crate::TransformError;
+        use gnx_expr::{InputId, InputSpec, TraceContext};
+        let (builder, args) = crate::cache::split_graph(&input);
+        let scope = TraceContext::enter();
+        let mut symbols = std::collections::BTreeMap::new();
+        let kinds = args
+            .iter()
+            .map(|v| {
+                let (kind, info) = crate::cache::kind(v);
+                if kind != Kind::Value {
+                    return Err(TransformError::invalid("lower requires value inputs"));
+                }
+                Ok((
+                    kind,
+                    info.remap_symbols(|s| {
+                        *symbols
+                            .entry(s)
+                            .or_insert_with(|| scope.context().create_symbol())
+                    }),
+                ))
+            })
+            .collect::<crate::TransformResult<_>>()?;
+        let entry = self.traced(builder, kinds);
+        let captures = entry
+            .closure
+            .iter()
+            .map(|v| match v {
+                ObjectTracer::Ref(t) => t
+                    .try_concrete()
+                    .cloned()
+                    .ok_or_else(|| TransformError::invalid("lower requires concrete captures")),
+                _ => Err(TransformError::invalid("lower requires immutable captures")),
+            })
+            .collect::<crate::TransformResult<_>>()?;
+        let expr = entry.expr.view();
+        if expr
+            .outputs()
+            .iter()
+            .any(|&v| expr.kind(v) != Some(Kind::Value))
+        {
+            return Err(TransformError::invalid("lower requires value outputs"));
+        }
+        let params = |p: gnx_expr::HParam<'_>, id| (id, p.kind(), p.info_ref().to_owned());
+        let spec = InputSpec {
+            closure: expr
+                .closure_inputs()
+                .enumerate()
+                .map(|(i, p)| params(p, InputId::Closure(i)))
+                .collect(),
+            inputs: expr
+                .inputs()
+                .enumerate()
+                .map(|(i, p)| params(p, InputId::Input(i)))
+                .collect(),
+        };
+        Ok((expr.lower(&spec)?.expr, captures))
+    }
+
     /// Trace (or reuse) the body at an explicit signature: the input
     /// structure and one kind per tracer leaf. Shares `Callable::invoke`'s cache.
     pub(crate) fn traced(
@@ -173,6 +247,46 @@ where
             .unwrap_or_else(|never| match never {})
     }
 
+    pub(crate) fn mapped<B: crate::filters::AxisType>(
+        &self,
+        builder: TracerBuilder<I>,
+        kinds: Vec<(Kind, VarInfo)>,
+        axes: &B::Filter,
+    ) -> Result<Arc<TraceEntry<F::Output>>, crate::ApplyError<Infallible>>
+    where
+        F: Jitable<I>,
+    {
+        self.traces.entry_with_key(
+            builder,
+            kinds,
+            self.name_hint.as_ref(),
+            |input| Ok(self.func.invoke_owned(input)),
+            false,
+            |out| Ok(Some(crate::spec::traced_output_axes::<B>(axes, out)?)),
+        )
+    }
+    pub(crate) fn try_mapped<B: crate::filters::AxisType>(
+        &self,
+        builder: TracerBuilder<I>,
+        kinds: Vec<(Kind, VarInfo)>,
+        axes: &B::Filter,
+    ) -> Result<Arc<TraceEntry<F::Output>>, crate::ApplyError<F::Error>>
+    where
+        F: TryJitable<I>,
+    {
+        self.try_traces.entry_with_key(
+            builder,
+            kinds,
+            self.name_hint.as_ref(),
+            |input| {
+                self.func
+                    .try_invoke_owned(input)
+                    .map_err(crate::ApplyError::Body)
+            },
+            false,
+            |out| Ok(Some(crate::spec::traced_output_axes::<B>(axes, out)?)),
+        )
+    }
     /// Like [`Jit::traced`] for a fallible body. Shares `try_invoke`'s cache.
     pub(crate) fn try_traced(
         &self,

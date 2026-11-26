@@ -30,6 +30,10 @@ extern "C" const char *gnx_torch_prepare_cuda_driver() noexcept {
     return handle;
   }();
   (void)driver;
+#ifdef GNX_NVRTC_BUILTINS
+  static const auto builtins = dlopen(GNX_NVRTC_BUILTINS, RTLD_NOW | RTLD_LOCAL);
+  if (!builtins) return "could not load " GNX_NVRTC_BUILTINS;
+#endif
   // Load Torch kernels on first GPU use. In managed CUDA 13 builds the
   // kernel DSO and XLA's PJRT plugin resolve to the same NVIDIA libraries.
   static const auto kernels =

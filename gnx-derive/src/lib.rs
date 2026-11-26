@@ -37,6 +37,8 @@ pub fn jittable(input: ProcTokenStream) -> ProcTokenStream {
     transforms::jittable(input)
 }
 
+/// Construct a DAG. In `dag!(as T; ...)`, convert each payload into `T`;
+/// keys, shared bindings, and empty leaves (`*`) keep their usual meaning.
 #[proc_macro]
 pub fn dag(input: ProcTokenStream) -> ProcTokenStream {
     dag::dag(input)

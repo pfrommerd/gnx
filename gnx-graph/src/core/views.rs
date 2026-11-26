@@ -33,7 +33,7 @@ impl<'g, G: Graph, F> View<'g, G, F> {
     pub fn visit<V, L>(&self, visitor: V) -> V::Output
     where
         L: Leaf,
-        V: GraphVisitor<'g, G, L>,
+        V: GraphVisitor<'g, G, L, F::Annotation<'g>>,
         F: Filter<L>,
     {
         self.graph.visit(&self.filter, visitor)
@@ -42,7 +42,7 @@ impl<'g, G: Graph, F> View<'g, G, F> {
     where
         G: Node,
         L: Leaf,
-        V: ChildrenVisitor<'g, G, L>,
+        V: ChildrenVisitor<'g, G, L, F::Annotation<'g>>,
         F: Filter<L>,
     {
         self.graph.visit_children(&self.filter, visitor)

@@ -1,6 +1,7 @@
 extern crate self as gnx_transforms;
 
 pub mod ad;
+mod axis_matches;
 pub use ad::stop_gradient;
 mod cache;
 pub mod callable;
@@ -15,11 +16,14 @@ pub mod util;
 
 pub use ad::{grad, hessian, jvp, value_and_grad, vjp};
 pub use callable::{Callable, Function, Jitable, TryCallable, TryJitable};
-pub use cf::{call, call_immutable, call_lowered, cond, scan, switch, while_loop};
+pub use cf::{call, call_immutable, call_lowered, cond, scan, scan_graph, switch, while_loop};
 pub use error::{ApplyError, TransformError, TransformResult};
 pub use expand::{ExpandTransforms, Transform, expand_transforms};
+pub use filters::on_axis;
 pub use jit::{Jit, jit, jit_fn, jittable, try_jit_fn};
 pub use map::map;
+pub mod filters;
+pub use filters::{ByFilter, IntoAxisFilter, IntoWrtFilter};
 
 // Macros: `map!`, `jvp!`, ... wrap a closure like `jit_fn!` and take builder
 // options in `dag!` syntax.

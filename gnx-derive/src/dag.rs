@@ -43,11 +43,19 @@ struct DagMapEntry {
     value: DagValue,
 }
 
-struct DagInput(DagValue);
+struct DagInput(DagValue, Option<syn::Type>);
 
 impl Parse for DagInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        parse_container(input).map(DagInput)
+        let ty = if input.peek(Token![as]) {
+            input.parse::<Token![as]>()?;
+            let ty = input.parse()?;
+            input.parse::<Token![;]>()?;
+            Some(ty)
+        } else {
+            None
+        };
+        Ok(DagInput(parse_container(input)?, ty))
     }
 }
 
@@ -56,22 +64,41 @@ impl DagInput {
         let g = paths::graph_crate();
         let util = paths::graph_util_mod();
         let mut scope = HashSet::new();
-        self.0.expand_dag(&g, &util, &mut scope)
+        let dag = self.0.expand_dag(&g, &util, &mut scope, self.1.as_ref());
+        if let Some(ty) = self.1 {
+            quote!({let dag: #util::Dag<#ty> = #dag; dag})
+        } else {
+            dag
+        }
     }
 }
 
 impl DagValue {
+    /// Empty-only transform options need the legacy payload type for inference.
+    pub(crate) fn has_payload(&self) -> bool {
+        match self {
+            Self::Leaf(_) => true,
+            Self::Empty => false,
+            Self::List(list) => list.values.iter().any(Self::has_payload),
+            Self::Map(map) => map.entries.iter().any(|e| e.value.has_payload()),
+        }
+    }
+
     pub(crate) fn expand_dag(
         &self,
         g: &syn::Path,
         util: &syn::Path,
         scope: &mut HashSet<String>,
+        ty: Option<&syn::Type>,
     ) -> TokenStream2 {
         match self {
+            DagValue::Leaf(expr) if ty.is_some() => {
+                quote!(#util::Dag::Leaf(Some(::core::convert::Into::<#ty>::into(#expr))))
+            }
             DagValue::Leaf(expr) => quote!(#util::Dag::Leaf(Some(#expr))),
             DagValue::Empty => quote!(#util::Dag::Leaf(None)),
-            DagValue::List(list) => list.expand_dag(g, util, scope),
-            DagValue::Map(map) => map.expand_dag(g, util, scope),
+            DagValue::List(list) => list.expand_dag(g, util, scope, ty),
+            DagValue::Map(map) => map.expand_dag(g, util, scope, ty),
         }
     }
 
@@ -80,6 +107,7 @@ impl DagValue {
         g: &syn::Path,
         util: &syn::Path,
         scope: &mut HashSet<String>,
+        ty: Option<&syn::Type>,
     ) -> TokenStream2 {
         if let DagValue::Leaf(expr) = self {
             if let Some(ident) = bound_ident(expr, scope) {
@@ -87,7 +115,7 @@ impl DagValue {
             }
         }
 
-        let dag = self.expand_dag(g, util, scope);
+        let dag = self.expand_dag(g, util, scope, ty);
         quote!(#util::DagChild::Owned(#dag))
     }
 }
@@ -98,13 +126,14 @@ impl DagContainer {
         g: &syn::Path,
         util: &syn::Path,
         scope: &mut HashSet<String>,
+        ty: Option<&syn::Type>,
     ) -> TokenStream2 {
         let mut local_scope = scope.clone();
-        let bindings = expand_bindings(&self.bindings, g, util, &mut local_scope);
+        let bindings = expand_bindings(&self.bindings, g, util, &mut local_scope, ty);
         let values = self
             .values
             .iter()
-            .map(|value| value.expand_child(g, util, &mut local_scope));
+            .map(|value| value.expand_child(g, util, &mut local_scope, ty));
 
         quote!({
             #(#bindings)*
@@ -119,12 +148,13 @@ impl DagMap {
         g: &syn::Path,
         util: &syn::Path,
         scope: &mut HashSet<String>,
+        ty: Option<&syn::Type>,
     ) -> TokenStream2 {
         let mut local_scope = scope.clone();
-        let bindings = expand_bindings(&self.bindings, g, util, &mut local_scope);
+        let bindings = expand_bindings(&self.bindings, g, util, &mut local_scope, ty);
         let entries = self.entries.iter().map(|entry| {
             let key = &entry.key;
-            let value = entry.value.expand_child(g, util, &mut local_scope);
+            let value = entry.value.expand_child(g, util, &mut local_scope, ty);
             quote! {
                 __gnx_dag_map.insert(#g::Key::from(#key), #value);
             }
@@ -144,12 +174,13 @@ fn expand_bindings(
     g: &syn::Path,
     util: &syn::Path,
     scope: &mut HashSet<String>,
+    ty: Option<&syn::Type>,
 ) -> Vec<TokenStream2> {
     bindings
         .iter()
         .map(|binding| {
             let ident = &binding.ident;
-            let value = binding.value.expand_dag(g, util, scope);
+            let value = binding.value.expand_dag(g, util, scope, ty);
             scope.insert(ident.to_string());
             quote! {
                 let #ident = ::std::sync::Arc::new(#value);

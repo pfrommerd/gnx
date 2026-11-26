@@ -42,30 +42,34 @@ struct CollectPaths<L> {
     path: Vec<Key>,
 }
 
-impl<'g, G: Graph + ?Sized, L: Leaf> GraphVisitor<'g, G, L> for &mut CollectPaths<L> {
+impl<'g, A, G: Graph + ?Sized, L: Leaf> GraphVisitor<'g, G, L, A> for &mut CollectPaths<L> {
     type Output = ();
 
-    fn visit_leaf(self, value: L::Ref<'g>) {
+    fn visit_leaf<F: Filter<L, Annotation<'g> = A>>(self, value: L::Ref<'g>, _: F) {
         self.leaves.push((self.path.clone(), L::clone_ref(value)));
     }
 
     fn visit_static<S: Leaf>(self, _: S::Ref<'g>) {}
 
-    fn visit_node<N: Node, F: Filter<L>>(self, node: View<'g, N, F>) {
+    fn visit_node<N: Node, F: Filter<L, Annotation<'g> = A>>(self, node: View<'g, N, F>) {
         node.visit_children(self);
     }
 
-    fn visit_shared<S: Graph, F: Filter<L>>(self, id: GraphId, shared: View<'g, S, F>) {
+    fn visit_shared<S: Graph, F: Filter<L, Annotation<'g> = A>>(
+        self,
+        id: GraphId,
+        shared: View<'g, S, F>,
+    ) {
         if self.seen.insert((TypeId::of::<G::Builder<L>>(), id)) {
             shared.visit(self);
         }
     }
 }
 
-impl<'g, N: Node, L: Leaf> ChildrenVisitor<'g, N, L> for &mut CollectPaths<L> {
+impl<'g, A, N: Node, L: Leaf> ChildrenVisitor<'g, N, L, A> for &mut CollectPaths<L> {
     type Output = ();
 
-    fn visit_child<C: Graph, F: Filter<L>>(
+    fn visit_child<C: Graph, F: Filter<L, Annotation<'g> = A>>(
         &mut self,
         key: KeyRef<'g>,
         child: View<'g, C, F>,
@@ -84,20 +88,24 @@ struct CollectLeaves<L> {
     seen: HashSet<(TypeId, GraphId)>,
 }
 
-impl<'g, G: Graph + ?Sized, L: Leaf> GraphVisitor<'g, G, L> for &mut CollectLeaves<L> {
+impl<'g, A, G: Graph + ?Sized, L: Leaf> GraphVisitor<'g, G, L, A> for &mut CollectLeaves<L> {
     type Output = ();
 
-    fn visit_leaf(self, value: L::Ref<'g>) {
+    fn visit_leaf<F: Filter<L, Annotation<'g> = A>>(self, value: L::Ref<'g>, _: F) {
         self.leaves.push(L::clone_ref(value));
     }
 
     fn visit_static<S: Leaf>(self, _: S::Ref<'g>) {}
 
-    fn visit_node<N: Node, F: Filter<L>>(self, node: View<'g, N, F>) {
+    fn visit_node<N: Node, F: Filter<L, Annotation<'g> = A>>(self, node: View<'g, N, F>) {
         node.visit_children(self);
     }
 
-    fn visit_shared<S: Graph, F: Filter<L>>(self, id: GraphId, shared: View<'g, S, F>) {
+    fn visit_shared<S: Graph, F: Filter<L, Annotation<'g> = A>>(
+        self,
+        id: GraphId,
+        shared: View<'g, S, F>,
+    ) {
         // GraphContext tracks sharing by ID and builder type.
         if self.seen.insert((TypeId::of::<G::Builder<L>>(), id)) {
             shared.visit(self);
@@ -105,10 +113,10 @@ impl<'g, G: Graph + ?Sized, L: Leaf> GraphVisitor<'g, G, L> for &mut CollectLeav
     }
 }
 
-impl<'g, N: Node, L: Leaf> ChildrenVisitor<'g, N, L> for &mut CollectLeaves<L> {
+impl<'g, A, N: Node, L: Leaf> ChildrenVisitor<'g, N, L, A> for &mut CollectLeaves<L> {
     type Output = ();
 
-    fn visit_child<C: Graph, F: Filter<L>>(
+    fn visit_child<C: Graph, F: Filter<L, Annotation<'g> = A>>(
         &mut self,
         _: KeyRef<'g>,
         child: View<'g, C, F>,

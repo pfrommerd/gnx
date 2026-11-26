@@ -1,13 +1,21 @@
 use crate::tensor::*;
 use gnx::{
-    Array,
-    array::DType,
-    ops::{self, elementwise as e},
+    Array, Shape,
+    array::{ArrayRef, DType},
+    lax, np,
+    ops::bounded::BoundedAxis,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
 
-#[derive(Deserialize)]
+#[derive(
+    Deserialize,
+    Clone,
+    gnx_graph::Leaf,
+    gnx_graph::GraphHash,
+    gnx_graph::GraphPartialEq,
+    gnx_graph::GraphEq,
+)]
 pub struct Config {
     pub model_type: String,
     pub hidden_size: usize,
@@ -26,10 +34,16 @@ pub struct Config {
     pub rope_parameters: Rope,
     pub rms_norm_eps: f64,
     pub tie_word_embeddings: bool,
-    pub eos_token_id: u32,
     pub max_position_embeddings: usize,
 }
-#[derive(Deserialize)]
+#[derive(
+    Deserialize,
+    Clone,
+    gnx_graph::Leaf,
+    gnx_graph::GraphHash,
+    gnx_graph::GraphPartialEq,
+    gnx_graph::GraphEq,
+)]
 pub struct Rope {
     rope_theta: f64,
     partial_rotary_factor: f64,
@@ -137,19 +151,22 @@ impl Config {
         }
         Ok(())
     }
-    fn rope(&self, x: &Array, pos: usize) -> Array {
+    fn rope(&self, x: &Array, pos: &Array) -> Array {
         let d = self.head_dim;
         let r = (d as f64 * self.rope_parameters.partial_rotary_factor) as usize;
         let half = r / 2;
-        let freq = apply(ops::creation::iota(0), &[], &[half], DType::F32);
+        let freq = lax::iota(&[half], 0, DType::F32);
         let log_scale = scalar(-self.rope_parameters.rope_theta.ln() / half as f64);
-        let angles = scalar(pos as f64) * unary(e::exp(), &(freq * log_scale));
-        let (cos, sin) = (unary(e::cos(), &angles), unary(e::sin(), &angles));
-        let a = view(x, 1, 0, half);
-        let b = view(x, 1, half, r);
-        cat(
-            &cat(&(&a * &cos - &b * &sin), &(a * sin + b * cos), 1),
-            &view(x, 1, r, d),
+        let angles = np::astype(pos, DType::F32) * np::exp(&(freq * log_scale));
+        let (cos, sin) = (np::cos(&angles), np::sin(&angles));
+        let a = lax::slice_axis(x, 1, 0, half);
+        let b = lax::slice_axis(x, 1, half, r);
+        np::concatenate(
+            &[
+                &(&a * &cos - &b * &sin),
+                &(a * sin + b * cos),
+                &lax::slice_axis(x, 1, r, d),
+            ],
             1,
         )
     }
@@ -157,18 +174,23 @@ impl Config {
         &self,
         x: &Array,
         w: impl Fn(&str) -> Array,
-        prev: &[Array],
-        pos: usize,
-    ) -> (Array, [Array; 2]) {
+        cache: &(ArrayRef, ArrayRef),
+        pos: &Array,
+        time: &BoundedAxis,
+    ) -> Array {
         let (h, k, d) = (
             self.num_attention_heads,
             self.num_key_value_heads,
             self.head_dim,
         );
         let qg = linear(x, &w("q_proj.weight")).reshape([h, 2 * d]);
-        let gate = sigmoid(&view(&qg, 1, d, 2 * d));
+        let gate = lax::logistic(&lax::slice_axis(&qg, 1, d, 2 * d));
         let q = self.rope(
-            &rms(&view(&qg, 1, 0, d), &w("q_norm.weight"), self.rms_norm_eps),
+            &rms(
+                &lax::slice_axis(&qg, 1, 0, d),
+                &w("q_norm.weight"),
+                self.rms_norm_eps,
+            ),
             pos,
         );
         let key = self.rope(
@@ -179,24 +201,22 @@ impl Config {
             ),
             pos,
         );
-        let append = |v: Array, index: usize| {
+        let append = |slot: &ArrayRef, v: Array| {
             let v = v.reshape([k, 1, d]);
-            if prev.is_empty() {
-                v
-            } else {
-                cat(&prev[index], &v, 1)
-            }
+            let zero = np::scalar(0., DType::I32);
+            let updated = lax::dynamic_update_slice(&slot.get(), &v, &[&zero, pos, &zero]);
+            slot.set(updated.clone());
+            updated
         };
-        let key = append(key, 0);
-        let value = append(linear(x, &w("v_proj.weight")), 1);
+        let key = append(&cache.0, key);
+        let value = append(&cache.1, linear(x, &w("v_proj.weight")));
+        let value = time.prefix(&value, 1).padded(0.);
         let scores = dot(&q.reshape([k, h / k, d]), &key, 2, 2, 1) * scalar(1. / (d as f64).sqrt());
-        let exp = unary(e::exp(), &(&scores - top1(&scores).0));
+        let scores = time.prefix(&scores, 2).padded(f64::NEG_INFINITY);
+        let exp = np::exp(&(&scores - lax::top_k(&scores, 1).0));
         let probs = &exp / keep_sum(&exp);
         let y = dot(&probs, &value, 2, 1, 1).reshape([h, d]) * gate;
-        (
-            linear(&y.reshape([h * d]), &w("o_proj.weight")),
-            [key, value],
-        )
+        linear(&y.reshape([h * d]), &w("o_proj.weight"))
     }
     fn recurrent(
         &self,
@@ -215,69 +235,91 @@ impl Config {
         let vd = h * f;
         let c = 2 * kd + vd;
         let proj = |name: &str| linear(x, &w(&format!("in_proj_{name}.weight")));
-        let history = prev.first().cloned().unwrap_or_else(|| zeros(&[c, t - 1]));
-        let window = cat(&history, &proj("qkv").reshape([c, 1]), 1);
-        let qkv = silu(&sum(
-            &(&window * cast(&w("conv1d.weight"), DType::F32).reshape([c, t])),
+        let window = np::concatenate(&[&prev[0], &proj("qkv").reshape([c, 1])], 1);
+        let qkv = silu(&np::sum(
+            &(&window * np::astype(&w("conv1d.weight"), DType::F32).reshape([c, t])),
             1,
         ));
         let heads = |start| {
-            let x = norm(&view(&qkv, 0, start, start + kd).reshape([kh, d]), 1., 1e-6);
-            broadcast(&x, &[kh, h / kh, d], &[0, 2]).reshape([h, d])
+            let x = norm(
+                &lax::slice_axis(&qkv, 0, start, start + kd).reshape([kh, d]),
+                1.,
+                1e-6,
+            );
+            lax::broadcast_in_dim(&x, Shape::fixed([kh, h / kh, d]), &[0, 2]).reshape([h, d])
         };
         let q = heads(0) * scalar(1. / (d as f64).sqrt());
         let k = heads(kd);
-        let v = view(&qkv, 0, 2 * kd, c).reshape([h, f]);
-        let a = proj("a") + cast(&w("dt_bias"), DType::F32);
-        let softplus = binary_max_zero(&a)
-            + unary(
-                e::log1p(),
-                &unary(e::exp(), &unary(e::neg(), &unary(e::abs(), &a))),
-            );
-        let decay = unary(
-            e::exp(),
-            &unary(
-                e::neg(),
-                &(unary(e::exp(), &cast(&w("A_log"), DType::F32)) * softplus),
-            ),
-        );
-        let state = prev.get(1).cloned().unwrap_or_else(|| zeros(&[h, d, f]));
-        let (out, state) = delta_rule(q, k, v, sigmoid(&proj("b")), decay, state);
+        let v = lax::slice_axis(&qkv, 0, 2 * kd, c).reshape([h, f]);
+        let a = proj("a") + np::astype(&w("dt_bias"), DType::F32);
+        let softplus = lax::max(&a, &np::zeros(dims(&a), a.dtype()))
+            + np::log1p(&np::exp(&np::negative(&np::abs(&a))));
+        let rate = np::exp(&np::astype(&w("A_log"), DType::F32));
+        let decay = np::exp(&np::negative(&(rate * softplus)));
+        let state = prev[1].clone();
+        let (out, state) = delta_rule(q, k, v, lax::logistic(&proj("b")), decay, state);
         let gated = norm(&out, f as f64, self.rms_norm_eps)
-            * cast(&w("norm.weight"), DType::F32)
+            * np::astype(&w("norm.weight"), DType::F32)
             * silu(&proj("z").reshape([h, f]));
         (
             linear(&gated.reshape([vd]), &w("out_proj.weight")),
-            [view(&window, 1, 1, t), state],
+            [lax::slice_axis(&window, 1, 1, t), state],
         )
     }
-    /// Both prompt prefill and generation consume one token and advance the same layer caches.
-    pub fn step(
-        &self,
-        w: &Weights,
-        id: u32,
-        pos: usize,
-        prev: &[Array],
-        predict: bool,
-    ) -> (Vec<Array>, Option<Array>) {
+    pub fn state_shapes(&self, capacity: usize) -> impl Iterator<Item = Vec<usize>> + '_ {
+        self.layer_types.iter().flat_map(move |ty| {
+            if ty == "full_attention" {
+                let kv = vec![self.num_key_value_heads, capacity, self.head_dim];
+                [kv.clone(), kv]
+            } else {
+                let (h, d, f) = (
+                    self.linear_num_value_heads,
+                    self.linear_key_head_dim,
+                    self.linear_value_head_dim,
+                );
+                [
+                    vec![
+                        2 * self.linear_num_key_heads * d + h * f,
+                        self.linear_conv_kernel_dim - 1,
+                    ],
+                    vec![h, d, f],
+                ]
+            }
+        })
+    }
+    fn logits(&self, w: &Weights, id: &Array, (cursor, capacity, layers): &DecodeState) -> Array {
+        let pos = cursor.get();
+        let length = &pos + np::scalar(1., DType::I32);
+        let time = BoundedAxis::new(*capacity, &length);
         let embed = &w[&format!("{ROOT}.embed_tokens.weight")];
-        let mut x = cast(&view(embed, 0, id as usize, id as usize + 1), DType::F32)
-            .reshape([self.hidden_size]);
-        let mut cache = Vec::with_capacity(2 * self.num_hidden_layers);
+        let row = lax::dynamic_slice(
+            embed,
+            &[id, &np::scalar(0., DType::I32)],
+            &[1, self.hidden_size],
+        );
+        let mut x = np::astype(&row, DType::F32).reshape([self.hidden_size]);
         for (n, ty) in self.layer_types.iter().enumerate() {
             let wt = |key: &str| w[&format!("{ROOT}.layers.{n}.{key}")].clone();
             let y = rms(&x, &wt("input_layernorm.weight"), self.rms_norm_eps);
-            let state = if prev.is_empty() {
-                &[]
+            let slots = &layers[n];
+            let y = if ty == "full_attention" {
+                self.attention(
+                    &y,
+                    |key| wt(&format!("self_attn.{key}")),
+                    slots,
+                    &pos,
+                    &time,
+                )
             } else {
-                &prev[2 * n..2 * n + 2]
+                let (y, [history, carry]) = self.recurrent(
+                    &y,
+                    |key| wt(&format!("linear_attn.{key}")),
+                    &[slots.0.get(), slots.1.get()],
+                );
+                slots.0.set(history);
+                slots.1.set(carry);
+                y
             };
-            let (y, next) = if ty == "full_attention" {
-                self.attention(&y, |key| wt(&format!("self_attn.{key}")), state, pos)
-            } else {
-                self.recurrent(&y, |key| wt(&format!("linear_attn.{key}")), state)
-            };
-            cache.extend(next);
             x = x + y;
             let y = rms(
                 &x,
@@ -291,21 +333,73 @@ impl Config {
                 wt("mlp.down_proj.weight"),
             );
         }
-        let token = predict.then(|| {
+        let logits = {
             let y = rms(&x, &w[&format!("{ROOT}.norm.weight")], self.rms_norm_eps);
-            top1(&linear(
+            linear(
                 &y,
                 if self.tie_word_embeddings {
                     embed
                 } else {
                     &w["lm_head.weight"]
                 },
-            ))
-            .1
-        });
-        (cache, token)
+            )
+        };
+        cursor.set(length);
+        logits
     }
 }
-fn binary_max_zero(x: &Array) -> Array {
-    apply(e::max(), &[x, &zeros(&dims(x))], &dims(x), DType::F32)
+
+/// Cursor, time bound, and two persistent slots per model layer.
+pub type DecodeState = (ArrayRef, usize, Vec<(ArrayRef, ArrayRef)>);
+pub type Model = (Config, Vec<(String, Array)>);
+
+/// One traced computation for prompt and decode tokens, including state writes.
+#[gnx::jit]
+pub fn step(model: &Model, id: &Array, state: &DecodeState) -> Array {
+    let (config, params) = model;
+    let weights = params.iter().cloned().collect();
+    lax::top_k(&config.logits(&weights, id, state), 1).1
+}
+
+#[cfg(test)]
+#[gnx::jit]
+pub fn step_logits(model: &Model, id: &Array, state: &DecodeState) -> Array {
+    model
+        .0
+        .logits(&model.1.iter().cloned().collect(), id, state)
+}
+/// Prefill supplies the first prediction. Feed each non-delimiter token back
+/// through the same step and collect it in a capacity-sized device buffer.
+#[gnx::jit]
+pub fn decode(
+    model: &Model,
+    first: &Array,
+    state: &DecodeState,
+    end: &Array,
+) -> (Array, Array, Array) {
+    let (cursor, capacity, _) = state;
+    let capacity = *capacity;
+    let int = |v| np::scalar(v, DType::I32);
+    let count = ArrayRef::new(int(0.));
+    let tokens = ArrayRef::new(np::zeros([capacity], DType::I32));
+    let last = gnx::transforms::cf::while_array(
+        &first.reshape([]),
+        |id| {
+            let pending = lax::ne(id, end);
+            let room = lax::lt(&cursor.get(), &int(capacity as f64));
+            lax::bitwise_and(&pending, &room)
+        },
+        |id| {
+            let n = count.get();
+            tokens.set(lax::dynamic_update_slice(
+                &tokens.get(),
+                &id.reshape([1]),
+                &[&n],
+            ));
+            count.set(n + int(1.));
+            step(model, id, state).reshape([])
+        },
+    )
+    .expect("decoder while loop has a scalar token carry");
+    (tokens.get(), count.get(), last)
 }

@@ -118,7 +118,10 @@ impl ApplyPlan {
     /// the caller-local cells, each listed once, and the combined access to
     /// cells that may be aliased.
     pub fn classify(regions: &[ApplyRegion]) -> (Vec<ApplyLocal>, CellAccess) {
-        let mut locals = BTreeMap::<CellKey, ApplyLocal>::new();
+        // Cell identities determine aliasing, not the order of the update
+        // results. Use parameter order so a fresh decoder state reuses the IR.
+        let mut indices = BTreeMap::<CellKey, usize>::new();
+        let mut locals = Vec::new();
         let mut external_access = CellAccess::Unused;
         for region in regions {
             let body = region.body.view();
@@ -132,17 +135,20 @@ impl ApplyPlan {
                 if cell.is_maybe_aliased() {
                     external_access = external_access.combine(access);
                 } else {
-                    locals
-                        .entry(CellKey::from(cell))
-                        .or_insert_with(|| ApplyLocal {
+                    let i = *indices.entry(CellKey::from(cell)).or_insert_with(|| {
+                        let i = locals.len();
+                        locals.push(ApplyLocal {
                             cell: cell.clone(),
                             written: false,
-                        })
-                        .written |= matches!(access, CellAccess::Write | CellAccess::ReadWrite);
+                        });
+                        i
+                    });
+                    locals[i].written |=
+                        matches!(access, CellAccess::Write | CellAccess::ReadWrite);
                 }
             }
         }
-        (locals.into_values().collect(), external_access)
+        (locals, external_access)
     }
 }
 

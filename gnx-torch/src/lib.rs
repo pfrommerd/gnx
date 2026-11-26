@@ -7,7 +7,9 @@ use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gnx_common::cache::Cache;
-use gnx_common::pass::{CheckSupported, Dce, Pass, PassError, Pipeline, PipelineError};
+use gnx_common::pass::{
+    CheckSupported, Dce, Pass, PassError, Pipeline, PipelineError, RuntimePipeline,
+};
 use gnx_expr::{RootExpr, Value};
 use gnx_math::{
     ArrayInfo, DataHandle, Device, DeviceId, ExecOpts, ExecutionBoundary, HostBuffer, HostId,
@@ -33,6 +35,8 @@ pub struct TorchDevice {
     target: tch::Device,
     allocations: Arc<LocalAllocations<Mutex<Tensor>>>,
     cache: Cache,
+    pipeline: Arc<RuntimePipeline<TorchModules, Vec<CModule>>>,
+    joint_pipeline: Arc<RuntimePipeline<TorchModules, Vec<CModule>>>,
 }
 
 impl TorchDevice {
@@ -49,6 +53,8 @@ impl TorchDevice {
         static CPU: OnceLock<TorchDevice> = OnceLock::new();
         let device = CPU.get_or_init(|| TorchDevice {
             target: tch::Device::Cpu,
+            pipeline: Arc::new(pipeline(tch::Device::Cpu, false)),
+            joint_pipeline: Arc::new(pipeline(tch::Device::Cpu, true)),
             allocations: Arc::default(),
             cache,
         });
@@ -118,6 +124,8 @@ impl TorchDevice {
         }
         let device = Self {
             target,
+            pipeline: Arc::new(pipeline(target, false)),
+            joint_pipeline: Arc::new(pipeline(target, true)),
             allocations: Arc::default(),
             cache,
         };
@@ -139,34 +147,49 @@ impl TorchDevice {
     /// Both are skipped if the device's cache holds the modules from an
     /// earlier compilation.
     pub async fn compile(&self, expr: &Arc<RootExpr>) -> io::Result<TorchExecutable> {
+        self.compile_outputs(expr, false).await
+    }
+
+    /// Compile all results into one method, so shared subexpressions execute
+    /// once. A graph with several computed results returns a TorchScript tuple.
+    pub async fn compile_joint(&self, expr: &Arc<RootExpr>) -> io::Result<TorchExecutable> {
+        self.compile_outputs(expr, true).await
+    }
+
+    async fn compile_outputs(
+        &self,
+        expr: &Arc<RootExpr>,
+        joint: bool,
+    ) -> io::Result<TorchExecutable> {
         let (projected, boundary) = ExecutionBoundary::project(expr.view())?;
-        let mut modules = Vec::new();
+        let mut modules = Arc::new(Vec::new());
+        let mut outputs = Vec::new();
+        let mut capacities = std::collections::HashMap::new();
         if let Some(body) = projected {
             let view = body.view();
-            let outputs = (view.outputs().iter())
+            for (i, p) in view.closure_inputs().chain(view.inputs()).enumerate() {
+                if !p.info().symbols().is_empty() {
+                    capacities.insert(i, lower::layout(&lower::metadata(p.info_ref())?)?.0);
+                }
+            }
+            outputs = (view.outputs().iter())
                 .map(|&var| lower::metadata(view.value_info(var).expect("checked SSA output")))
                 .collect::<io::Result<Vec<_>>>()?;
-            let traced = Pipeline::new()
-                .with(ExpandTransforms)
-                .with(regions::StaticRegions)
-                .with(Dce)
-                .with(CheckSupported::<dyn TorchLowering>::new())
-                .finalize(TraceTorch {
-                    target: self.target,
-                })
-                .run(body.clone(), &self.cache)
-                .await
-                .map_err(pipeline_error)?;
-            for (module, info) in traced.modules.iter().zip(outputs) {
-                let module = CModule::load_data_on_device(&mut &module[..], self.target)
-                    .map_err(io::Error::other)?;
-                modules.push((module, info));
-            }
+            modules = (if joint {
+                &self.joint_pipeline
+            } else {
+                &self.pipeline
+            })
+            .run(body, &self.cache)
+            .await
+            .map_err(pipeline_error)?;
         }
         Ok(TorchExecutable {
             device: self.clone(),
             signature: expr.clone(),
             boundary,
+            capacities,
+            outputs,
             modules,
         })
     }
@@ -238,7 +261,9 @@ pub struct TorchExecutable {
     device: TorchDevice,
     signature: Arc<RootExpr>,
     boundary: ExecutionBoundary,
-    modules: Vec<(CModule, ArrayInfo)>,
+    capacities: std::collections::HashMap<usize, Vec<i64>>,
+    outputs: Vec<ArrayInfo>,
+    modules: Arc<Vec<CModule>>,
 }
 
 impl TorchExecutable {
@@ -246,30 +271,94 @@ impl TorchExecutable {
     /// Each takes the projected captures followed by projected inputs. Forwarded
     /// arguments and duplicate results are reconstructed by `run`.
     pub fn modules(&self) -> impl ExactSizeIterator<Item = &CModule> {
-        self.modules.iter().map(|(module, _)| module)
+        self.modules.iter()
     }
 
     pub fn run(&self, args: &[Value], opts: ExecOpts) -> io::Result<Vec<Value>> {
-        ExecutionBoundary::validate_arguments(self.signature.view(), args)?;
-        let inputs = self
+        let sizes = ExecutionBoundary::bind_arguments(self.signature.view(), args)?;
+        let mut inputs = self
             .boundary
             .arguments(args)
-            .map(|v| {
-                let d = v?
-                    .downcast::<DataHandle>()
-                    .map_err(|_| invalid("expected concrete array argument"))?;
-                match self.device.resolve(d)? {
+            .enumerate()
+            .map(|(i, v)| {
+                let v = v?;
+                let d = if let Ok(buffer) = v.downcast::<gnx_math::BoundedBuffer>() {
+                    buffer.storage()
+                } else {
+                    v.downcast::<DataHandle>()
+                        .map_err(|_| invalid("expected concrete array argument"))?
+                };
+                let tensor = match self.device.resolve(d)? {
                     Some(t) => Ok(t),
                     None => self.device.copy_from_host(d, opts.transfers),
+                }?;
+                if let Some(cap) = self.capacities.get(&i)
+                    && tensor.size() != *cap
+                {
+                    if opts.transfers == TransferPolicy::RequireZeroCopy {
+                        return Err(unsupported("padding bounded inputs requires AllowCopy"));
+                    }
+                    let pad = cap
+                        .iter()
+                        .zip(tensor.size())
+                        .rev()
+                        .flat_map(|(c, n)| [0, *c - n])
+                        .collect::<Vec<_>>();
+                    return tensor.f_constant_pad_nd(pad).map_err(io::Error::other);
                 }
+                Ok(tensor)
             })
             .collect::<io::Result<Vec<_>>>()?;
-        let computed = self
-            .modules
-            .iter()
-            .map(|(m, info)| {
-                let result = m.forward_ts(&inputs).map_err(io::Error::other)?;
-                Ok(Value::new(self.device.retain(result, info.clone())?))
+        for scalar in self.boundary.witness_arguments(&sizes) {
+            inputs.push(self.device.copy_from_host(&scalar?, opts.transfers)?);
+        }
+        let results = if self.modules.len() == 1 && self.outputs.len() > 1 {
+            let inputs = inputs
+                .into_iter()
+                .map(tch::IValue::Tensor)
+                .collect::<Vec<_>>();
+            let tch::IValue::Tuple(items) = self.modules[0]
+                .forward_is(&inputs)
+                .map_err(io::Error::other)?
+            else {
+                return Err(invalid("expected TorchScript tuple"));
+            };
+            items
+                .into_iter()
+                .map(|v| match v {
+                    tch::IValue::Tensor(t) => Ok(t),
+                    _ => Err(invalid("expected tensor output")),
+                })
+                .collect::<io::Result<Vec<_>>>()?
+        } else {
+            self.modules
+                .iter()
+                .map(|m| m.forward_ts(&inputs).map_err(io::Error::other))
+                .collect::<io::Result<_>>()?
+        };
+        if results.len() != self.outputs.len() {
+            return Err(invalid("unexpected TorchScript output count"));
+        }
+        let computed = results
+            .into_iter()
+            .zip(&self.outputs)
+            .map(|(mut result, info)| {
+                let logical = sizes.resolve(info)?;
+                if info.has_bounded_axes() {
+                    for (axis, (n, c)) in lower::layout(&logical)?
+                        .0
+                        .into_iter()
+                        .zip(result.size())
+                        .enumerate()
+                    {
+                        if n != c {
+                            result = result
+                                .f_narrow(axis as i64, 0, n)
+                                .map_err(io::Error::other)?;
+                        }
+                    }
+                }
+                Ok(Value::new(self.device.retain(result, logical)?))
             })
             .collect::<io::Result<Vec<_>>>()?;
         self.boundary.finish(args, &computed)
@@ -292,7 +381,7 @@ impl Device for TorchDevice {
                 .name("gnx-torch".into())
                 .spawn(move || {
                     let _ = tx.send(
-                        futures_executor::block_on(device.compile(&expr))
+                        futures_executor::block_on(device.compile_joint(&expr))
                             .and_then(|program| program.run(&args, opts)),
                     );
                 })?;
@@ -300,6 +389,22 @@ impl Device for TorchDevice {
                 .map_err(|_| io::Error::other("Torch execution worker stopped"))?
         }
     }
+}
+
+fn pipeline(target: tch::Device, joint: bool) -> RuntimePipeline<TorchModules, Vec<CModule>> {
+    Pipeline::new()
+        .with(ExpandTransforms)
+        .with(regions::StaticRegions)
+        .with(Dce)
+        .with(CheckSupported::<dyn TorchLowering>::new())
+        .finalize(TraceTorch { target, joint })
+        .on_runtime("torch.load", move |traced| {
+            traced
+                .modules
+                .iter()
+                .map(|bytes| Ok(CModule::load_data_on_device(&mut &bytes[..], target)?))
+                .collect()
+        })
 }
 
 /// Traced programs: one serialized TorchScript module per computed output.
@@ -311,12 +416,14 @@ pub struct TorchModules {
 /// The final stage of compilation: traces the expression on `target`.
 pub struct TraceTorch {
     pub target: tch::Device,
+    pub joint: bool,
 }
 
 impl gnx_common::anyhash::Hash for TraceTorch {
     fn hash<H: gnx_common::anyhash::HasherWrite>(&self, state: &mut H) {
         // Tracing runs on the target, and a module may depend on it.
         state.write_str(&format!("{:?}", self.target));
+        state.write_u8(self.joint as u8);
     }
 }
 
@@ -326,12 +433,8 @@ impl Pass<TorchModules> for TraceTorch {
     }
 
     fn run(&self, expr: Arc<RootExpr>) -> Result<TorchModules, PassError> {
-        lower::trace(expr.view(), self.target)
-            .and_then(|modules| {
-                (modules.iter())
-                    .map(|(module, _)| lower::save(module))
-                    .collect()
-            })
+        lower::trace(expr.view(), self.target, self.joint)
+            .and_then(|modules| (modules.iter()).map(lower::save).collect())
             .map(|modules| TorchModules { modules })
             .map_err(|error| PassError::new(self.name(), error))
     }

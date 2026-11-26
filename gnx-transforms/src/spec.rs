@@ -1,22 +1,108 @@
-//! Resolve transformation specs (`in_axes`, `out_axes`, `wrt`) written as
-//! [`Dag`] graphs against the tracer leaves of an argument or result graph.
-//!
-//! Matching follows key paths (tuple and list indices, struct field names;
-//! transparent wrapper keys are skipped). A spec leaf covers every value leaf
-//! under it, as a JAX pytree prefix does: `dag!(0, *)` maps every leaf of the
-//! first argument along axis 0 and none of the second.
+//! Project matches on the typed graph onto tracer leaves. Axes use annotations;
+//! differentiation uses match locations and preserves exact-versus-prefix semantics.
 
-use gnx_graph::Key;
-use gnx_graph::util::{Dag, DagChild, DagNode};
+use gnx_graph::{
+    Graph, Key,
+    util::{Dag, DagChild, DagNode},
+};
 
+use crate::filters::{AxisType, FilterType};
 use crate::{TransformError, TransformResult};
 
 /// The spec entry for one leaf. `exact` is whether the spec leaf sits on the
 /// value leaf itself rather than on one of its ancestors.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Resolved<T> {
+pub struct Resolved<T> {
     pub value: Option<T>,
     pub exact: bool,
+}
+
+pub(crate) fn axes<B: AxisType>(
+    filter: &B::Filter,
+    graph: &impl Graph,
+    paths: &[Vec<Key>],
+    name: &str,
+) -> TransformResult<Vec<Resolved<usize>>> {
+    B::validate(filter, graph, paths, name)?;
+    Ok(project(crate::axis_matches::axes(graph, filter), paths))
+}
+pub(crate) fn wrt<B: FilterType>(
+    filter: &B::Filter,
+    graph: &impl Graph,
+    paths: &[Vec<Key>],
+) -> TransformResult<Vec<Resolved<()>>> {
+    B::validate(filter, graph, paths, "wrt")?;
+    Ok(project(
+        crate::axis_matches::locations(graph, filter),
+        paths,
+    ))
+}
+fn project<T: Copy>(matches: Vec<(Vec<Key>, T)>, paths: &[Vec<Key>]) -> Vec<Resolved<T>> {
+    // Only remove transparent keys when comparing a graph path to the canonical tracer paths.
+    let matches: std::collections::HashMap<Vec<_>, _> = matches
+        .into_iter()
+        .map(|(mut p, v)| {
+            p.retain(|k| !matches!(k, Key::Transparent));
+            (p, v)
+        })
+        .collect();
+    paths
+        .iter()
+        .map(|path| {
+            let path: Vec<_> = path
+                .iter()
+                .filter(|k| !matches!(k, Key::Transparent))
+                .cloned()
+                .collect();
+            for n in (0..=path.len()).rev() {
+                if let Some(value) = matches.get(&path[..n]) {
+                    return Resolved {
+                        value: Some(*value),
+                        exact: n == path.len(),
+                    };
+                }
+            }
+            Resolved {
+                value: None,
+                exact: false,
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn traced_output_axes<B: AxisType>(
+    filter: &B::Filter,
+    graph: &impl Graph,
+) -> TransformResult<Vec<usize>> {
+    let paths =
+        crate::axis_matches::locations(graph, &gnx_graph::Of::<gnx_expr::ObjectTracer>::filter())
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect::<Vec<_>>();
+    output_axes::<B>(filter, graph, &paths)
+}
+
+pub(crate) fn output_axes<B: AxisType>(
+    filter: &B::Filter,
+    graph: &impl Graph,
+    paths: &[Vec<Key>],
+) -> TransformResult<Vec<usize>> {
+    axes::<B>(filter, graph, paths, "out_axes")?
+        .into_iter()
+        .zip(paths)
+        .map(|(axis, path)| {
+            axis.value.ok_or_else(|| {
+                TransformError::invalid(format!(
+                    "out_axes must give an axis for every result (missing {})",
+                    show(path)
+                ))
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn at_path(name: &str, path: &[Key], error: TransformError) -> TransformError {
+    TransformError::invalid(format!("{name} at {}: {error}", show(path)))
 }
 
 fn show(path: &[Key]) -> String {
@@ -35,15 +121,14 @@ fn show(path: &[Key]) -> String {
     }
 }
 
-fn lookup<'a, T>(mut dag: &'a Dag<T>, path: &[Key]) -> Result<(Option<&'a T>, bool), String> {
+fn validate_path<T>(mut dag: &Dag<T>, path: &[Key]) -> Result<(), String> {
     let mut keys = path
         .iter()
         .filter(|key| !matches!(key, Key::Transparent))
-        .enumerate()
-        .peekable();
+        .enumerate();
     loop {
         match dag {
-            Dag::Leaf(value) => return Ok((value.as_ref(), keys.peek().is_none())),
+            Dag::Leaf(_) => return Ok(()),
             Dag::Node(node) => {
                 let Some((depth, key)) = keys.next() else {
                     return Err(format!(
@@ -76,21 +161,12 @@ fn lookup<'a, T>(mut dag: &'a Dag<T>, path: &[Key]) -> Result<(Option<&'a T>, bo
     }
 }
 
-/// One resolved entry per leaf path.
-pub(crate) fn resolve<T: Clone>(
+pub(crate) fn validate_dag<T>(
     spec: &Dag<T>,
     paths: &[Vec<Key>],
-    what: &str,
-) -> TransformResult<Vec<Resolved<T>>> {
-    paths
-        .iter()
-        .map(|path| {
-            lookup(spec, path)
-                .map(|(value, exact)| Resolved {
-                    value: value.cloned(),
-                    exact,
-                })
-                .map_err(|error| TransformError::invalid(format!("{what}: {error}")))
-        })
-        .collect()
+    name: &str,
+) -> TransformResult<()> {
+    paths.iter().try_for_each(|p| {
+        validate_path(spec, p).map_err(|error| TransformError::invalid(format!("{name}: {error}")))
+    })
 }

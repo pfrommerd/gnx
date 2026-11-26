@@ -2,15 +2,18 @@ use crate::{Graph, KeyRef, Leaf};
 use std::marker::PhantomData;
 
 pub trait Filter<L: Leaf>: Clone {
-    type Owned: Filter<L> + 'static;
+    type Annotation<'g>;
+    type Owned: for<'g> Filter<L, Annotation<'g> = Self::Annotation<'g>> + 'static;
 
     fn owned(&self) -> Self::Owned;
 
     fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<L::Ref<'g>, &'g G>;
     fn matches_value<G: Graph>(&self, graph: G) -> Result<L, G>;
 
+    fn annotate<'g>(&self, graph: L::Ref<'g>) -> Self::Annotation<'g>;
+
     // Construct a filter for a given child key
-    type ChildFilter<'s>: Filter<L>
+    type ChildFilter<'s>: for<'g> Filter<L, Annotation<'g> = Self::Annotation<'g>>
     where
         Self: 's;
 
@@ -24,8 +27,13 @@ pub trait Filter<L: Leaf>: Clone {
 
 impl<L: Leaf, F: Filter<L>> Filter<L> for &F {
     type Owned = F::Owned;
+    type Annotation<'g> = F::Annotation<'g>;
     fn owned(&self) -> Self::Owned {
         (*self).owned()
+    }
+
+    fn annotate<'g>(&self, graph: <L as Leaf>::Ref<'g>) -> Self::Annotation<'g> {
+        (*self).annotate(graph)
     }
 
     fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<L::Ref<'g>, &'g G> {
@@ -58,6 +66,7 @@ impl<L: Leaf> Of<L> {
 
 impl<L: Leaf> Filter<L> for Of<L> {
     type Owned = Self;
+    type Annotation<'g> = ();
     fn owned(&self) -> Self::Owned {
         self.clone()
     }
@@ -67,6 +76,10 @@ impl<L: Leaf> Filter<L> for Of<L> {
     }
     fn matches_value<G: Graph>(&self, graph: G) -> Result<L, G> {
         L::try_from_value(graph)
+    }
+
+    fn annotate<'g>(&self, _: <L as Leaf>::Ref<'g>) -> Self::Annotation<'g> {
+        ()
     }
 
     type ChildFilter<'s>
@@ -90,8 +103,13 @@ impl<L: Leaf> Nothing<L> {
 #[rustfmt::skip]
 impl<L: Leaf> Filter<L> for Nothing<L> {
     type Owned = Self;
+    type Annotation<'g> = ();
+
     fn owned(&self) -> Self::Owned {
         self.clone()
+    }
+    fn annotate<'g>(&self, _: <L as Leaf>::Ref<'g>) -> Self::Annotation<'g> {
+        ()
     }
 
     fn matches_ref<'g, G: Graph>(&self, _graph: &'g G)
@@ -114,8 +132,12 @@ pub struct All;
 
 impl Filter<()> for All {
     type Owned = Self;
+    type Annotation<'g> = ();
     fn owned(&self) -> Self::Owned {
         self.clone()
+    }
+    fn annotate<'g>(&self, _: <() as Leaf>::Ref<'g>) -> Self::Annotation<'g> {
+        ()
     }
 
     fn matches_ref<'g, G: Graph>(&self, _graph: &'g G) -> Result<&'g (), &'g G> {
@@ -140,8 +162,13 @@ pub struct Invert<L: Leaf, F: Filter<L>>(F, PhantomData<L>);
 
 impl<L: Leaf, F: Filter<L>> Filter<()> for Invert<L, F> {
     type Owned = Invert<L, F::Owned>;
+    type Annotation<'g> = ();
+
     fn owned(&self) -> Self::Owned {
         Invert(self.0.owned(), PhantomData)
+    }
+    fn annotate<'g>(&self, _: <() as Leaf>::Ref<'g>) -> Self::Annotation<'g> {
+        ()
     }
 
     fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<&'g (), &'g G> {

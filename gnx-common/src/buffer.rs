@@ -685,6 +685,42 @@ impl HostBuffer {
         })
     }
 
+    /// Copy the common origin-aligned rectangle, zero-filling new elements.
+    /// Used when crossing a backend boundary with bounded storage.
+    pub fn resize_prefix(&self, target: ArrayInfo) -> io::Result<Self> {
+        let src = dimensions(self.info())?;
+        let dst = dimensions(&target)?;
+        if self.info().dtype() != target.dtype() || src.len() != dst.len() {
+            return Err(invalid("prefix copy requires equal rank and dtype"));
+        }
+        let width = scalar_width(target.dtype());
+        let extent: Vec<_> = src.iter().zip(&dst).map(|(&s, &d)| s.min(d)).collect();
+        Self::try_fill(target, |out| {
+            let count = volume(&extent)?;
+            if count == 0 {
+                return Ok(());
+            }
+            let row = extent.last().copied().unwrap_or(1);
+            for line in 0..count / row {
+                let mut index = line;
+                let (mut a, mut b) = (0, 0);
+                let (mut sa, mut sb) = (width, width);
+                for axis in (0..src.len()).rev() {
+                    if axis + 1 < src.len() {
+                        let coord = index % extent[axis];
+                        index /= extent[axis];
+                        a += coord * sa;
+                        b += coord * sb;
+                    }
+                    sa *= src[axis];
+                    sb *= dst[axis];
+                }
+                out[b..b + row * width].copy_from_slice(&self.bytes()[a..a + row * width]);
+            }
+            Ok(())
+        })
+    }
+
     fn packed_len(info: &ArrayInfo) -> io::Result<usize> {
         volume(&dimensions(info)?)?
             .checked_mul(scalar_width(info.dtype()))

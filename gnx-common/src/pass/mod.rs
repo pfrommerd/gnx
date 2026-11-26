@@ -271,6 +271,51 @@ impl<T: Artifact> FinalPipeline<T> {
     }
 }
 
+/// A pipeline ending in a live runtime artifact. Portable intermediates still
+/// use the caller's `Cache`; the final stage belongs to one client. Concurrent
+/// calls for the same expression share one compilation (errors may be retried).
+pub struct RuntimePipeline<A: Artifact, T> {
+    portable: FinalPipeline<A>,
+    name: &'static str,
+    load: Box<dyn Fn(&A::Archived) -> Result<T, BoxError> + Send + Sync>,
+    entries: std::sync::Mutex<
+        std::collections::HashMap<Blake3Hash, Arc<futures_util::lock::Mutex<Option<Arc<T>>>>>,
+    >,
+}
+impl<A: Artifact> FinalPipeline<A> {
+    pub fn on_runtime<T>(
+        self,
+        name: &'static str,
+        load: impl Fn(&A::Archived) -> Result<T, BoxError> + Send + Sync + 'static,
+    ) -> RuntimePipeline<A, T> {
+        RuntimePipeline {
+            portable: self,
+            name,
+            load: Box::new(load),
+            entries: Default::default(),
+        }
+    }
+}
+impl<A: Artifact, T> RuntimePipeline<A, T> {
+    pub async fn run(&self, expr: Arc<RootExpr>, cache: &Cache) -> Result<Arc<T>, PipelineError> {
+        let slot = self
+            .entries
+            .lock()
+            .unwrap()
+            .entry(expr.hash())
+            .or_default()
+            .clone();
+        let mut entry = slot.lock().await;
+        if let Some(hit) = entry.as_ref() {
+            return Ok(hit.clone());
+        }
+        let artifact = self.portable.run(expr, cache).await?;
+        let program = Arc::new((self.load)(&artifact).map_err(|e| PassError::new(self.name, e))?);
+        *entry = Some(program.clone());
+        Ok(program)
+    }
+}
+
 fn dump_after(pass: &str) -> bool {
     static DUMP: LazyLock<Vec<String>> = LazyLock::new(|| {
         std::env::var("GNX_DUMP_IR")

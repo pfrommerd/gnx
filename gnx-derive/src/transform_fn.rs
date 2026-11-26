@@ -85,7 +85,23 @@ fn parse_input(input: ParseStream<'_>, transform: &Transform) -> syn::Result<Inp
             return Err(syn::Error::new(name.span(), "option given more than once"));
         }
         input.parse::<Token![=]>()?;
-        let value = if leaf.is_empty() {
+        // A flat `wrt = [a, b]` may be argument indices or a legacy mask.
+        // Let Rust choose by element type; nested specs and `*` keep DAG syntax.
+        let flat_wrt = name == "wrt"
+            && input.peek(syn::token::Bracket)
+            && input.fork().parse::<syn::ExprArray>().is_ok_and(|a| {
+                a.elems
+                    .iter()
+                    .all(|e| !matches!(e, Expr::Array(_) | Expr::Tuple(_)))
+            });
+        let value = if flat_wrt {
+            let list: syn::ExprArray = input.parse()?;
+            if list.elems.is_empty() {
+                OptionValue::Expr(syn::parse_quote!([0usize; 0]))
+            } else {
+                OptionValue::Expr(syn::parse_quote!(&#list[..]))
+            }
+        } else if leaf.is_empty() {
             OptionValue::Expr(input.parse()?)
         } else {
             OptionValue::Spec(parse_value(input)?)
@@ -119,10 +135,15 @@ pub fn transform_fn(input: ProcTokenStream, transform: &'static Transform) -> Pr
             .map(|(_, leaf)| *leaf)
             .unwrap_or_default();
         match value {
-            OptionValue::Spec(dag) => {
-                let leaf = Ident::new(leaf, Span::call_site());
-                let dag = dag.expand_dag(&graph, &util, &mut HashSet::new());
-                quote! { .#name({ let spec: #util::Dag<#leaf> = #dag; spec }) }
+            OptionValue::Spec(DagValue::Leaf(expr)) => quote! { .#name(#expr) },
+            OptionValue::Spec(spec) => {
+                let dag = spec.expand_dag(&graph, &util, &mut HashSet::new(), None);
+                if spec.has_payload() {
+                    quote! { .#name(#dag) }
+                } else {
+                    let leaf = Ident::new(leaf, Span::call_site());
+                    quote! { .#name({ let spec: #util::Dag<#leaf> = #dag; spec }) }
+                }
             }
             OptionValue::Expr(expr) => quote! { .#name(#expr) },
         }

@@ -91,7 +91,7 @@ impl ScanParameters {
     }
 }
 
-fn slice(info: &VarInfo) -> RegionResult<(usize, VarInfo)> {
+pub(super) fn slice(info: &VarInfo) -> RegionResult<(usize, VarInfo)> {
     let array = ArrayInfo::from_info(info)
         .ok_or_else(|| signature("scan inputs and stacked outputs must be arrays"))?;
     let [Dim::Fixed(length), tail @ ..] = array.shape().dims() else {

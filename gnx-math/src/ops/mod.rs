@@ -51,6 +51,7 @@ macro_rules! simple_operations {
 }
 
 pub mod bitwise;
+pub mod bounded;
 pub mod contraction;
 pub mod creation;
 pub mod dtype;

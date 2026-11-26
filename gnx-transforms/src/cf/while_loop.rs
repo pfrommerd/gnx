@@ -30,6 +30,37 @@ pub fn while_op() -> Op {
     Op::new(While { state_len: 0 })
 }
 
+/// Trace a while loop with one array carry. The body can also update captured
+/// `ArrayRef`s; these become loop state just as in the capture-level API.
+pub fn while_array(
+    carry: &gnx_common::Array,
+    predicate: impl FnOnce(&gnx_common::Array) -> gnx_common::Array,
+    body: impl FnOnce(&gnx_common::Array) -> gnx_common::Array,
+) -> crate::TransformResult<gnx_common::Array> {
+    fn array(t: Trace) -> gnx_common::Array {
+        gnx_expr::Tracer::<gnx_expr::Generic>::from(t)
+            .try_cast::<gnx_common::Array>()
+            .expect("array carry")
+            .into()
+    }
+    fn region(
+        carry: &Trace,
+        f: impl FnOnce(&gnx_common::Array) -> gnx_common::Array,
+    ) -> crate::TransformResult<Capture> {
+        crate::traced::trace_region(std::slice::from_ref(carry.info()), |inputs| {
+            Ok(vec![
+                f(&array(inputs[0].clone())).into_tracer().into_trace_ref(),
+            ])
+        })
+    }
+    let carry = carry.tracer().trace_ref();
+    let pred = region(carry, predicate)?;
+    let body = region(carry, body)?;
+    Ok(array(
+        while_loop(&pred, &body, std::slice::from_ref(carry))?.remove(0),
+    ))
+}
+
 /// Loop over immutable carry values. `predicate` returns a single bool scalar;
 /// it may read captured cells but cannot write them. `body` returns the original
 /// carry signature and may read and write captured cells.

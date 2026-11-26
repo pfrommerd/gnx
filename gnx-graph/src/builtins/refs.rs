@@ -30,7 +30,7 @@ macro_rules! impl_rc {
                 })
             }
 
-            fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+            fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
                 &'g self, filter: F, visitor: V
             ) -> V::Output {
                 let id = GraphId::from($W::as_ptr(self) as u64);
@@ -89,7 +89,7 @@ impl<T: Graph> Graph for &T {
         ctx.create(id, |ctx| Ok(Arc::new(T::builder(self, filter, ctx)?)))
     }
 
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,

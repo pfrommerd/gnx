@@ -78,6 +78,7 @@ pub(super) fn dimensions(info: &ArrayInfo) -> io::Result<Vec<i64>> {
         .dims()
         .iter()
         .map(|dim| match dim {
+            Dim::Bounded { max, .. } => Ok(i64::from(*max)),
             Dim::Fixed(n) => i64::try_from(*n).map_err(|_| invalid("XLA dimension overflow")),
             _ => Err(unsupported("XLA requires fixed dimensions")),
         })

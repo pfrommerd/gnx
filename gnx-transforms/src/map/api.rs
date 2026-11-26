@@ -1,22 +1,22 @@
 use std::borrow::Cow;
-use std::convert::Infallible;
 use std::sync::Arc;
 
+use crate::on_axis;
 use gnx_expr::{Kind, ObjectTracer, VarInfo};
-use gnx_graph::util::Dag;
+use gnx_graph::All;
 use gnx_graph::{Graph, GraphEq, GraphHash};
 
 use crate::cache::{TraceEntry, TracerBuilder};
-use crate::error::ApplyError;
-use crate::spec::resolve;
+use crate::error::{ApplyError, TransformError};
+use crate::filters::{AxisType, DefaultAxes, IntoAxisFilter};
 use crate::traced::{Leaves, body, value};
-use crate::{Callable, Function, Jit, Jitable, TransformError, TryCallable, TryJitable, jit, util};
+use crate::{Callable, Function, Jit, Jitable, TryCallable, TryJitable, jit, util};
 
 /// A function vectorized over mapped axes of its arguments; see [`map`].
-pub struct Map<I: Graph, F: Function<I>> {
+pub struct Map<I: Graph, F: Function<I>, X: AxisType = DefaultAxes, Y: AxisType = DefaultAxes> {
     jit: Jit<I, F>,
-    in_axes: Dag<usize>,
-    out_axes: Dag<usize>,
+    in_axes: X::Filter,
+    out_axes: Y::Filter,
     axis_size: Option<usize>,
 }
 
@@ -32,24 +32,33 @@ pub struct Map<I: Graph, F: Function<I>> {
 pub fn map<I: Graph, F: Function<I>>(func: F) -> Map<I, F> {
     Map {
         jit: jit(func),
-        in_axes: Dag::from(0),
-        out_axes: Dag::from(0),
+        in_axes: on_axis(0, All),
+        out_axes: on_axis(0, All),
         axis_size: None,
     }
 }
 
-impl<I: Graph, F: Function<I>> Map<I, F> {
+impl<I: Graph, F: Function<I>, X: AxisType, Y: AxisType> Map<I, F, X, Y> {
     /// The mapped axis of each argument leaf, as a prefix of the arguments.
     /// `*` leaves an argument unmapped (shared by every instance).
-    pub fn in_axes(mut self, axes: impl Into<Dag<usize>>) -> Self {
-        self.in_axes = axes.into();
-        self
+    pub fn in_axes<K, S: IntoAxisFilter<K>>(self, axes: S) -> Map<I, F, S::Binding, Y> {
+        Map {
+            jit: self.jit,
+            in_axes: axes.into_axis_filter(),
+            out_axes: self.out_axes,
+            axis_size: self.axis_size,
+        }
     }
 
     /// The axis along which each result leaf is stacked.
-    pub fn out_axes(mut self, axes: impl Into<Dag<usize>>) -> Self {
-        self.out_axes = axes.into();
-        self
+    pub fn out_axes<K, S: IntoAxisFilter<K>>(mut self, axes: S) -> Map<I, F, X, S::Binding> {
+        self.jit.clear_traces();
+        Map {
+            jit: self.jit,
+            in_axes: self.in_axes,
+            out_axes: axes.into_axis_filter(),
+            axis_size: self.axis_size,
+        }
     }
 
     /// The number of instances; required when no argument is mapped.
@@ -65,7 +74,7 @@ impl<I: Graph, F: Function<I>> Map<I, F> {
     }
 }
 
-impl<I, F> Map<I, F>
+impl<I, F, X: AxisType, Y: AxisType> Map<I, F, X, Y>
 where
     I: Graph,
     I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -78,26 +87,28 @@ where
         trace: impl FnOnce(
             TracerBuilder<I>,
             Vec<(Kind, VarInfo)>,
-        ) -> Result<Arc<TraceEntry<F::Output>>, E>,
+        ) -> Result<Arc<TraceEntry<F::Output>>, ApplyError<E>>,
     ) -> Result<F::Output, ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
         let leaves = Leaves::<I>::of(&input);
-        let axes = resolve(&self.in_axes, &leaves.paths, "in_axes")?;
+        let axes = crate::spec::axes::<X>(&self.in_axes, &input, &leaves.paths, "in_axes")?;
         let mut kinds = Vec::new();
         let mut captured = Vec::new();
         let mut mapped = Vec::new();
         let mut in_axes = Vec::new();
-        for (object, axis) in leaves.objects.iter().zip(&axes) {
+        for ((object, axis), path) in leaves.objects.iter().zip(&axes).zip(&leaves.paths) {
             match axis.value {
                 None => {
                     kinds.push(crate::cache::kind(object));
                     captured.push(true);
                 }
                 Some(axis) => {
-                    let trace = value(object, "a mapped argument")?;
-                    let (_, instance) = util::without_axis(trace.info(), axis)?;
+                    let trace = value(object, "a mapped argument")
+                        .map_err(|e| crate::spec::at_path("in_axes", path, e))?;
+                    let (_, instance) = util::without_axis(trace.info(), axis)
+                        .map_err(|e| crate::spec::at_path("in_axes", path, e))?;
                     kinds.push((Kind::Value, instance));
                     captured.push(false);
                     mapped.push(trace);
@@ -106,17 +117,13 @@ where
             }
         }
         let builder = leaves.builder.clone();
-        let entry = trace(builder, kinds).map_err(ApplyError::Body)?;
-        let out_axes = resolve(&self.out_axes, &entry.output_paths, "out_axes")?
-            .into_iter()
-            .map(|axis| {
-                axis.value.ok_or_else(|| {
-                    TransformError::invalid("out_axes must give an axis for every result")
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let entry = trace(builder, kinds)?;
+        let out_axes = entry
+            .output_axes
+            .as_deref()
+            .expect("map trace contains output axes");
         let body = body(&entry, &leaves.objects, &captured)?;
-        let results = super::region::map(body, &mapped, &in_axes, &out_axes, self.axis_size)
+        let results = super::region::map(body, &mapped, &in_axes, out_axes, self.axis_size)
             .map_err(TransformError::from)?;
         Ok(crate::cache::rebuild_graph(
             &entry.output_builder,
@@ -125,11 +132,11 @@ where
     }
 }
 
-impl<I: Graph, F: Function<I>> Function<I> for Map<I, F> {
+impl<I: Graph, F: Function<I>, X: AxisType, Y: AxisType> Function<I> for Map<I, F, X, Y> {
     type Output = F::Output;
 }
 
-impl<I, F> Callable<I> for Map<I, F>
+impl<I, F, X: AxisType, Y: AxisType> Callable<I> for Map<I, F, X, Y>
 where
     I: Graph,
     I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -137,13 +144,13 @@ where
 {
     fn invoke(&self, input: I) -> Self::Output {
         self.apply(input, |builder, kinds| {
-            Ok::<_, Infallible>(self.jit.traced(builder, kinds))
+            self.jit.mapped::<Y>(builder, kinds, &self.out_axes)
         })
         .unwrap_or_else(|error| panic!("map: {error}"))
     }
 }
 
-impl<I, F> Jitable<I> for Map<I, F>
+impl<I, F, X: AxisType, Y: AxisType> Jitable<I> for Map<I, F, X, Y>
 where
     I: Graph,
     I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -151,13 +158,13 @@ where
 {
     fn invoke_owned(&self, input: I::Owned) -> Self::Output {
         self.apply(input, |builder, kinds| {
-            Ok::<_, Infallible>(self.jit.traced(builder, kinds))
+            self.jit.mapped::<Y>(builder, kinds, &self.out_axes)
         })
         .unwrap_or_else(|error| panic!("map: {error}"))
     }
 }
 
-impl<I, F> TryCallable<I> for Map<I, F>
+impl<I, F, X: AxisType, Y: AxisType> TryCallable<I> for Map<I, F, X, Y>
 where
     I: Graph,
     I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -166,17 +173,21 @@ where
     type Error = ApplyError<F::Error>;
 
     fn try_invoke(&self, input: I) -> Result<Self::Output, Self::Error> {
-        self.apply(input, |builder, kinds| self.jit.try_traced(builder, kinds))
+        self.apply(input, |builder, kinds| {
+            self.jit.try_mapped::<Y>(builder, kinds, &self.out_axes)
+        })
     }
 }
 
-impl<I, F> TryJitable<I> for Map<I, F>
+impl<I, F, X: AxisType, Y: AxisType> TryJitable<I> for Map<I, F, X, Y>
 where
     I: Graph,
     I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
     F: TryJitable<I>,
 {
     fn try_invoke_owned(&self, input: I::Owned) -> Result<Self::Output, Self::Error> {
-        self.apply(input, |builder, kinds| self.jit.try_traced(builder, kinds))
+        self.apply(input, |builder, kinds| {
+            self.jit.try_mapped::<Y>(builder, kinds, &self.out_axes)
+        })
     }
 }

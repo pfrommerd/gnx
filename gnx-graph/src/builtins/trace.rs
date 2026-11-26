@@ -2,9 +2,7 @@
 
 use crate::util::impl_lifetime_free;
 use crate::*;
-use gnx_expr::{
-    CellTrace, ObjectTracer, ObjectTracerRef, Trace, Traceable, Tracer, CellTracer,
-};
+use gnx_expr::{CellTrace, CellTracer, ObjectTracer, ObjectTracerRef, Trace, Traceable, Tracer};
 
 impl_lifetime_free!(Trace, CellTrace, ObjectTracer);
 impl_lifetime_free!(for<T: Traceable> Tracer<T>);
@@ -130,13 +128,13 @@ impl Graph for ObjectTracer {
             LeafBuilder::Static(self.clone())
         })
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
     ) -> V::Output {
         match matches::<L, F>(self, &filter) {
-            Some(reference) => visitor.visit_leaf(reference),
+            Some(reference) => visitor.visit_leaf(reference, filter),
             None => visitor.visit_static::<Self>(self.as_ref()),
         }
     }

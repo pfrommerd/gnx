@@ -1,4 +1,6 @@
 mod arithmetic;
+#[doc(hidden)]
+pub use arithmetic::apply as invoke_array;
 pub mod array;
 pub mod buffer;
 pub mod cache;

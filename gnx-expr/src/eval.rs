@@ -47,7 +47,29 @@ impl Capture {
             .map(value_trace)
             .collect::<Result<Vec<_>, _>>()?;
         let spec = InputSpec::from_args(&closure, &inputs);
-        let program = crate::lower::lower(expr.view(), &spec)?;
+        // Successive evals of a jitted call usually have the same body and
+        // alias partition. Reuse the functionalized program, never its values,
+        // cell handles or publication targets. Bound retention to one per thread.
+        type Last = (
+            crate::Blake3Hash,
+            InputSpec,
+            std::rc::Rc<crate::LoweredExpr>,
+        );
+        thread_local! { static LAST: std::cell::RefCell<Option<Last>> = const { std::cell::RefCell::new(None) }; }
+        let key = expr.hash();
+        let hit = LAST.with_borrow(|last| {
+            last.as_ref()
+                .filter(|(hash, params, _)| *hash == key && params == &spec)
+                .map(|(_, _, p)| p.clone())
+        });
+        let program = match hit {
+            Some(p) => p,
+            None => {
+                let p = std::rc::Rc::new(crate::lower::lower(expr.view(), &spec)?);
+                LAST.with_borrow_mut(|slot| *slot = Some((key, spec, p.clone())));
+                p
+            }
+        };
         if !program.updates.is_empty() {
             return Err(EvalPlanError::CellEffect);
         }
@@ -95,7 +117,7 @@ impl Capture {
             .collect::<Result<Vec<_>, _>>()?;
         let expr = program.computation_expr();
         let commit = EvalCommit {
-            expected: program.output_infos,
+            expected: program.output_infos.clone(),
             writes: outputs.into_iter().zip(sources).collect(),
         };
         Ok(PreparedEval { expr, args, commit })

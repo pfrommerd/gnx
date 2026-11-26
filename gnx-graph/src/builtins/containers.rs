@@ -50,13 +50,13 @@ impl<T: Graph> Graph for Vec<T> {
         }
     }
 
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
     ) -> V::Output {
         match filter.matches_ref(self) {
-            Ok(leaf) => visitor.visit_leaf(leaf),
+            Ok(leaf) => visitor.visit_leaf(leaf, filter),
             Err(graph) => visitor.visit_node(View::new(graph, filter)),
         }
     }
@@ -73,7 +73,12 @@ impl<T: Graph> Graph for Vec<T> {
 }
 
 impl<T: Graph> Node for Vec<T> {
-    fn visit_children<'g, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Self, L>>(
+    fn visit_children<
+        'g,
+        L: Leaf,
+        F: Filter<L>,
+        V: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>,
+    >(
         &'g self,
         filter: F,
         mut visitor: V,
@@ -90,7 +95,7 @@ impl<T: Graph> Node for Vec<T> {
         mut consumer: C,
     ) -> C::Output {
         self.into_iter().enumerate().for_each(|(i, x)| {
-            consumer.consume_child(Key::from(i), Bound::new(x, &filter));
+            consumer.consume_child(Key::from(i), Bound::new(x, filter.child(KeyRef::from(i))));
         });
         consumer.finish()
     }
@@ -182,11 +187,11 @@ macro_rules! impl_tuple_graph {
                     }
                 }
 
-                fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+                fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
                     &'g self, filter: F, visitor: V
                 ) -> V::Output {
                     match filter.matches_ref(self) {
-                        Ok(leaf) => visitor.visit_leaf(leaf),
+                        Ok(leaf) => visitor.visit_leaf(leaf, filter),
                         Err(graph) => visitor.visit_node(View::new(graph, filter))
                     }
                 }
@@ -202,12 +207,12 @@ macro_rules! impl_tuple_graph {
 
             impl<$($T: Graph,)*> Node for ($($T,)*) {
                 #[allow(unused_variables, unused_mut)]
-                fn visit_children<'g, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Self, L>>(
+                fn visit_children<'g, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>>(
                     &'g self, filter: F, mut visitor: V
                 ) -> V::Output {
                     let ($([<$T:lower>],)*) = self;
                     $(
-                      visitor.visit_child(KeyRef::Index($idx), View::new([<$T:lower>], &filter));
+                      visitor.visit_child(KeyRef::Index($idx), View::new([<$T:lower>], filter.child(KeyRef::Index($idx))));
                     )*
                     visitor.finish()
                 }
@@ -217,7 +222,7 @@ macro_rules! impl_tuple_graph {
                 ) -> C::Output {
                     let ($([<$T:lower>],)*) = self;
                     $(
-                      consumer.consume_child(Key::Index($idx), Bound::new([<$T:lower>], &filter));
+                      consumer.consume_child(Key::Index($idx), Bound::new([<$T:lower>], filter.child(KeyRef::Index($idx))));
                     )*
                     consumer.finish()
                 }

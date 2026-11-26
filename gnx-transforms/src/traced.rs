@@ -6,7 +6,6 @@ use gnx_common::ops::{ones_op, zeros_op};
 use gnx_expr::{
     Capture, CellTrace, Invocation, Kind, ObjectTracer, Op, Trace, TraceContext, VarInfo,
 };
-use gnx_graph::util::GraphExt;
 use gnx_graph::{Builder, Graph, Key, Of};
 
 use crate::cache::{TraceEntry, TracerBuilder, kind, rebuild_graph, split_graph};
@@ -26,11 +25,10 @@ impl<I: Graph> Leaves<I> {
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
         let (builder, objects) = split_graph(graph);
-        let paths: Vec<_> = graph
-            .collect_leaves_with_paths(&Of::<ObjectTracer>::filter())
+        let paths = crate::axis_matches::locations(graph, &Of::<ObjectTracer>::filter())
             .into_iter()
-            .map(|(path, _)| path)
-            .collect();
+            .map(|(p, _)| p)
+            .collect::<Vec<_>>();
         assert_eq!(
             paths.len(),
             objects.len(),
@@ -123,14 +121,14 @@ pub(crate) fn zeros_like(object: &ObjectTracer) -> ObjectTracer {
 pub(crate) fn differentiated(
     objects: &[ObjectTracer],
     paths: &[Vec<Key>],
-    wrt: &[Resolved<bool>],
+    wrt: &[Resolved<()>],
 ) -> TransformResult<Vec<bool>> {
     objects
         .iter()
         .zip(paths)
         .zip(wrt)
         .map(|((object, path), selected)| {
-            if selected.value != Some(true) {
+            if selected.value.is_none() {
                 return Ok(false);
             }
             let differentiable =

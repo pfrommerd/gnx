@@ -10,6 +10,11 @@ pub use crate::buffer::DataHandle;
 )]
 pub enum Dim {
     Fixed(usize),
+    /// A runtime length in 0..=max. Symbols are scoped to an expression.
+    Bounded {
+        symbol: gnx_expr::Symbol,
+        max: u32,
+    },
     // unknown size, can be converted
     // to a fixed size by truncating if too big or padding if too small.
     Dynamic,
@@ -24,6 +29,7 @@ impl Display for Dim {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Dim::Fixed(n) => write!(f, "{}", n),
+            Dim::Bounded { symbol, max } => write!(f, "{symbol}<={max}"),
             Dim::Dynamic => write!(f, "?"),
             Dim::Jagged(i) => write!(f, "jagged({})", i),
         }
@@ -263,6 +269,7 @@ impl std::fmt::Display for DType {
 pub struct ArrayInfo {
     shape: Shape,
     dtype: DType,
+    symbols: Vec<gnx_expr::Symbol>,
 }
 
 impl ArrayInfoData {
@@ -270,6 +277,10 @@ impl ArrayInfoData {
         (self.shape.0.iter())
             .map(|dim| match dim {
                 ArchivedDim::Fixed(n) => Dim::Fixed(n.to_native() as usize),
+                ArchivedDim::Bounded { symbol, max } => Dim::Bounded {
+                    symbol: *symbol,
+                    max: max.to_native(),
+                },
                 ArchivedDim::Dynamic => Dim::Dynamic,
                 ArchivedDim::Jagged(i) => Dim::Jagged(i.to_native() as usize),
             })
@@ -287,6 +298,31 @@ impl ArrayInfoData {
 }
 
 impl gnx_expr::Info for ArrayInfoData {
+    fn symbols(&self) -> &[gnx_expr::Symbol] {
+        &self.symbols
+    }
+
+    fn remap_symbols(
+        &self,
+        f: &mut dyn FnMut(gnx_expr::Symbol) -> gnx_expr::Symbol,
+    ) -> Option<gnx_expr::VarInfo> {
+        if self.symbols.is_empty() {
+            return None;
+        }
+        let shape = self
+            .shape()
+            .0
+            .into_iter()
+            .map(|d| match d {
+                Dim::Bounded { symbol, max } => Dim::Bounded {
+                    symbol: f(symbol),
+                    max,
+                },
+                d => d,
+            })
+            .collect();
+        Some(gnx_expr::VarInfo::new(ArrayInfo::new(shape, self.dtype)))
+    }
     fn display(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.to_native(), f)
     }
@@ -312,7 +348,63 @@ impl ArrayInfo {
 
 impl ArrayInfo {
     pub fn new(shape: Shape, dtype: DType) -> Self {
-        ArrayInfo { shape, dtype }
+        let symbols = shape
+            .dims()
+            .iter()
+            .filter_map(|d| match d {
+                Dim::Bounded { symbol, .. } => Some(*symbol),
+                _ => None,
+            })
+            .collect();
+        ArrayInfo {
+            shape,
+            dtype,
+            symbols,
+        }
+    }
+
+    pub fn has_bounded_axes(&self) -> bool {
+        !self.symbols.is_empty()
+    }
+
+    /// Abstract a selected fixed axis when constructing a JIT input
+    /// signature. Reuse the symbol for inputs whose lengths must agree.
+    pub fn with_bounded_axis(
+        &self,
+        axis: usize,
+        symbol: gnx_expr::Symbol,
+        max: usize,
+    ) -> Result<Self, LoweringError> {
+        let mut shape = self.shape.clone();
+        let Some(dim) = shape.0.get_mut(axis) else {
+            return Err(LoweringError::RegionSignature("axis out of range"));
+        };
+        if !matches!(dim,Dim::Fixed(n) if *n<=max) {
+            return Err(LoweringError::RegionSignature(
+                "bounded promotion needs a fixed extent within its bound",
+            ));
+        }
+        *dim = Dim::Bounded {
+            symbol,
+            max: u32::try_from(max)
+                .map_err(|_| LoweringError::RegionSignature("axis bound exceeds u32"))?,
+        };
+        Ok(Self::new(shape, self.dtype))
+    }
+
+    /// Statically sized storage used by bounded lowerings.
+    pub fn capacity(&self) -> Self {
+        Self::new(
+            self.shape
+                .dims()
+                .iter()
+                .map(|d| match *d {
+                    Dim::Bounded { max, .. } => Dim::Fixed(max as usize),
+                    other => other,
+                })
+                .collect(),
+            self.dtype,
+        )
     }
 
     pub fn shape(&self) -> &Shape {
@@ -378,6 +470,11 @@ impl Traceable for Array {
 }
 
 impl Array {
+    /// A shape/dtype argument for JIT lowering; no storage is allocated.
+    pub fn placeholder(info: ArrayInfo) -> Self {
+        Tracer::placeholder(gnx_expr::VarInfo::new(info)).into()
+    }
+
     /// Wrap a concrete storage reference without transferring its data.
     pub fn from_data(data: DataHandle) -> Self {
         let info = data.to_info();

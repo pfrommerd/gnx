@@ -15,6 +15,8 @@ use gnx_expr::{
 mod branch;
 mod call;
 mod scan;
+mod scan_graph;
+pub use scan_graph::{GraphScan, scan_graph};
 mod while_loop;
 
 pub(crate) use branch::branch_op;
@@ -23,7 +25,7 @@ pub use call::{
     CallOperation, call, call_immutable, call_lowered, call_op, defer_call, defer_call_with_symbols,
 };
 pub use scan::{ScanOperation, ScanParameters, scan, scan_op};
-pub use while_loop::{WhileOperation, while_loop, while_op};
+pub use while_loop::{WhileOperation, while_array, while_loop, while_op};
 
 gnx_expr::dialect! {
     dyn Operation, "cf" => {

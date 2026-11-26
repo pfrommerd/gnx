@@ -184,14 +184,14 @@ impl<I: Leaf> Graph for Dag<I> {
             },
         })
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self, filter: F, visitor: V
     ) -> V::Output {
         match filter.matches_ref(self) {
-            Ok(r) => visitor.visit_leaf(r),
+            Ok(r) => visitor.visit_leaf(r, filter),
             Err(graph) => match graph {
                 Dag::Leaf(Some(x)) => match filter.matches_ref(x) {
-                    Ok(r) => visitor.visit_leaf(r),
+                    Ok(r) => visitor.visit_leaf(r, filter),
                     Err(_) => visitor.visit_static::<()>(&()),
                 }
                 Dag::Leaf(None) => visitor.visit_static::<()>(&()),
@@ -216,7 +216,12 @@ impl<I: Leaf> Graph for Dag<I> {
     }
 }
 impl<I: Leaf> Node for Dag<I> {
-    fn visit_children<'g, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Self, L>>(
+    fn visit_children<
+        'g,
+        L: Leaf,
+        F: Filter<L>,
+        V: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>,
+    >(
         &'g self,
         filter: F,
         visitor: V,
@@ -277,7 +282,13 @@ impl<I: Leaf> Node for Dag<I> {
     }
 }
 
-fn visit_child<'g, I: Leaf, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Dag<I>, L>>(
+fn visit_child<
+    'g,
+    I: Leaf,
+    L: Leaf,
+    F: Filter<L>,
+    V: ChildrenVisitor<'g, Dag<I>, L, F::Annotation<'g>>,
+>(
     visitor: &mut V,
     key: KeyRef<'g>,
     child: &'g DagChild<I>,
@@ -369,19 +380,26 @@ impl<L: Leaf, I: Leaf> Builder<L> for DagBuilder<I> {
 // The conversion visitor
 pub struct ToDag<M>(pub M);
 
-impl<'g, G: Graph + ?Sized, L: Leaf, I, M> GraphVisitor<'g, G, L> for ToDag<M>
+impl<'g, A, G: Graph + ?Sized, L: Leaf, I, M> GraphVisitor<'g, G, L, A> for ToDag<M>
 where
     M: FnMut(L::Ref<'_>) -> I,
 {
     type Output = Dag<I>;
 
-    fn visit_leaf(mut self, value: L::Ref<'_>) -> Self::Output {
+    fn visit_leaf<F: Filter<L, Annotation<'g> = A>>(
+        mut self,
+        value: L::Ref<'_>,
+        _: F,
+    ) -> Self::Output {
         Dag::Leaf(Some((self.0)(value)))
     }
     fn visit_static<S: Leaf>(self, _: S::Ref<'_>) -> Self::Output {
         Dag::Leaf(None)
     }
-    fn visit_node<N: Node, F: Filter<L>>(mut self, node: View<'_, N, F>) -> Self::Output {
+    fn visit_node<N: Node, F: Filter<L, Annotation<'g> = A>>(
+        mut self,
+        node: View<'g, N, F>,
+    ) -> Self::Output {
         let mut ctx = HashMap::new();
         node.graph.visit_children(
             node.filter,
@@ -392,10 +410,10 @@ where
             },
         )
     }
-    fn visit_shared<S: Graph, F: Filter<L>>(
+    fn visit_shared<S: Graph, F: Filter<L, Annotation<'g> = A>>(
         self,
         _id: GraphId,
-        shared: View<'_, S, F>,
+        shared: View<'g, S, F>,
     ) -> Self::Output {
         shared.visit(self)
     }
@@ -407,16 +425,16 @@ struct ToDagChildren<'ctx, M, I> {
     ctx: &'ctx mut HashMap<GraphId, Arc<Dag<I>>>,
 }
 
-impl<'g, 'ctx, N: Node, L: Leaf, M, I> ChildrenVisitor<'g, N, L> for ToDagChildren<'ctx, M, I>
+impl<'g, 'ctx, A, N: Node, L: Leaf, M, I> ChildrenVisitor<'g, N, L, A> for ToDagChildren<'ctx, M, I>
 where
     M: FnMut(L::Ref<'_>) -> I,
 {
     type Output = Dag<I>;
 
-    fn visit_child<C: Graph, F: Filter<L>>(
+    fn visit_child<C: Graph, F: Filter<L, Annotation<'g> = A>>(
         &mut self,
         key: KeyRef<'_>,
-        child: View<'_, C, F>,
+        child: View<'g, C, F>,
     ) -> &mut Self {
         let key = key.to_value();
         let child = child.visit(ToDagChild {
@@ -452,19 +470,22 @@ struct ToDagChild<'ctx, M, I> {
     ctx: &'ctx mut HashMap<GraphId, Arc<Dag<I>>>,
 }
 
-impl<'g, 'ctx, G: Graph, L: Leaf, M, I> GraphVisitor<'g, G, L> for ToDagChild<'ctx, M, I>
+impl<'g, 'ctx, A, G: Graph, L: Leaf, M, I> GraphVisitor<'g, G, L, A> for ToDagChild<'ctx, M, I>
 where
     M: FnMut(L::Ref<'_>) -> I,
 {
     type Output = DagChild<I>;
 
-    fn visit_leaf(self, value: L::Ref<'_>) -> Self::Output {
+    fn visit_leaf<F: Filter<L, Annotation<'g> = A>>(self, value: L::Ref<'_>, _: F) -> Self::Output {
         DagChild::Owned(Dag::Leaf(Some((self.map)(value))))
     }
     fn visit_static<S: Leaf>(self, _: S::Ref<'_>) -> Self::Output {
         DagChild::Owned(Dag::Leaf(None))
     }
-    fn visit_node<N: Node, F: Filter<L>>(self, node: View<'_, N, F>) -> Self::Output {
+    fn visit_node<N: Node, F: Filter<L, Annotation<'g> = A>>(
+        self,
+        node: View<'g, N, F>,
+    ) -> Self::Output {
         DagChild::Owned(node.graph.visit_children(
             node.filter,
             ToDagChildren {
@@ -474,10 +495,10 @@ where
             },
         ))
     }
-    fn visit_shared<S: Graph, F: Filter<L>>(
+    fn visit_shared<S: Graph, F: Filter<L, Annotation<'g> = A>>(
         self,
         id: GraphId,
-        shared: View<'_, S, F>,
+        shared: View<'g, S, F>,
     ) -> Self::Output {
         if let Some(dag) = self.ctx.get(&id) {
             return DagChild::Shared(dag.clone());

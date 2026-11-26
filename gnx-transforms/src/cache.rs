@@ -9,7 +9,7 @@ use gnx_expr::{
 use gnx_graph::anyhash::HasherWrite;
 use gnx_graph::util::{GraphExt, IterSource};
 use gnx_graph::{
-    Builder, Graph, GraphContext, GraphEq, GraphEqContext, GraphHash, GraphHashContext, Key, Of,
+    Builder, Graph, GraphContext, GraphEq, GraphEqContext, GraphHash, GraphHashContext, Of,
     SourceError,
 };
 
@@ -68,7 +68,7 @@ where
     {
         let (builder, arguments) = split_graph(&input);
         let kinds = arguments.iter().map(kind).collect();
-        let entry = self.entry_with_key(builder, kinds, name_hint, body, true)?;
+        let entry = self.entry_with_key(builder, kinds, name_hint, body, true, |_| Ok(None))?;
         Ok((entry, arguments))
     }
 
@@ -82,15 +82,16 @@ where
         name_hint: Option<&Cow<'static, str>>,
         body: impl FnOnce(I::Owned) -> Result<O, E>,
     ) -> Result<Arc<TraceEntry<O>>, E> {
-        self.entry_with_key(builder, kinds, name_hint, body, false)
+        self.entry_with_key(builder, kinds, name_hint, body, false, |_| Ok(None))
     }
-    fn entry_with_key<E>(
+    pub(crate) fn entry_with_key<E>(
         &self,
         builder: TracerBuilder<I>,
         kinds: Vec<(Kind, VarInfo)>,
         name_hint: Option<&Cow<'static, str>>,
         body: impl FnOnce(I::Owned) -> Result<O, E>,
         abstract_ids: bool,
+        inspect: impl FnOnce(&O) -> Result<Option<Vec<usize>>, E>,
     ) -> Result<Arc<TraceEntry<O>>, E> {
         // Call sites instantiate a cached body's input symbols. Transforms
         // requesting an explicit signature consume its original namespace.
@@ -124,7 +125,7 @@ where
             abstract_ids: abstract_ids && !ids.is_empty(),
         });
         let slot = self.slot(&key);
-        slot.get_or_trace(|| TraceEntry::trace(&key.builder, &kinds, name_hint, body))
+        slot.get_or_trace(|| TraceEntry::trace(&key.builder, &kinds, name_hint, body, inspect))
     }
 
     fn slot(&self, key: &Arc<TraceKey<I::Owned>>) -> Arc<TraceSlot<O>> {
@@ -176,8 +177,8 @@ pub(crate) struct TraceEntry<O: Graph> {
     pub(crate) expr: Arc<HRootExpr>,
     pub(crate) closure: Vec<ObjectTracer>,
     pub(crate) output_builder: TracerBuilder<O>,
-    /// Key path of each output tracer leaf, in leaf order.
-    pub(crate) output_paths: Vec<Vec<Key>>,
+    /// Resolved in the body's tracing context when this entry belongs to a map.
+    pub(crate) output_axes: Option<Vec<usize>>,
 }
 
 impl<O: Graph<Owned = O>> TraceEntry<O> {
@@ -201,17 +202,14 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
         kinds: &[(Kind, VarInfo)],
         name_hint: Option<&Cow<'static, str>>,
         body: impl FnOnce(B::Graph) -> Result<O, E>,
+        inspect: impl FnOnce(&O) -> Result<Option<Vec<usize>>, E>,
     ) -> Result<Self, E> {
         let guard = TraceContext::enter();
         let placeholders: Vec<_> = kinds.iter().map(placeholder).collect();
         let input = rebuild_graph(input_builder, placeholders.iter().cloned());
         let output = body(input)?;
         let (output_builder, outputs) = split_graph(&output);
-        let output_paths = output
-            .collect_leaves_with_paths(&Of::<ObjectTracer>::filter())
-            .into_iter()
-            .map(|(path, _)| path)
-            .collect();
+        let output_axes = inspect(&output)?;
         let capture = Capture::from_context(guard.context(), &placeholders, &outputs)
             .expect("JIT could not capture traced function");
         let (expr, closure, ..) = capture.into_parts();
@@ -226,7 +224,7 @@ impl<O: Graph<Owned = O>> TraceEntry<O> {
             expr,
             closure,
             output_builder,
-            output_paths,
+            output_axes,
         })
     }
 

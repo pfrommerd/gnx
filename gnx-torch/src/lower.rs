@@ -63,6 +63,7 @@ pub(super) fn layout(info: &ArrayInfo) -> io::Result<(Vec<i64>, Kind)> {
         .iter()
         .map(|d| match d {
             Dim::Fixed(n) => i64::try_from(*n).map_err(invalid),
+            Dim::Bounded { max, .. } => Ok(i64::from(*max)),
             _ => Err(unsupported("Torch requires fixed dimensions")),
         })
         .collect::<io::Result<_>>()?;
@@ -149,7 +150,7 @@ fn emit_results(body: Expr<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
         .collect())
 }
 
-pub(super) fn trace(expr: Expr<'_>, device: tch::Device) -> io::Result<Vec<(CModule, ArrayInfo)>> {
+pub(super) fn trace(expr: Expr<'_>, device: tch::Device, joint: bool) -> io::Result<Vec<CModule>> {
     let _scope = TraceScope(TRACE_DEVICE.replace(device));
     let examples = expr
         .closure_inputs()
@@ -159,18 +160,22 @@ pub(super) fn trace(expr: Expr<'_>, device: tch::Device) -> io::Result<Vec<(CMod
             Tensor::f_zeros(&dims, (kind, tracing_device())).map_err(io::Error::other)
         })
         .collect::<io::Result<Vec<_>>>()?;
-    // tch registers raw graph outputs, not a tuple. A callable method needs
-    // one return value, so trace only the live equations for each result.
+    // Export either individually callable output modules or one shared graph.
+    let group_size = if joint {
+        expr.outputs().len().max(1)
+    } else {
+        1
+    };
     expr.outputs()
-        .iter()
-        .map(|v| {
+        .chunks(group_size)
+        .map(|outputs| {
             let params = |p: gnx_expr::Param<'_>| (p.var(), p.info_ref().to_owned());
             let body = ExprBuilder::from_parts(
                 expr.closure_symbols().to_vec(),
                 expr.closure_inputs().map(params).collect(),
                 expr.inputs().map(params).collect(),
                 expr.eqns().map(|e| e.to_source()).collect(),
-                vec![*v],
+                outputs.to_vec(),
             )
             .build()
             .map_err(invalid)?;
@@ -179,8 +184,8 @@ pub(super) fn trace(expr: Expr<'_>, device: tch::Device) -> io::Result<Vec<(CMod
                 .map_err(invalid)?;
             let mut error = None;
             let module = CModule::create_by_tracing("Gnx", "forward", &examples, &mut |inputs| {
-                match emit(body.view(), inputs) {
-                    Ok(t) => vec![t],
+                match emit_results(body.view(), inputs) {
+                    Ok(t) => t,
                     // Always return to tch so it can close the active trace.
                     Err(e) => {
                         error = Some(e);
@@ -191,10 +196,7 @@ pub(super) fn trace(expr: Expr<'_>, device: tch::Device) -> io::Result<Vec<(CMod
             if let Some(e) = error {
                 return Err(e);
             }
-            Ok((
-                module.map_err(io::Error::other)?,
-                metadata(expr.value_info(*v).expect("checked output"))?,
-            ))
+            module.map_err(io::Error::other)
         })
         .collect()
 }

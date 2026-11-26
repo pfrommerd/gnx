@@ -55,6 +55,13 @@ fn main() {
     let abi = env::var("DEP_TCH_GNX_ABI").expect("torch-sys C++ ABI");
     let lib = env::var("DEP_TCH_GNX_LIBDIR").expect("torch-sys library directory");
     let mut bridge = cc::Build::new();
+    // NVRTC dlopens its builtins by SONAME. Its wheel has no RUNPATH
+    // pointing at the managed lib directory; the CUDA bridge loads this
+    // dependency on first GPU use, just like libtorch_cuda below.
+    let builtins = PathBuf::from(&lib).join("libnvrtc-builtins.so.13.0");
+    if builtins.is_file() {
+        bridge.define("GNX_NVRTC_BUILTINS", format!("{builtins:?}").as_str());
+    }
     bridge
         .cpp(true)
         .std("c++17")

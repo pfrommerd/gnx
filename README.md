@@ -157,14 +157,14 @@ Run the example on a local
 hf download Qwen/Qwen3.5-0.8B --local-dir Qwen3.5-0.8B \
   --include 'config.json' 'tokenizer.json' '*.safetensors'
 cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
-  --model-dir Qwen3.5-0.8B --prompt 'The capital of France is' --max-new-tokens 4
+  --model-dir Qwen3.5-0.8B --prompt $'<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n'
 ```
 
 To chat interactively with the same checkpoint:
 
 ```sh
 cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
-  --model-dir Qwen3.5-0.8B --chat --max-new-tokens 64
+  --model-dir Qwen3.5-0.8B --chat
 ```
 
 On an NVIDIA host, pass `--cuda`:
@@ -187,9 +187,9 @@ cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
 Omit `--cuda` to run on CPU with either backend. For a smaller Torch-only CPU
 build, `--features qwen-torch` omits XLA and downloads the CPU LibTorch archive.
 
-Enter one message per line. Replies stream as they are generated. `/reset` clears
-history; `/quit` or Ctrl-D exits. The token limit applies to each reply. Chat
-loads the weights once and reprocesses the conversation history on each turn.
+Enter one message per line. Chat prints each completed reply, excluding
+`<|im_end|>`. `/reset` clears history; `/quit` or Ctrl-D exits. Chat loads the
+weights once and reprocesses the conversation history on each turn.
 
 For [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), substitute
 `Qwen/Qwen3.8-27B` and `Qwen3.8-27B` in those commands. Use the original BF16
@@ -197,20 +197,31 @@ checkpoint and allow enough CPU RAM for the weights (roughly 54 GB for the 27B
 text decoder), a checkpoint shard, and XLA execution buffers.
 
 [`gnx/examples/qwen`](gnx/examples/qwen) runs greedy completion on raw text.
-Prompt and generated tokens pass through the same single-token decoder. The
-linear projections, feed-forward blocks, and recurrent updates use `#[gnx::jit]`;
-`device.eval` materializes the next token and layer caches together. Only the
-generated token ID is read back. This example favors clarity over throughput:
-full-attention caches grow with the sequence, and evaluation compiles each step.
+Prompt and generated tokens call the same `#[gnx::jit] fn step`. The cursor
+and each layer’s two cache slots are `ArrayRef`s. The step updates KV storage
+with `dynamic_update_slice`, masks attention using a shared symbolic prefix
+length, then advances the cursor once. After prompt prefill, a compiled GNX
+`while_loop` feeds each prediction into the next step and collects the reply
+without a Rust readback per token. Only `<|im_end|>` completes a reply. If
+the context fills first, generation reports an error rather than returning
+partial text.
+`--context-length` sets the storage bound (default 2048, capped by the model);
+larger bounds reserve more memory and increase attention work. Add `--timings` to measure time to first
+token and subsequent decode throughput separately.
+
+With `--timings`, first-token time includes prefill but excludes checkpoint
+loading. The first decode also compiles the loop. To measure warm decode, run
+`--cuda --chat --timings`, send a message, `/reset`, then repeat the message.
 
 ## Compilation cache
 
 Every device takes a `gnx::cache::Cache`, in which compilation keeps the result
 of each pass and the lowered program (HLO for XLA, TorchScript modules for
-Torch). Compiling an expression again, on any device with the same cache, reads
-the program back instead of lowering it; the native compilation of that
-program still runs. `Cache::in_memory()` lasts as long as the process. To keep
-programs between runs, give the cache a store:
+Torch). Each device additionally caches the final runtime stage: the **loaded
+PJRT executable** on XLA, or the loaded TorchScript module(s) on Torch. A hit
+on the same runtime skips native compilation or module loading. A new process
+can reuse the portable stages, but must create its own native handles. To keep
+portable artifacts between runs, give the cache a store:
 
 ```rust
 use gnx::{cache::Cache, store::Store};

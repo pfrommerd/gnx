@@ -37,11 +37,11 @@ pub fn expand_leaf(ty: &Type) -> TokenStream2 {
                 }
             }
 
-            fn visit<'g, L: #g::Leaf, F: #g::Filter<L>, V: #g::GraphVisitor<'g, Self, L>>(
+            fn visit<'g, L: #g::Leaf, F: #g::Filter<L>, V: #g::GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
                 &'g self, filter: F, visitor: V
             ) -> V::Output {
                 match filter.matches_ref(self) {
-                    Ok(r) => visitor.visit_leaf(r),
+                    Ok(r) => visitor.visit_leaf(r, filter),
                     Err(s) => visitor.visit_static::<Self>(<Self as #g::Leaf>::as_ref(s))
                 }
             }
@@ -111,11 +111,11 @@ pub fn expand_leaf_from_derive(input: &DeriveInput) -> TokenStream2 {
                 }
             }
 
-            fn visit<'g, L: #g::Leaf, F: #g::Filter<L>, V: #g::GraphVisitor<'g, Self, L>>(
+            fn visit<'g, L: #g::Leaf, F: #g::Filter<L>, V: #g::GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
                 &'g self, filter: F, visitor: V
             ) -> V::Output {
                 match filter.matches_ref(self) {
-                    Ok(r) => visitor.visit_leaf(r),
+                    Ok(r) => visitor.visit_leaf(r, filter),
                     Err(s) => visitor.visit_static::<Self>(<Self as #g::Leaf>::as_ref(s))
                 }
             }

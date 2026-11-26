@@ -7,6 +7,8 @@ use std::sync::Arc;
 use gnx_expr::{ConcreteValue, Expr, ExprBuilder, Param, RootExpr, Value, Var};
 
 use crate::buffer::TransferPolicy;
+mod bounded;
+pub use bounded::{BoundSizes, BoundedBuffer};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ExecOpts {
@@ -31,6 +33,7 @@ pub trait Device: Send + Sync {
 /// concrete parameter, and repeated results retain the same allocation.
 #[derive(Clone, Debug)]
 pub struct ExecutionBoundary {
+    witnesses: Vec<gnx_expr::Symbol>,
     argument_indices: Vec<usize>,
     results: Vec<ResultSlot>,
     computed: usize,
@@ -46,6 +49,9 @@ impl ExecutionBoundary {
     pub fn project(expr: Expr<'_>) -> io::Result<(Option<Arc<RootExpr>>, Self)> {
         expr.check()
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        let inlined = bounded::inline_calls(expr)?;
+        let expr = inlined.as_ref().map_or(expr, |root| root.view());
+        bounded::check(expr)?;
         let parameters: HashMap<_, _> = expr
             .closure_inputs()
             .chain(expr.inputs())
@@ -67,6 +73,7 @@ impl ExecutionBoundary {
             .collect();
         let computed = outputs.len();
         let mut argument_indices = Vec::new();
+        let mut witnesses = Vec::new();
         let program = if computed == 0 {
             None
         } else {
@@ -102,11 +109,14 @@ impl ExecutionBoundary {
             let program = program
                 .build()
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+            let (program, sizes) = bounded::lower(program)?;
+            witnesses = sizes;
             Some(program)
         };
         Ok((
             program,
             Self {
+                witnesses,
                 argument_indices,
                 results,
                 computed,
@@ -115,6 +125,11 @@ impl ExecutionBoundary {
     }
 
     pub fn validate_arguments(expr: Expr<'_>, args: &[Value]) -> io::Result<()> {
+        Self::bind_arguments(expr, args).map(drop)
+    }
+
+    pub fn bind_arguments(expr: Expr<'_>, args: &[Value]) -> io::Result<BoundSizes> {
+        let mut sizes = BoundSizes::default();
         let count = expr.closure_inputs().len() + expr.inputs().len();
         if args.len() != count {
             return Err(io::Error::new(
@@ -128,14 +143,42 @@ impl ExecutionBoundary {
         {
             let expected = param.info_ref();
             let actual = value.to_info();
-            if expected != actual {
+            if !param.info().symbols().is_empty()
+                && let Some(formal) = expected.downcast::<crate::ArrayInfoData>()
+            {
+                let formal = formal.to_native();
+                let actual = crate::ArrayInfo::from_info(&actual).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "bounded parameter requires an array",
+                    )
+                })?;
+                sizes.bind(&formal, &actual)?;
+                if let Ok(buffer) = value.downcast::<BoundedBuffer>()
+                    && &formal.capacity() != buffer.storage().array_info()
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "bounded storage does not match signature capacity",
+                    ));
+                }
+                continue;
+            }
+            if expected != actual || value.downcast::<BoundedBuffer>().is_ok() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("argument {i}: expected {expected}, got {actual}"),
                 ));
             }
         }
-        Ok(())
+        Ok(sizes)
+    }
+
+    pub fn witness_arguments<'a>(
+        &'a self,
+        sizes: &'a BoundSizes,
+    ) -> impl Iterator<Item = io::Result<crate::DataHandle>> + 'a {
+        self.witnesses.iter().map(move |&s| sizes.scalar(s))
     }
 
     pub fn arguments<'a>(

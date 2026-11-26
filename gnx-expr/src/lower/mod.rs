@@ -26,7 +26,7 @@ pub enum InputId {
 }
 
 /// One (identity, kind) entry per HExpr parameter, in declaration order.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InputSpec {
     pub closure: Vec<(InputId, Kind, VarInfo)>,
     pub inputs: Vec<(InputId, Kind, VarInfo)>,

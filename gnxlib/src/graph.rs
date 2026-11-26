@@ -189,16 +189,16 @@ impl Graph for PyGraph {
         })
     }
 
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
     ) -> V::Output {
         match filter.matches_ref(self) {
-            Ok(r) => visitor.visit_leaf(r),
+            Ok(r) => visitor.visit_leaf(r, filter),
             Err(graph) => match graph {
                 PyGraph::Leaf(leaf) => match filter.matches_ref(leaf) {
-                    Ok(r) => visitor.visit_leaf(r),
+                    Ok(r) => visitor.visit_leaf(r, filter),
                     Err(s) => visitor.visit_static::<PyLeaf>(s.as_ref()),
                 },
                 PyGraph::Tracer(tracer) => tracer.visit(filter, GenericVisitor::<PyGraph, L, V>::from(visitor)),
@@ -372,7 +372,7 @@ impl Node for PyGraph {
     where
         L: Leaf,
         F: Filter<L>,
-        V: ChildrenVisitor<'g, Self, L>,
+        V: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>,
     {
         match self {
             PyGraph::Tuple(children) | PyGraph::List(children) => {

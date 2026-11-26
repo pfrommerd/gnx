@@ -1,5 +1,7 @@
 pub mod casting;
 mod dag;
+mod dag_filter;
+pub use dag_filter::DagFilterCursor;
 mod graph_ext;
 mod graph_result;
 mod iter_source;

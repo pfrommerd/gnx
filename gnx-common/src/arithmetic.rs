@@ -3,7 +3,7 @@ use crate::{Array, ArrayInfo, DType, Dim, Shape, ops};
 use gnx_expr::{Invocation, LoweringError, Op, VarInfo};
 use std::ops::{Add, Div, Mul, Rem, Sub};
 
-fn apply(op: Op, inputs: &[&Array], info: &ArrayInfo) -> Array {
+pub fn apply(op: Op, inputs: &[&Array], info: &ArrayInfo) -> Array {
     Invocation::invoke(
         op,
         vec![],

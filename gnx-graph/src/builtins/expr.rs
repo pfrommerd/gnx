@@ -1,8 +1,8 @@
 use crate::util::impl_lifetime_free;
 use crate::*;
 
-use gnx_expr::trace::{Generic, CellTrace, ObjectTracer, Tracer, CellTracer};
 use gnx_common::{Array, ArrayInfo, ArrayRef};
+use gnx_expr::trace::{CellTrace, CellTracer, Generic, ObjectTracer, Tracer};
 
 use super::trace::{cell_ref, into_cell_ref, into_value_ref, value_ref};
 use std::any::TypeId;
@@ -39,14 +39,14 @@ impl Graph for Array {
             Err(_) => Ok(LeafBuilder::Static(self.clone())),
         }
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
     ) -> V::Output {
         let trace_ref = self.tracer().trace_ref();
         match filter_matches_ref_any!(filter, self, trace_ref) {
-            Ok(r) => visitor.visit_leaf(r),
+            Ok(r) => visitor.visit_leaf(r, filter),
             Err(_) => visitor.visit_static::<Self>(self),
         }
     }
@@ -163,14 +163,14 @@ impl Graph for ArrayRef {
             Err(_) => Ok(LeafBuilder::Static(self.clone())),
         }
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
     ) -> V::Output {
         let trace_cell_ref = self.tracer().cell_ref();
         match filter_matches_ref_any!(filter, self, trace_cell_ref) {
-            Ok(r) => visitor.visit_leaf(r),
+            Ok(r) => visitor.visit_leaf(r, filter),
             Err(_) => visitor.visit_static::<Self>(self),
         }
     }

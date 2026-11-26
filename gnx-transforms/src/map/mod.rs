@@ -1,10 +1,16 @@
 //! Vectorizing map (JAX's `vmap`).
 //!
 //! [`map`] wraps a function so that it runs once per slice of its mapped
-//! inputs, using JAX-style `in_axes`/`out_axes` specified as [`Dag`] graphs:
+//! inputs. Both setters accept a positional [`Dag`] or a graph [`Filter`](gnx_graph::Filter)
+//! whose annotation is `usize`. Matches cover the tracer leaves below them; the
+//! annotation supplies the axis. Output filters run on the per-instance result at
+//! trace time. An unmatched input is shared; every dynamic output needs an axis.
 //!
 //! ```ignore
 //! let per_row = map(|x: Array, w: Array| f(x, w)).in_axes(dag!(0, *));
+//! let per_column = map(f).in_axes(on_axis(1, Of::<Array>::filter()));
+//! // An empty-only DAG in a setter needs a payload type for inference.
+//! let repeated = map(f).in_axes(dag!(as usize; *)).axis_size(4);
 //! ```
 //!
 //! Calls trace the function once per input signature (through `jit`) and
@@ -33,8 +39,8 @@ pub use batch::{BatchRule, Batched};
 use std::fmt;
 
 use gnx_common::ops::{indices, stored_indices};
-use gnx_expr::lower::LoweringContext;
 use gnx_common::pass::Builder;
+use gnx_expr::lower::LoweringContext;
 use gnx_expr::{
     Eqn, EqnSource, HEqn, LoweringError, Op, OpRef, Operation, Var, VarInfo, register_op_interface,
 };

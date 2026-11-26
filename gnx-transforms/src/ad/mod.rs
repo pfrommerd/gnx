@@ -1,7 +1,11 @@
 //! Automatic differentiation.
 //!
 //! Builders wrap a function with JAX's defaults; builder methods override them,
-//! with `wrt` specs given as [`Dag`] graphs over the arguments:
+//! with `wrt` specified by a positional argument index, a list of indices, a boolean
+//! [`Dag`], or any graph [`Filter`](gnx_graph::Filter). Indices are zero-based:
+//! `.wrt(1)` selects the second argument and `.wrt([0, 2])` selects the first and
+//! third. Filters select by match location; their annotations are not evaluated.
+//! Gradients retain the full argument structure, with zeros for unselected leaves.
 //!
 //! ```ignore
 //! let df = grad(|x: Array, y: Array| f(x, y)).wrt(dag!(true, false));
@@ -42,8 +46,8 @@ pub use transpose::{Operand, TransposeRule};
 use std::fmt;
 
 use gnx_common::ops::{indices, stored_indices};
-use gnx_expr::lower::LoweringContext;
 use gnx_common::pass::Builder;
+use gnx_expr::lower::LoweringContext;
 use gnx_expr::{
     Eqn, EqnSource, HEqn, LoweringError, Op, OpRef, Operation, Var, register_op_interface,
 };

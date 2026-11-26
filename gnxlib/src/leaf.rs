@@ -84,11 +84,11 @@ impl Graph for PyLeaf {
             Err(_) => Ok(LeafBuilder::Static(self.clone())),
         }
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L>>(
+    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self, filter: F, visitor: V
     ) -> V::Output {
         match filter.matches_ref(self) {
-            Ok(r) => visitor.visit_leaf(r),
+            Ok(r) => visitor.visit_leaf(r, filter),
             Err(s) => visitor.visit_static::<Self>(s.as_ref())
         }
     }
