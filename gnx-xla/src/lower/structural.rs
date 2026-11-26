@@ -202,10 +202,25 @@ impl XlaLowering for ConstantOperation {
         eqn: Eqn<'_>,
         _: &[XlaOp],
     ) -> io::Result<Vec<XlaOp>> {
-        let scalar = native(ctx.builder().c0(self.value()))?;
-        Ok(vec![native(scalar.convert(
-            element(result_info(eqn)?.dtype()).primitive_type(),
-        ))?])
+        use gnx_math::Scalar;
+        let dtype = result_info(eqn)?.dtype();
+        let value = self.value().exact(dtype).map_err(invalid)?;
+        let builder = ctx.builder();
+        let scalar = match value {
+            Scalar::Bool(v) => native(builder.c0(i32::from(v)))?,
+            Scalar::Int(v) => native(builder.c0(v))?,
+            Scalar::UInt(v) => native(builder.c0(v))?,
+            Scalar::F32(v) => native(builder.c0(v))?,
+            Scalar::F64(v) => native(builder.c0(v))?,
+            Scalar::F16(bits) | Scalar::BF16(bits) => {
+                let word =
+                    native(native(builder.c0(u32::from(bits)))?.convert(PrimitiveType::U16))?;
+                return Ok(vec![native(word.bitcast(element(dtype).primitive_type()))?]);
+            }
+        };
+        Ok(vec![native(
+            scalar.convert(element(dtype).primitive_type()),
+        )?])
     }
 }
 crate::register_xla_lowering!(ConstantOperation);

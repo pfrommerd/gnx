@@ -5,7 +5,7 @@ A JAX- and PyTorch-compatible library for generative modeling.
 ## Random arrays and layer initialization
 
 ```rust
-use gnx::{array::DType, nn::Linear, random::{self, Algorithm, Rngs}};
+use gnx::{array::DType, nn::{Linear, Rngs}, random::{self, Algorithm}};
 
 let root = random::key(42, Algorithm::ThreeFry2x32); // or Algorithm::Philox4x32
 let (model_key, noise_key) = random::split2(&root);
@@ -28,8 +28,76 @@ Floating samples do not promise bitwise JAX or cross-backend identity.
 `uniform` and `normal` support `BF16`, `F16`, `F32`, and `F64`. `Rngs` draws
 from independently named streams using traced counters. `Linear::init` uses two
 keys from `"params"` to initialize weight and bias uniformly with PyTorch's
-`1 / sqrt(in_features)` bound. Shape arguments accept tuples through rank eight,
+`1 / sqrt(in_features)` bound. Use `Linear::init_with(in_features, out_features,
+false, dtype, &streams)` for a weight-only layer; it consumes just one key.
+`layer.bias()` returns `Option<&Param>`. Shape arguments accept tuples through rank eight,
 arrays of any rank, slices, vectors, and `Shape`; `()` denotes a scalar.
+
+## Scalars, casts, and arithmetic
+
+`Array::scalar(v)` creates a rank-zero array with the Rust value's dtype:
+`Array::scalar(0.5)` is F64, `Array::scalar(0.5_f32)` is F32, and
+`Array::scalar(u64::MAX)` retains every bit. `AsDType` describes the dtype;
+`IntoScalar` also supplies the value. Both are implemented for `bool`, native
+8–64-bit integers, pointer-sized integers, `f32`, `f64`, and `gnx::half::{f16, bf16}`.
+
+```rust
+use gnx::{Array, array::DType, half::bf16};
+
+let x = Array::scalar(bf16::from_f32(4.0));
+let y = 1.0 - &x / 2;       // literals adopt x's BF16 dtype in either position
+let z = y.astype(DType::F32);
+```
+
+Use `lax::try_scalar(v, dtype)` when the dtype is known at runtime and the
+value must be exactly representable. For intentional rounding, construct the
+scalar in its native dtype and call `.astype(dtype)`. Arithmetic literals follow
+the array dtype: floating literals may round to its floating precision; integer
+literals must fit exactly, and float literals cannot be used with integer arrays.
+`ArrayRef::astype` reads the cell and returns an immutable `Array`.
+
+`array::constant` now stores typed values. Rebuild serialized expressions and
+cache entries created with its old f64-only payload before loading them.
+
+## Indexing arrays and references
+
+Use `array.at(3)` for one row, `array.at((.., 1..4))` for a slice, or
+`weights.at(&token_ids)` to gather rows for an integer array of token IDs.
+Trailing axes are kept. `try_at` returns construction errors; tensor indices
+must be in bounds when evaluated.
+
+`ArrayRef::at` reads an immutable `Array`. `cell.set_at((1, ..), &row)` reads
+the cell, replaces the selected window, and writes it back. For a functional
+update on an `Array`, use `array.with_at((1, ..), &row)`. Writes accept integer
+and range selectors and require the replacement to match the window shape and dtype.
+
+## Neural-network layers and language models
+
+`gnx::nn` exports `Conv`, `Linear`, `LayerNorm`, `GroupNorm`, `BatchNorm`, and
+`RmsNorm`, plus token embeddings, rotary attention, SwiGLU and routed experts.
+Convolution and normalization use channels-last inputs. `nn::activations`
+contains the standalone activation functions.
+
+`gnx-models` provides `Qwen3LM` (dense or MoE) and `KimiK2LM` (MLA and shared
+and routed experts). `Qwen3Config::default()` describes Qwen3-0.6B;
+`Qwen3Config::moe_30b_a3b()` and `KimiK2Config::default()` describe Qwen3-30B-A3B
+and Kimi-K2-Base. Constructors initialize lazy floating-point parameters.
+
+```rust
+use gnx::{array::DType, lax, nn::Rngs, random::Algorithm};
+use gnx_models::{DecoderCache, Qwen3Config, Qwen3LM};
+
+let config = Qwen3Config { vocab: 128, hidden: 32, layers: 2, heads: 4,
+    kv_heads: 2, head_dim: 8, intermediate: 64, ..Default::default() };
+let model = Qwen3LM::init(&config, DType::F32, &Rngs::key(42, Algorithm::ThreeFry2x32));
+let mut cache = DecoderCache::default();
+let prompt = lax::iota([1, 3], 1, DType::I32);
+let logits = model.forward_at(&prompt, 0, Some(&mut cache), None); // [1, 3, 128]
+```
+
+Use `forward(&ids)` for a full causal pass. For decoding, reuse the cache and
+pass the absolute position of the next token. The optional boolean padding mask
+covers the full key history (`[batch, key_time]`, `true` keeps a token).
 
 ## TorchScript backend (CPU and CUDA)
 

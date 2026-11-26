@@ -25,6 +25,8 @@ macro_rules! primitive {
         pub fn $checked($($arg: $ty),*) -> Result<$out> $body
     };
 }
+mod convolution;
+pub use convolution::*;
 mod elementwise;
 mod structural;
 pub use elementwise::*;

@@ -18,6 +18,15 @@ fn torch_key_vectors_and_high_unsigned_words() {
         .unwrap();
         device.download(x.data().unwrap()).unwrap().bytes().to_vec()
     };
+    assert_eq!(read(Array::scalar(i64::MAX)), i64::MAX.to_ne_bytes());
+    assert_eq!(
+        read(Array::scalar((1_u32 << 31) + 1)),
+        ((1_u32 << 31) + 1).to_ne_bytes()
+    );
+    assert_eq!(
+        read(Array::scalar(gnx::half::bf16::from_bits(1))),
+        1_u16.to_ne_bytes()
+    );
     // JAX 0.12.1, seed 0: key_data(split(key, 1))[0], bits(key, dtype=uint32).
     for (algorithm, expected, expected_bits) in [
         (ThreeFry2x32, [1797259609, 2579123966], 4070199207),
@@ -58,7 +67,7 @@ fn torch_key_vectors_and_high_unsigned_words() {
         ),
     ] {
         let children = random::split(&random::key(u64::MAX, alg), 3);
-        let child = gnx::lax::slice_axis(&children, 0, 2, 3).reshape(());
+        let child = children.at(2);
         let key = random::fold_in(&child, &gnx::lax::scalar(f64::from(u32::MAX), DType::U32));
         let actual: Vec<_> = read(random::bits(&key, (2, 3), DType::U32))
             .chunks_exact(4)
@@ -68,9 +77,9 @@ fn torch_key_vectors_and_high_unsigned_words() {
     }
 
     let seed = random::key(42, Philox4x32);
-    let rngs = random::Rngs::new(seed.clone());
+    let rngs = gnx::nn::Rngs::new(seed.clone());
     let draw = jit(move |_: Array| random::bits(&rngs.next("params"), (), DType::U32));
-    let reference = random::Rngs::new(seed.clone());
+    let reference = gnx::nn::Rngs::new(seed.clone());
     for _ in 0..2 {
         assert_eq!(
             read(draw.invoke((seed.clone(),))),

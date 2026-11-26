@@ -16,6 +16,7 @@ defbroadcasting!(
     SubOperation,
     MulOperation,
     DivOperation,
+    gnx_base::ops::ConvertElementTypeOperation,
     RemOperation,
     SelectOperation
 );

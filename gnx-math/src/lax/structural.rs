@@ -3,18 +3,52 @@ use gnx_expr::{Invocation, VarInfo};
 pub use ops::contraction::DotDimensions;
 
 fn fixed(x: &Array) -> Result<Vec<usize>> {
-    ops::fixed_dims(&ArrayInfo::new(x.shape(), x.dtype()))
+    x.fixed_dims()
         .map_err(|_| signature("operation requires fixed dimensions"))
 }
 
-/// A rank-zero constant, converted from `f64` to `dtype`.
-pub fn scalar(value: f64, dtype: DType) -> Array {
-    assert!(!dtype.is_key(), "construct keys with random::key");
-    invoke_array(
-        ops::creation::constant(value),
-        &[],
-        &ArrayInfo::new(Shape::fixed([]), dtype),
-    )
+primitive!(/// Permute the axes of a fixed-shape array.
+    transpose, try_transpose(x: &Array, permutation: &[usize]) -> Array);
+pub fn try_transpose(x: &Array, permutation: &[usize]) -> Result<Array> {
+    let dims = fixed(x)?;
+    let mut sorted = permutation.to_vec();
+    sorted.sort_unstable();
+    if !sorted.into_iter().eq(0..dims.len()) {
+        return Err(signature("invalid transpose permutation"));
+    }
+    let shape = permutation.iter().map(|&i| dims[i]).collect::<Vec<_>>();
+    Ok(invoke_array(
+        ops::transpose_op(permutation),
+        &[x],
+        &ArrayInfo::new(shape, x.dtype()),
+    ))
+}
+primitive!(/// Select elements from matching-shape operands using a boolean predicate.
+    select, try_select(predicate: &Array, yes: &Array, no: &Array) -> Array);
+pub fn try_select(predicate: &Array, yes: &Array, no: &Array) -> Result<Array> {
+    if predicate.dtype() != DType::Bool
+        || predicate.shape() != yes.shape()
+        || yes.shape() != no.shape()
+        || yes.dtype() != no.dtype()
+    {
+        return Err(signature(
+            "select requires a boolean predicate and matching operands",
+        ));
+    }
+    Ok(invoke_array(
+        ops::select_op(),
+        &[predicate, yes, no],
+        &ArrayInfo::new(yes.shape(), yes.dtype()),
+    ))
+}
+
+/// Construct a rank-zero constant exactly representable in `dtype`.
+#[track_caller]
+pub fn scalar(value: impl crate::IntoScalar, dtype: DType) -> Array {
+    try_scalar(value, dtype).expect("lax::scalar")
+}
+pub fn try_scalar(value: impl crate::IntoScalar, dtype: DType) -> Result<Array> {
+    Array::try_scalar_as(value, dtype)
 }
 /// A zero-filled array of the specified shape and dtype.
 pub fn zeros(shape: impl IntoShape, dtype: DType) -> Array {

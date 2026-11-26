@@ -33,37 +33,7 @@ simple_operations! {
 }
 pub use zeros as empty;
 
-#[derive(rkyv::Archive, rkyv::Serialize)]
-#[rkyv(archived = ConstantOperation)]
-pub struct Constant {
-    bits: u64,
-}
-impl ConstantOperation {
-    pub fn value(&self) -> f64 {
-        f64::from_bits(self.bits())
-    }
-    fn bits(&self) -> u64 {
-        self.bits.to_native()
-    }
-}
-gnx_base::array_operation!(
-    ConstantOperation,
-    "constant",
-    |_op, eqn| {
-        arity(eqn, 0)?;
-        if result_rank(eqn)? != 0 {
-            return Err(signature("constant must produce a scalar"));
-        }
-        Ok(())
-    },
-    bits
-);
-/// A floating-point scalar, converted to the result's dtype.
-pub fn constant(value: f64) -> Op {
-    Op::new(Constant {
-        bits: value.to_bits(),
-    })
-}
+pub use gnx_base::ops::creation::*;
 
 #[derive(rkyv::Archive, rkyv::Serialize)]
 #[rkyv(archived = ScalarBoundOperation)]

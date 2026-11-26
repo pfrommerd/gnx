@@ -95,3 +95,39 @@ pub fn try_sum(x: &Array, axes: impl Into<Axes>) -> Result<Array, LoweringError>
 pub fn sum(x: &Array, axes: impl Into<Axes>) -> Array {
     try_sum(x, axes).expect("np::sum")
 }
+
+// Subtract the last-axis maximum before exponentiating. Its shape also gives
+// the singleton axis needed to broadcast the normalization sum back over x.
+fn centered(x: &Array) -> (Array, crate::Shape) {
+    use crate::DType::*;
+    let work = match x.dtype() {
+        BF16 | F16 | F32 => F32,
+        F64 => F64,
+        _ => panic!("softmax requires floating-point input"),
+    };
+    let x = x.astype(work);
+    let (max, _) = lax::top_k(&x, 1);
+    let shape = max.shape();
+    (x - max, shape)
+}
+
+/// Numerically stable softmax along the last axis. Half-precision inputs
+/// accumulate in F32 and the result has the input dtype.
+pub fn softmax(x: &Array) -> Array {
+    let (z, shape) = centered(x);
+    let e = exp(&z);
+    (&e / sum(&e, -1).reshape(shape)).astype(x.dtype())
+}
+
+/// Log probabilities along the last axis, computed without taking the log of
+/// potentially underflowed softmax probabilities. Returns the input dtype.
+pub fn log_softmax(x: &Array) -> Array {
+    let (z, shape) = centered(x);
+    let s = sum(&exp(&z), -1).reshape(shape);
+    let log_sum = gnx_base::invoke_array(
+        crate::ops::elementwise::log(),
+        &[&s],
+        &crate::ArrayInfo::new(s.shape(), s.dtype()),
+    );
+    (z - log_sum).astype(x.dtype())
+}

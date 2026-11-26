@@ -5,8 +5,8 @@ use crate::ops::{
     linalg::*,
     ordering::*,
 };
-use gnx_expr::Eqn;
 use gnx_base::pass::Builder;
+use gnx_expr::Eqn;
 
 use gnx_transforms::TransformResult;
 use gnx_transforms::map::batch::{BatchRule, Batched, batch_region, materialize};
@@ -51,17 +51,21 @@ pub(super) fn map_lanes(
     .collect())
 }
 
+struct MapByLane;
+impl BatchRule for MapByLane {
+    fn batch(
+        &self,
+        b: &mut Builder,
+        size: usize,
+        eqn: Eqn<'_>,
+        inputs: &[Batched],
+        _: &[Vec<Batched>],
+    ) -> TransformResult<Vec<Batched>> {
+        map_lanes(b, size, eqn, inputs)
+    }
+}
 macro_rules! map_by_lane {
-    ($($ty:ty),+ $(,)?) => {$(
-        impl BatchRule for $ty {
-            fn batch(&self, b: &mut Builder, size: usize, eqn: Eqn<'_>, inputs: &[Batched], _: &[Vec<Batched>])
-                -> TransformResult<Vec<Batched>>
-            {
-                map_lanes(b, size, eqn, inputs)
-            }
-        }
-        gnx_expr::register_op_interface!(dyn BatchRule: $ty);
-    )+};
+    ($($ty:ty),+ $(,)?) => {$(gnx_expr::register_op_interface!(dyn BatchRule: $ty => MapByLane);)+};
 }
 map_by_lane!(
     DynamicSliceOperation,

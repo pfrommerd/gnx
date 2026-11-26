@@ -358,7 +358,7 @@ fn gather_window_winners(
         .ok_or_else(|| TransformError::invalid("window operand size overflow"))?;
     let index = b.emit1(iota(0), &[], info(&[count], DType::I64));
     let index = b.emit1(reshape_op(), &[index], info(&shape, DType::I64));
-    let sentinel = b.emit1(constant(-1.), &[], index_scalar.clone());
+    let sentinel = b.emit1(constant(-1_i64), &[], index_scalar.clone());
 
     let mut reducer = Builder::new();
     let a = reducer.input(scalar.clone());

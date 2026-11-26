@@ -33,7 +33,8 @@ fn batch_indices(
     )])
 }
 
-impl BatchRule for GatherOperation {
+struct GatherRule;
+impl BatchRule for GatherRule {
     fn batch(
         &self,
         b: &mut Builder,
@@ -42,7 +43,11 @@ impl BatchRule for GatherOperation {
         inputs: &[Batched],
         _: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
-        let mut p = self.parameters().clone();
+        let mut p = eqn
+            .op()
+            .downcast_ref::<GatherOperation>()
+            .unwrap()
+            .parameters();
         p.slice_sizes.insert(0, usize::from(size != 0));
         let d = &mut p.dimensions;
         d.offset = shifted(&d.offset);
@@ -83,4 +88,5 @@ impl BatchRule for ScatterOperation {
     }
 }
 
-gnx_expr::register_op_interface!(dyn BatchRule: GatherOperation, ScatterOperation);
+gnx_expr::register_op_interface!(dyn BatchRule: GatherOperation => GatherRule);
+gnx_expr::register_op_interface!(dyn BatchRule: ScatterOperation);

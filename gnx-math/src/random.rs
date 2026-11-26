@@ -1,10 +1,9 @@
 //! Pure, counter-based random draws. A key is a scalar logical dtype, not a
 //! mutable generator. Reusing a key repeats a draw. Use `split` or `fold_in`
-//! to derive a new key, or `Rngs` to keep traced counters for named streams.
-use crate::{Array, ArrayInfo, ArrayRef, DType, IntoShape, Shape, lax, ops};
+//! to derive a new key.
+use crate::{Array, ArrayInfo, DType, IntoShape, Shape, lax, ops};
 use gnx_base::{fixed_dims, invoke_array};
 use gnx_expr::{LoweringError, Op};
-use std::{collections::BTreeMap, sync::Mutex};
 
 /// The algorithm is encoded in the key dtype, so it is static under `jit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +23,7 @@ impl Algorithm {
 // indexing and mapping keys never expose a physical word axis. Arithmetic
 // uses i64 lanes with explicit masks/shifts on both backends.
 fn scalar(n: u32) -> Array {
-    lax::scalar(n as f64, DType::I64)
+    lax::scalar(n, DType::I64)
 }
 fn op(op: Op, x: &Array, rest: &[&Array], dtype: DType) -> Array {
     let mut inputs = vec![x];
@@ -85,28 +84,25 @@ pub fn key(seed: u64, algorithm: Algorithm) -> Array {
 /// Export two u32 words per key (most significant word first).
 pub fn key_data(keys: &Array) -> Array {
     assert!(keys.dtype().is_key());
-    let mut dims =
-        fixed_dims(&ArrayInfo::new(keys.shape(), keys.dtype())).expect("fixed key shape");
+    let mut dims = keys.fixed_dims().expect("fixed key shape");
     let axis = dims.len();
     dims.push(1);
-    let [hi, lo] = unpack(keys).map(|x| lax::convert_element_type(&x, DType::U32).reshape(&dims));
+    let [hi, lo] = unpack(keys).map(|x| x.astype(DType::U32).reshape(&dims));
     lax::concatenate(&[&hi, &lo], axis)
 }
 /// Import `U32[..., 2]` as a key array of logical shape `...`.
 pub fn wrap_key_data(data: &Array, algorithm: Algorithm) -> Array {
     assert_eq!(data.dtype(), DType::U32);
-    let mut dims =
-        fixed_dims(&ArrayInfo::new(data.shape(), data.dtype())).expect("fixed key data shape");
+    let mut dims = data.fixed_dims().expect("fixed key data shape");
     assert_eq!(
         dims.pop(),
         Some(2),
         "key data must have a trailing axis of length two"
     );
     let lane = |i| {
-        lax::convert_element_type(
-            &lax::slice_axis(data, dims.len(), i, i + 1).reshape(&dims),
-            DType::I64,
-        )
+        lax::slice_axis(data, dims.len(), i, i + 1)
+            .reshape(&dims)
+            .astype(DType::I64)
     };
     pack(&lane(0), &lane(1), algorithm.dtype())
 }
@@ -192,8 +188,7 @@ pub fn split(k: &Array, n: usize) -> Array {
 /// Return the two scalar elements of `split(k, 2)`.
 pub fn split2(k: &Array) -> (Array, Array) {
     let keys = split(k, 2);
-    let at = |i| lax::slice_axis(&keys, 0, i, i + 1).reshape(());
-    (at(0), at(1))
+    (keys.at(0), keys.at(1))
 }
 fn fold(k: &Array, tag: Array) -> Array {
     let [a, b] = hash(k, scalar(0), tag, Purpose::DeriveKey);
@@ -205,7 +200,7 @@ pub fn fold_in(k: &Array, tag: &Array) -> Array {
         tag.dtype() == DType::U32 && tag.shape().dims().is_empty(),
         "fold_in requires a scalar U32 tag"
     );
-    fold(k, lax::convert_element_type(tag, DType::I64))
+    fold(k, tag.astype(DType::I64))
 }
 pub fn bits(k: &Array, shape: impl IntoShape, dtype: DType) -> Array {
     try_bits(k, shape, dtype).expect("random::bits")
@@ -217,7 +212,7 @@ pub fn try_bits(k: &Array, shape: impl IntoShape, dtype: DType) -> Result<Array,
         return Err(gnx_base::ops::signature("bits requires U32"));
     }
     let [a, b] = block(k, &shape.into_shape(), Purpose::RandomBits)?;
-    Ok(lax::convert_element_type(&xor(&a, &b), dtype))
+    Ok(xor(&a, &b).astype(dtype))
 }
 fn precision(dtype: DType) -> Result<(u32, DType), LoweringError> {
     Ok(match dtype {
@@ -239,7 +234,7 @@ fn fraction(k: &Array, shape: &Shape, p: u32, work: DType) -> Result<Array, Lowe
     } else {
         right(&xor(&a, &b), 32 - p)
     };
-    Ok(lax::convert_element_type(&integer, work) * lax::scalar(2f64.powi(-(p as i32)), work))
+    Ok(integer.astype(work) * 2f64.powi(-(p as i32)))
 }
 fn validate(k: &Array) -> Result<(), LoweringError> {
     if !k.dtype().is_key() || !k.shape().dims().is_empty() {
@@ -251,10 +246,7 @@ pub fn try_uniform(k: &Array, shape: impl IntoShape, dtype: DType) -> Result<Arr
     let shape = shape.into_shape();
     validate(k)?;
     let (p, work) = precision(dtype)?;
-    Ok(lax::convert_element_type(
-        &fraction(k, &shape, p, work)?,
-        dtype,
-    ))
+    Ok(fraction(k, &shape, p, work)?.astype(dtype))
 }
 /// Uniform samples in [0, 1), including after conversion to the output dtype.
 pub fn uniform(k: &Array, shape: impl IntoShape, dtype: DType) -> Array {
@@ -268,58 +260,11 @@ pub fn try_normal(k: &Array, shape: impl IntoShape, dtype: DType) -> Result<Arra
     let (rad, angle) = split2(k);
     let u = fraction(&rad, &shape, p, work)?;
     let v = fraction(&angle, &shape, p, work)?;
-    let r2 = lax::log1p(&lax::neg(&u)) * lax::scalar(-2., work);
+    let r2 = lax::log1p(&lax::neg(&u)) * -2.0;
     let r = op(ops::elementwise::sqrt(), &r2, &[], work);
-    Ok(lax::convert_element_type(
-        &(r * lax::cos(&(v * lax::scalar(std::f64::consts::TAU, work)))),
-        dtype,
-    ))
+    Ok((r * lax::cos(&(v * std::f64::consts::TAU))).astype(dtype))
 }
 /// Standard normal draws using Box–Muller, computed in F64 for F64 output.
 pub fn normal(k: &Array, shape: impl IntoShape, dtype: DType) -> Array {
     try_normal(k, shape, dtype).expect("random::normal")
-}
-
-/// Named streams with independent traced counters. Names are UTF-8 bytes;
-/// derive each stream by folding both halves of its stable FNV-1a-64 tag.
-pub struct Rngs {
-    root: Array,
-    zero: ArrayRef,
-    counters: Mutex<BTreeMap<String, ArrayRef>>,
-}
-impl Rngs {
-    /// Create named streams from a seed, equivalent to `Rngs::new(random::key(seed, algorithm))`.
-    pub fn key(seed: u64, algorithm: Algorithm) -> Self {
-        Self::new(key(seed, algorithm))
-    }
-
-    pub fn new(root: Array) -> Self {
-        check_key(&root);
-        Self {
-            root,
-            zero: ArrayRef::new(lax::scalar(0., DType::U32)),
-            counters: Default::default(),
-        }
-    }
-    /// Return the next key from `name`. Each stream's U32 counter starts at
-    /// zero and wraps after 2^32 draws. Writes follow ordinary ArrayRef rules.
-    pub fn next(&self, name: &str) -> Array {
-        let tag = name.bytes().fold(0xcbf29ce484222325u64, |h, b| {
-            (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
-        });
-        let base = fold(
-            &fold(&self.root, scalar((tag >> 32) as u32)),
-            scalar(tag as u32),
-        );
-        let mut counters = self.counters.lock().unwrap();
-        let counter = counters
-            .entry(name.into())
-            .or_insert_with(|| self.zero.independent());
-        let n = lax::convert_element_type(&counter.get(), DType::I64);
-        counter.set(lax::convert_element_type(
-            &word(&(&n + scalar(1))),
-            DType::U32,
-        ));
-        fold(&base, n)
-    }
 }

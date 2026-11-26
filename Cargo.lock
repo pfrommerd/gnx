@@ -867,6 +867,7 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "gnx-expr",
+ "half",
  "memmap2",
  "object_store",
  "ordered-float",
@@ -941,6 +942,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gnx-models"
+version = "0.1.0"
+dependencies = [
+ "gnx-graph",
+ "gnx-math",
+ "gnx-nn",
+]
+
+[[package]]
 name = "gnx-nn"
 version = "0.1.0"
 dependencies = [
@@ -992,6 +1002,7 @@ dependencies = [
  "gnx-expr",
  "gnx-graph",
  "gnx-math",
+ "gnx-models",
  "gnx-transforms",
  "gnx-xla-sys",
  "rkyv",

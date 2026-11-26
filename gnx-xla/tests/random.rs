@@ -1,8 +1,8 @@
 use futures_executor::block_on;
 use gnx::{
     Array, Callable, Eval, jit,
-    nn::Linear,
-    random::{self, Algorithm::*, Rngs},
+    nn::{Linear, Rngs},
+    random::{self, Algorithm::*},
 };
 use gnx_math::{DType, ExecOpts, Shape, TransferPolicy};
 use gnx_xla::XlaDevice;
@@ -88,7 +88,7 @@ fn sample_dtypes_and_named_state() {
     let root = random::key(42, Philox4x32);
     for dtype in [DType::F16, DType::BF16, DType::F32, DType::F64] {
         let u = random::uniform(&root, (32, 32), dtype);
-        let vals = bytes(&d, gnx::lax::convert_element_type(&u, DType::F64));
+        let vals = bytes(&d, u.astype(DType::F64));
         let vals: Vec<_> = vals
             .chunks_exact(8)
             .map(|b| f64::from_ne_bytes(b.try_into().unwrap()))
@@ -98,7 +98,7 @@ fn sample_dtypes_and_named_state() {
             assert!(vals.iter().any(|&v| f64::from(v as f32) != v));
         }
         let n = random::normal(&root, (32, 32), dtype);
-        let vals = bytes(&d, gnx::lax::convert_element_type(&n, DType::F64));
+        let vals = bytes(&d, n.astype(DType::F64));
         let vals: Vec<_> = vals
             .chunks_exact(8)
             .map(|b| f64::from_ne_bytes(b.try_into().unwrap()))
@@ -115,7 +115,7 @@ fn sample_dtypes_and_named_state() {
     assert_eq!(bytes(&d, a), bytes(&d, reference.next("aux")));
     assert_eq!(bytes(&d, b), bytes(&d, reference.next("aux")));
     let linear = Linear::init(4, 8, DType::F64, &reference);
-    let bias = bytes(&d, linear.bias.value());
+    let bias = bytes(&d, linear.bias().unwrap().value());
     assert!(
         bias.chunks_exact(8)
             .map(|b| f64::from_ne_bytes(b.try_into().unwrap()))

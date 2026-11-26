@@ -73,7 +73,12 @@ fn real(b: &mut Builder, x: Var) -> Result<Var> {
 
 fn scalar(b: &mut Builder, value: f64, like: Var) -> Result<Var> {
     let ty = dtype(b.info(like))?;
-    let scalar = b.emit1(constant(value), &[], info(&[], ty));
+    let scalar = b.emit1(constant(value), &[], info(&[], gnx_base::DType::F64));
+    let scalar = b.emit1(
+        crate::ops::dtype::convert_element_type_op(),
+        &[scalar],
+        info(&[], ty),
+    );
     Ok(b.emit1(broadcast_in_dim_op(&[]), &[scalar], b.info(like).clone()))
 }
 

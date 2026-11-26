@@ -64,16 +64,5 @@ binary!(
 
 /// Convert element type without changing shape.
 pub fn convert_element_type(x: &Array, dtype: DType) -> Array {
-    if dtype == x.dtype() {
-        return x.clone();
-    }
-    assert!(
-        !x.dtype().is_key() && !dtype.is_key(),
-        "use random::key_data or wrap_key_data"
-    );
-    invoke_array(
-        ops::dtype::convert_element_type(),
-        &[x],
-        &ArrayInfo::new(x.shape(), dtype),
-    )
+    x.astype(dtype)
 }

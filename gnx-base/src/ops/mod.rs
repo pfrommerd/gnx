@@ -38,6 +38,7 @@ unit_operations! {
     pub struct EyeOperation;
     pub struct ReshapeOperation;
     pub struct SelectOperation;
+    pub struct ConvertElementTypeOperation;
 }
 
 /// The indices stored in an operation, such as axes.
@@ -165,8 +166,16 @@ macro_rules! array_operation {
     };
 }
 
+pub mod creation;
+pub mod indexing;
 pub mod reduction;
 
+array_operation!(ConvertElementTypeOperation, "convert_element_type", |eqn| {
+    arity(eqn, 1)
+});
+pub fn convert_element_type_op() -> Op {
+    Op::new(ConvertElementTypeOperation)
+}
 array_operation!(AddOperation, "add", |eqn| arity(eqn, 2));
 array_operation!(MulOperation, "mul", |eqn| arity(eqn, 2));
 array_operation!(SubOperation, "sub", |eqn| arity(eqn, 2));

@@ -1,12 +1,15 @@
 mod arithmetic;
+mod scalar;
 #[doc(hidden)]
 pub use arithmetic::apply as invoke_array;
+pub use half;
 pub mod array;
 pub mod buffer;
 pub mod cache;
 mod context;
 pub mod des;
 mod error;
+pub mod indexing;
 pub mod ops;
 pub mod pass;
 mod path;

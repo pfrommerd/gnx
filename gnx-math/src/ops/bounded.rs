@@ -83,7 +83,7 @@ impl Prefix<'_> {
         self.logical.shape()
     }
     pub fn padded(&self, fill: f64) -> crate::Array {
-        use crate::{ArrayInfo, DType, Dim, Shape};
+        use crate::{ArrayInfo, DType, Dim};
         let capacity = self.logical.capacity();
         let axis = self
             .shape()
@@ -100,11 +100,7 @@ impl Prefix<'_> {
             meta(DType::I32),
         );
         let valid = invoke(elementwise::lt(), &[&indices, &limit], meta(DType::Bool));
-        let fill = invoke(
-            creation::constant(fill),
-            &[],
-            ArrayInfo::new(Shape::fixed([]), capacity.dtype()),
-        );
+        let fill = crate::Array::scalar(fill).astype(capacity.dtype());
         let padding = invoke(broadcast_in_dim_op(&[]), &[&fill], capacity.clone());
         invoke(select_op(), &[&valid, self.storage, &padding], capacity)
     }

@@ -1,3 +1,4 @@
+pub use crate::scalar::{AsDType, IntoScalar, Scalar};
 use ordered_float::OrderedFloat;
 use std::fmt::{Debug, Display};
 
@@ -566,6 +567,11 @@ impl Array {
     }
     pub fn shape(&self) -> Shape {
         self.0.info().shape()
+    }
+
+    /// Return the concrete extents, or an error for non-fixed dimensions.
+    pub fn fixed_dims(&self) -> Result<Vec<usize>, LoweringError> {
+        fixed_dims(&ArrayInfo::new(self.shape(), self.dtype()))
     }
 
     /// Reshape to fixed dimensions while preserving element order and dtype.

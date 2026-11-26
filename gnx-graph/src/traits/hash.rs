@@ -247,6 +247,30 @@ impl<T: GraphHash> GraphHash for Vec<T> {
     }
 }
 
+impl<T: GraphHash> GraphHash for Option<T> {
+    fn graph_hash<H: HasherWrite, L: Leaf, F: Filter<L>>(
+        &self,
+        hasher: &mut H,
+        filter: F,
+        ctx: &mut GraphHashContext,
+    ) {
+        self.is_some().hash(hasher);
+        if let Some(value) = self {
+            value.graph_hash(hasher, filter, ctx);
+        }
+    }
+    fn hash_builder<H: HasherWrite, L: Leaf>(
+        builder: &Self::Builder<L>,
+        hasher: &mut H,
+        ctx: &mut GraphHashContext,
+    ) {
+        builder.is_some().hash(hasher);
+        if let Some(child) = builder {
+            T::hash_builder::<H, L>(child, hasher, ctx);
+        }
+    }
+}
+
 macro_rules! impl_shared_hash {
     ($W:ident) => {
         impl<T: GraphHash> GraphHash for $W<T> {

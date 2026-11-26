@@ -156,16 +156,16 @@ impl Config {
         let r = (d as f64 * self.rope_parameters.partial_rotary_factor) as usize;
         let half = r / 2;
         let freq = lax::iota(&[half], 0, DType::F32);
-        let log_scale = scalar(-self.rope_parameters.rope_theta.ln() / half as f64);
-        let angles = np::astype(pos, DType::F32) * np::exp(&(freq * log_scale));
+        let log_scale = -self.rope_parameters.rope_theta.ln() / half as f64;
+        let angles = pos.astype(DType::F32) * np::exp(&(freq * log_scale));
         let (cos, sin) = (np::cos(&angles), np::sin(&angles));
-        let a = lax::slice_axis(x, 1, 0, half);
-        let b = lax::slice_axis(x, 1, half, r);
+        let a = x.at((.., ..half));
+        let b = x.at((.., half..r));
         np::concatenate(
             &[
                 &(&a * &cos - &b * &sin),
                 &(a * sin + b * cos),
-                &lax::slice_axis(x, 1, r, d),
+                &x.at((.., r..d)),
             ],
             1,
         )
@@ -184,13 +184,9 @@ impl Config {
             self.head_dim,
         );
         let qg = linear(x, &w("q_proj.weight")).reshape([h, 2 * d]);
-        let gate = lax::logistic(&lax::slice_axis(&qg, 1, d, 2 * d));
+        let gate = lax::logistic(&qg.at((.., d..)));
         let q = self.rope(
-            &rms(
-                &lax::slice_axis(&qg, 1, 0, d),
-                &w("q_norm.weight"),
-                self.rms_norm_eps,
-            ),
+            &rms(&qg.at((.., ..d)), &w("q_norm.weight"), self.rms_norm_eps),
             pos,
         );
         let key = self.rope(
@@ -203,7 +199,7 @@ impl Config {
         );
         let append = |slot: &ArrayRef, v: Array| {
             let v = v.reshape([k, 1, d]);
-            let zero = np::scalar(0., DType::I32);
+            let zero = Array::scalar(0_i32);
             let updated = lax::dynamic_update_slice(&slot.get(), &v, &[&zero, pos, &zero]);
             slot.set(updated.clone());
             updated
@@ -211,10 +207,9 @@ impl Config {
         let key = append(&cache.0, key);
         let value = append(&cache.1, linear(x, &w("v_proj.weight")));
         let value = time.prefix(&value, 1).padded(0.);
-        let scores = dot(&q.reshape([k, h / k, d]), &key, 2, 2, 1) * scalar(1. / (d as f64).sqrt());
+        let scores = dot(&q.reshape([k, h / k, d]), &key, 2, 2, 1) * (d as f64).sqrt().recip();
         let scores = time.prefix(&scores, 2).padded(f64::NEG_INFINITY);
-        let exp = np::exp(&(&scores - lax::top_k(&scores, 1).0));
-        let probs = &exp / keep_sum(&exp);
+        let probs = np::softmax(&scores);
         let y = dot(&probs, &value, 2, 1, 1).reshape([h, d]) * gate;
         linear(&y.reshape([h * d]), &w("o_proj.weight"))
     }
@@ -237,33 +232,29 @@ impl Config {
         let proj = |name: &str| linear(x, &w(&format!("in_proj_{name}.weight")));
         let window = np::concatenate(&[&prev[0], &proj("qkv").reshape([c, 1])], 1);
         let qkv = silu(&np::sum(
-            &(&window * np::astype(&w("conv1d.weight"), DType::F32).reshape([c, t])),
+            &(&window * w("conv1d.weight").astype(DType::F32).reshape([c, t])),
             1,
         ));
         let heads = |start| {
-            let x = norm(
-                &lax::slice_axis(&qkv, 0, start, start + kd).reshape([kh, d]),
-                1.,
-                1e-6,
-            );
+            let x = norm(&qkv.at(start..start + kd).reshape([kh, d]), 1., 1e-6);
             lax::broadcast_in_dim(&x, Shape::fixed([kh, h / kh, d]), &[0, 2]).reshape([h, d])
         };
-        let q = heads(0) * scalar(1. / (d as f64).sqrt());
+        let q = heads(0) * (d as f64).sqrt().recip();
         let k = heads(kd);
-        let v = lax::slice_axis(&qkv, 0, 2 * kd, c).reshape([h, f]);
-        let a = proj("a") + np::astype(&w("dt_bias"), DType::F32);
+        let v = qkv.at(2 * kd..c).reshape([h, f]);
+        let a = proj("a") + w("dt_bias").astype(DType::F32);
         let softplus = lax::max(&a, &np::zeros(dims(&a), a.dtype()))
             + np::log1p(&np::exp(&np::negative(&np::abs(&a))));
-        let rate = np::exp(&np::astype(&w("A_log"), DType::F32));
+        let rate = np::exp(&w("A_log").astype(DType::F32));
         let decay = np::exp(&np::negative(&(rate * softplus)));
         let state = prev[1].clone();
         let (out, state) = delta_rule(q, k, v, lax::logistic(&proj("b")), decay, state);
         let gated = norm(&out, f as f64, self.rms_norm_eps)
-            * np::astype(&w("norm.weight"), DType::F32)
+            * w("norm.weight").astype(DType::F32)
             * silu(&proj("z").reshape([h, f]));
         (
             linear(&gated.reshape([vd]), &w("out_proj.weight")),
-            [lax::slice_axis(&window, 1, 1, t), state],
+            [window.at((.., 1..t)), state],
         )
     }
     pub fn state_shapes(&self, capacity: usize) -> impl Iterator<Item = Vec<usize>> + '_ {
@@ -289,15 +280,11 @@ impl Config {
     }
     fn logits(&self, w: &Weights, id: &Array, (cursor, capacity, layers): &DecodeState) -> Array {
         let pos = cursor.get();
-        let length = &pos + np::scalar(1., DType::I32);
+        let length = &pos + 1;
         let time = BoundedAxis::new(*capacity, &length);
         let embed = &w[&format!("{ROOT}.embed_tokens.weight")];
-        let row = lax::dynamic_slice(
-            embed,
-            &[id, &np::scalar(0., DType::I32)],
-            &[1, self.hidden_size],
-        );
-        let mut x = np::astype(&row, DType::F32).reshape([self.hidden_size]);
+        let row = lax::dynamic_slice(embed, &[id, &Array::scalar(0_i32)], &[1, self.hidden_size]);
+        let mut x = row.astype(DType::F32).reshape([self.hidden_size]);
         for (n, ty) in self.layer_types.iter().enumerate() {
             let wt = |key: &str| w[&format!("{ROOT}.layers.{n}.{key}")].clone();
             let y = rms(&x, &wt("input_layernorm.weight"), self.rms_norm_eps);
@@ -379,14 +366,14 @@ pub fn decode(
 ) -> (Array, Array, Array) {
     let (cursor, capacity, _) = state;
     let capacity = *capacity;
-    let int = |v| np::scalar(v, DType::I32);
-    let count = ArrayRef::new(int(0.));
+    let limit = lax::scalar(capacity, DType::I32);
+    let count = ArrayRef::new(Array::scalar(0_i32));
     let tokens = ArrayRef::new(np::zeros([capacity], DType::I32));
     let last = gnx::transforms::cf::while_array(
         &first.reshape([]),
         |id| {
             let pending = lax::ne(id, end);
-            let room = lax::lt(&cursor.get(), &int(capacity as f64));
+            let room = lax::lt(&cursor.get(), &limit);
             lax::bitwise_and(&pending, &room)
         },
         |id| {
@@ -396,7 +383,7 @@ pub fn decode(
                 &id.reshape([1]),
                 &[&n],
             ));
-            count.set(n + int(1.));
+            count.set(n + 1);
             step(model, id, state).reshape([])
         },
     )

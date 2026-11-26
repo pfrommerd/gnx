@@ -3,6 +3,7 @@
 use super::*;
 
 mod containers;
+mod option;
 mod expr;
 mod refs;
 mod trace;

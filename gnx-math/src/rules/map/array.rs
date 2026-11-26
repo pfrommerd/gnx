@@ -47,13 +47,12 @@ defbroadcasting!(
     ClzOperation,
     RealOperation,
     ImagOperation,
-    ConvertElementTypeOperation,
     ErfOperation,
 );
 
 use crate::ops::reduction::{ReduceWindowOperation, reduce_window_op};
-use gnx_expr::Eqn;
 use gnx_base::pass::Builder;
+use gnx_expr::Eqn;
 use gnx_transforms::map::batch::materialize;
 use gnx_transforms::map::{BatchRule, Batched};
 use gnx_transforms::{TransformError, TransformResult};
@@ -83,7 +82,8 @@ use crate::ops::{
     indexing::{SliceOperation, slice},
     shape::{PadOperation, pad},
 };
-impl BatchRule for SliceOperation {
+struct SliceRule;
+impl BatchRule for SliceRule {
     fn batch(
         &self,
         b: &mut Builder,
@@ -93,7 +93,7 @@ impl BatchRule for SliceOperation {
         _: &[Vec<Batched>],
     ) -> TransformResult<Vec<Batched>> {
         let mut ranges = vec![(0, size, 1)];
-        ranges.extend_from_slice(&self.ranges());
+        ranges.extend_from_slice(&eqn.op().downcast_ref::<SliceOperation>().unwrap().ranges());
         gnx_transforms::map::def::at_leading_axis(b, size, eqn, inputs, slice(&ranges))
     }
 }
@@ -124,7 +124,8 @@ impl BatchRule for PadOperation {
     }
 }
 
-gnx_expr::register_op_interface!(dyn BatchRule: SliceOperation, PadOperation);
+gnx_expr::register_op_interface!(dyn BatchRule: SliceOperation => SliceRule);
+gnx_expr::register_op_interface!(dyn BatchRule: PadOperation);
 
 defbroadcasting!(
     PopulationCountOperation,

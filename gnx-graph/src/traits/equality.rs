@@ -216,6 +216,34 @@ impl<T: GraphEq> GraphEq for Vec<T> {
     }
 }
 
+impl<T: GraphPartialEq<U>, U: Graph> GraphPartialEq<Option<U>> for Option<T> {
+    fn graph_partial_eq<L: Leaf, F: Filter<L>>(
+        &self,
+        other: &Option<U>,
+        filter: F,
+        ctx: &mut GraphEqContext,
+    ) -> bool {
+        match (self, other) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.graph_partial_eq(b, filter, ctx),
+            _ => false,
+        }
+    }
+}
+impl<T: GraphEq> GraphEq for Option<T> {
+    fn builders_eq<L: Leaf>(
+        left: &Self::Builder<L>,
+        right: &Self::Builder<L>,
+        ctx: &mut GraphEqContext,
+    ) -> bool {
+        match (left, right) {
+            (None, None) => true,
+            (Some(a), Some(b)) => T::builders_eq::<L>(a, b, ctx),
+            _ => false,
+        }
+    }
+}
+
 macro_rules! impl_shared_eq {
     ($W:ident) => {
         impl<T, U> GraphPartialEq<$W<U>> for $W<T>

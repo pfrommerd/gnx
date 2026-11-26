@@ -136,14 +136,14 @@ defjvp!(OrOperation, None, None);
 defjvp!(XorOperation, None, None);
 defjvp!(NotOperation, None);
 defjvp!(ClzOperation, None);
-defjvp!(ConvertElementTypeOperation, |cx, t, [x]| {
+defjvp!(extern ConvertElementTypeOperation, |cx, t, [x]| {
     if gnx_transforms::util::is_inexact(&x.info()) && gnx_transforms::util::is_inexact(&cx.out()) {
         Ok(cx.apply(&[t]))
     } else {
         Ok(cx.zeros(&cx.out()))
     }
 });
-deftranspose!(ConvertElementTypeOperation, |cx, ct, [x]| {
+deftranspose!(extern ConvertElementTypeOperation, |cx, ct, [x]| {
     Ok(cx.emit(convert_element_type_op(), &[ct], x.info().clone()))
 });
 
@@ -158,6 +158,11 @@ fn constant<'a>(
     let scalar = cx.emit(
         crate::ops::creation::constant(value),
         &[],
+        gnx_transforms::util::info(&[], gnx_base::DType::F64),
+    );
+    let scalar = cx.emit(
+        convert_element_type_op(),
+        &[scalar],
         gnx_transforms::util::info(&[], ty),
     );
     Ok(cx.emit(crate::ops::creation::full(), &[scalar], like.info()))

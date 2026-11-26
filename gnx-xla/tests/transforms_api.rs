@@ -238,6 +238,38 @@ fn read_only_cell_gradients_follow_identity_and_snapshot_on_each_call() {
 }
 
 #[test]
+fn indexed_reads_updates_and_gradients() {
+    use gnx::{array::ArrayRef, lax, np};
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
+    let x = floats(&[2, 3], &[1., 2., 3., 4., 5., 6.]);
+    let indices = lax::zeros([1, 2], DType::I32);
+    let y = x.at((.., &indices));
+    assert_eq!(y.shape(), Shape::fixed([2, 1, 2]));
+    eval(&device, &y);
+    close(&values(&device, &y), &[1., 1., 4., 4.]);
+    let (dx,) = grad(|x: Array| np::sum(&x.at((.., &indices)), np::ALL)).invoke((x.clone(),));
+    eval(&device, &dx);
+    close(&values(&device, &dx), &[2., 0., 0., 2., 0., 0.]);
+    assert!(x.try_at((.., 3)).is_err());
+    assert!(x.try_at((&indices, &indices)).is_err());
+    let cell = ArrayRef::new(x);
+    assert!(cell.try_set_at((1, ..), &scalar(0.)).is_err());
+    let swap = jit(|c: ArrayRef, v: Array| {
+        let before = c.at((1, 1..=2));
+        c.set_at((1, 1..), &v);
+        before
+    });
+    for (new, old) in [([7., 8.], [5., 6.]), ([9., 10.], [7., 8.])] {
+        let before = swap.invoke((cell.clone(), floats(&[2], &new)));
+        eval(&device, &before);
+        close(&values(&device, &before), &old);
+    }
+    let final_value = cell.get();
+    eval(&device, &final_value);
+    close(&values(&device, &final_value), &[1., 2., 3., 4., 9., 10.]);
+}
+
+#[test]
 fn cell_grad_keeps_value_arguments_positional_and_rejects_writes() {
     use gnx::array::ArrayRef;
     let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
@@ -290,7 +322,7 @@ fn affine_model_differentiates_only_params() {
     let model = Model {
         head: Linear::new(
             floats(&[2, 3], &[1., 2., 3., 3., 2., 1.]),
-            floats(&[2], &[1., -1.]),
+            Some(floats(&[2], &[1., -1.])),
         ),
         scale: scalar(2.),
     };
@@ -305,7 +337,7 @@ fn affine_model_differentiates_only_params() {
         &values(&device, &dm.head.weight.value()),
         &[2., 4., 4., 2., 4., 4.],
     );
-    close(&values(&device, &dm.head.bias.value()), &[4., 4.]);
+    close(&values(&device, &dm.head.bias().unwrap().value()), &[4., 4.]);
     close(&values(&device, &dm.scale), &[0.]);
     close(&values(&device, &dx), &[0.; 6]);
 }

@@ -40,6 +40,52 @@ where
 }
 
 #[test]
+fn optional_values_keep_the_inner_path_and_rebuild_the_variant() {
+    use gnx_graph::{Builder, GraphSource, NullSource, TypedGraph};
+    let some = Some(3u32);
+    let none = None::<u32>;
+    let value: u32 = some.as_source().leaf(()).unwrap();
+    assert_eq!(value, 3);
+    let builder = |x: &Option<u32>| {
+        x.builder::<u32, _, SourceError>(Of::<u32>::filter(), &mut GraphContext::new())
+            .unwrap()
+    };
+    let (present, absent) = (builder(&some), builder(&none));
+    assert_ne!(
+        hash_builder::<Option<u32>, u32>(&present),
+        hash_builder::<Option<u32>, u32>(&absent)
+    );
+    assert_eq!(
+        hash_graph::<_, u32, _>(&some, Of::<u32>::filter()),
+        hash_builder::<Option<u32>, u32>(&present)
+    );
+    assert!(!some.graph_eq_filtered::<u32, _>(&none, Of::<u32>::filter()));
+    assert_eq!(
+        present
+            .build(
+                TypedGraph::<u32>::as_source(&9u32),
+                &mut GraphContext::new()
+            )
+            .unwrap(),
+        Some(9)
+    );
+    assert_eq!(
+        Builder::<u32>::build(absent, NullSource, &mut GraphContext::new()).unwrap(),
+        None
+    );
+    let node = Some((1u32, 2u32));
+    assert_eq!(
+        node.replace(
+            Of::<u32>::filter(),
+            (4u32, 5u32).as_source(),
+            &mut GraphContext::new()
+        )
+        .unwrap(),
+        Some((4, 5))
+    );
+}
+
+#[test]
 fn graph_hash_hashes_builtin_values() {
     let left = vec![1u32, 2, 3];
     let same = vec![1u32, 2, 3];

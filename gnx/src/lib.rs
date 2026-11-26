@@ -1,3 +1,4 @@
+pub use gnx_base::{AsDType, IntoScalar, Scalar, half};
 pub use gnx_transforms as transforms;
 pub use gnx_transforms::callable;
 
@@ -14,7 +15,7 @@ pub use gnx_graph as graph;
 /// #[derive(Clone, Graph)]
 /// struct Model { head: nn::Linear }
 ///
-/// let head = nn::Linear::new(lax::zeros([2, 3], DType::F32), lax::zeros([2], DType::F32));
+/// let head = nn::Linear::new(lax::zeros([2, 3], DType::F32), Some(lax::zeros([2], DType::F32)));
 /// let x = lax::zeros([5, 3], DType::F32);
 /// let model = Model { head };
 /// let loss = value_and_grad!(
@@ -23,8 +24,8 @@ pub use gnx_graph as graph;
 /// );
 /// let (value, (grads, _)) = loss(&model, x);
 /// // Apply an update outside the loss. The gradient cells are independent.
-/// let bias = &model.head.bias;
-/// bias.set(bias.value() - grads.head.bias.value() * np::scalar(0.01, DType::F32));
+/// let bias = model.head.bias().unwrap();
+/// bias.set(bias.value() - grads.head.bias().unwrap().value() * 0.01);
 /// ```
 pub use gnx_nn as nn;
 

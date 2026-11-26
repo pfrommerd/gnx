@@ -26,7 +26,8 @@ fn tangent(b: &mut Builder, value: Dual) -> Var {
     instantiate(b, value.tangent, &metadata)
 }
 
-impl JvpRule for GatherOperation {
+struct GatherRule;
+impl JvpRule for GatherRule {
     fn jvp(
         &self,
         b: &mut Builder,
@@ -37,7 +38,14 @@ impl JvpRule for GatherOperation {
         let result = primal(b, eqn, inputs);
         let derivative = if let Tangent::Var(x) = inputs[0].tangent {
             let mut args = vec![x, inputs[1].primal];
-            if self.parameters().mode == BoundsMode::FillOrDrop {
+            if eqn
+                .op()
+                .downcast_ref::<GatherOperation>()
+                .unwrap()
+                .parameters()
+                .mode
+                == BoundsMode::FillOrDrop
+            {
                 let metadata = b.info(inputs[2].primal).clone();
                 args.push(zeros(b, &metadata));
             }
@@ -52,11 +60,11 @@ impl JvpRule for GatherOperation {
     }
 }
 
-impl TransposeRule for GatherOperation {
+impl TransposeRule for GatherRule {
     fn transpose(
         &self,
         b: &mut Builder,
-        _: Eqn<'_>,
+        eqn: Eqn<'_>,
         operands: &[Operand],
         _: &[Vec<Var>],
         cts: &[Tangent],
@@ -64,7 +72,11 @@ impl TransposeRule for GatherOperation {
         let ([Operand::Linear(metadata), indices, ..], [Tangent::Var(ct)]) = (operands, cts) else {
             return Err(TransformError::invalid("gather transpose signature"));
         };
-        let p = self.parameters();
+        let p = eqn
+            .op()
+            .downcast_ref::<GatherOperation>()
+            .unwrap()
+            .parameters();
         let d = &p.dimensions;
         let op = scatter_add(ScatterParameters {
             dimensions: ScatterDimensions {
@@ -246,10 +258,13 @@ impl TransposeRule for ScatterOperation {
     }
 }
 
-gnx_expr::register_op_interface!(dyn JvpRule: GatherOperation, ScatterOperation);
-gnx_expr::register_op_interface!(dyn TransposeRule: GatherOperation, ScatterOperation);
+gnx_expr::register_op_interface!(dyn JvpRule: GatherOperation => GatherRule);
+gnx_expr::register_op_interface!(dyn JvpRule: ScatterOperation);
+gnx_expr::register_op_interface!(dyn TransposeRule: GatherOperation => GatherRule);
+gnx_expr::register_op_interface!(dyn TransposeRule: ScatterOperation);
 
-impl JvpRule for DynamicUpdateSliceOperation {
+struct UpdateSliceRule;
+impl JvpRule for UpdateSliceRule {
     fn jvp(
         &self,
         b: &mut Builder,
@@ -268,7 +283,7 @@ impl JvpRule for DynamicUpdateSliceOperation {
     }
 }
 
-impl TransposeRule for DynamicUpdateSliceOperation {
+impl TransposeRule for UpdateSliceRule {
     fn transpose(
         &self,
         b: &mut Builder,
@@ -357,8 +372,10 @@ impl TransposeRule for SelectNOperation {
     }
 }
 
-gnx_expr::register_op_interface!(dyn JvpRule: DynamicUpdateSliceOperation, SelectNOperation);
-gnx_expr::register_op_interface!(dyn TransposeRule: DynamicUpdateSliceOperation, SelectNOperation);
+gnx_expr::register_op_interface!(dyn JvpRule: DynamicUpdateSliceOperation => UpdateSliceRule);
+gnx_expr::register_op_interface!(dyn JvpRule: SelectNOperation);
+gnx_expr::register_op_interface!(dyn TransposeRule: DynamicUpdateSliceOperation => UpdateSliceRule);
+gnx_expr::register_op_interface!(dyn TransposeRule: SelectNOperation);
 
 fn equal(b: &mut Builder, a: Var, c: Var) -> TransformResult<Var> {
     let shape = dims(b.info(a))?;

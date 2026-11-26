@@ -8,7 +8,8 @@ use crate::ops::{
 use gnx_transforms::ad::def::{Ctx, Val, defjvp, deflinear, deftranspose};
 use gnx_transforms::util::{dtype, info};
 
-deflinear!(SliceOperation, |cx, ct, [input]| {
+defjvp!(extern SliceOperation, |cx,t,_| Ok(cx.apply(&[t])));
+deftranspose!(extern SliceOperation, |cx, ct, [input]| {
     let input_shape = input.dims()?;
     let output_shape = ct.dims()?;
     let ranges = cx.operation::<SliceOperation>()?.ranges();

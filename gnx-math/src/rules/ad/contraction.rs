@@ -84,6 +84,11 @@ fn fft_constant<'a>(cx: &'a Ctx<'a>, v: f64, like: Val<'a>) -> TransformResult<V
     let scalar = cx.emit(
         crate::ops::creation::constant(v),
         &[],
+        info(&[], gnx_base::DType::F64),
+    );
+    let scalar = cx.emit(
+        crate::ops::dtype::convert_element_type_op(),
+        &[scalar],
         info(&[], dtype(&like.info())?),
     );
     Ok(cx.emit(crate::ops::creation::full(), &[scalar], like.info()))
@@ -321,11 +326,7 @@ fn shift_group<'a>(
     Ok(value.transpose(&perm)?.reshape(info(&shape, dtype)))
 }
 
-fn conv_cast<'a>(
-    cx: &'a Ctx<'a>,
-    value: Val<'a>,
-    ty: gnx_base::DType,
-) -> TransformResult<Val<'a>> {
+fn conv_cast<'a>(cx: &'a Ctx<'a>, value: Val<'a>, ty: gnx_base::DType) -> TransformResult<Val<'a>> {
     if dtype(&value.info())? == ty {
         return Ok(value);
     }

@@ -4,17 +4,23 @@ use tch::TchError;
 
 rule!(ConstantOperation, |op, eqn, []| {
     let (_, k) = result_layout(eqn)?;
-    if metadata(eqn.outputs().next().unwrap().info_ref())?.dtype() == DType::U32 {
-        return Ok(vec![
-            Tensor::f_full(
-                [],
-                i64::from(op.value() as u32 as i32),
-                (k, tracing_device()),
-            )
-            .map_err(io::Error::other)?,
-        ]);
+    use gnx_math::Scalar;
+    let dtype = metadata(eqn.outputs().next().unwrap().info_ref())?.dtype();
+    let opts = (k, tracing_device());
+    match op.value().exact(dtype).map_err(invalid)? {
+        Scalar::Bool(v) => Tensor::f_full([], i64::from(v), opts),
+        Scalar::Int(v) => Tensor::f_full([], v, opts),
+        Scalar::UInt(v) if dtype == DType::U32 => {
+            Tensor::f_full([], i64::from(v as u32 as i32), opts)
+        }
+        Scalar::UInt(v) => Tensor::f_full([], i64::try_from(v).map_err(invalid)?, opts),
+        Scalar::F16(bits) | Scalar::BF16(bits) => {
+            Tensor::f_full([], i64::from(bits as i16), (Kind::Int16, tracing_device()))
+                .and_then(|x| x.f_view_copy_dtype(k))
+        }
+        Scalar::F32(v) => Tensor::f_full([], f64::from(v), opts),
+        Scalar::F64(v) => Tensor::f_full([], v, opts),
     }
-    Tensor::f_full([], op.value(), (Kind::Double, tracing_device())).and_then(|v| v.f_to_kind(k))
 });
 rule!(FullOperation, |_op, eqn, [x]| {
     if x.dim() != 0 {
