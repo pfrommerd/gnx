@@ -18,9 +18,10 @@ fn torch_key_vectors_and_high_unsigned_words() {
         .unwrap();
         device.download(x.data().unwrap()).unwrap().bytes().to_vec()
     };
-    for (algorithm, expected) in [
-        (ThreeFry2x32, [1797259609, 2579123966]),
-        (Philox4x32, [0x6627e8d5, 0xe169c58d]),
+    // JAX 0.12.1, seed 0: key_data(split(key, 1))[0], bits(key, dtype=uint32).
+    for (algorithm, expected, expected_bits) in [
+        (ThreeFry2x32, [1797259609, 2579123966], 4070199207),
+        (Philox4x32, [3568036438, 3714396419], 2034863994),
     ] {
         let root = random::key(0, algorithm);
         let words = random::key_data(&random::split(&root, 1));
@@ -31,15 +32,39 @@ fn torch_key_vectors_and_high_unsigned_words() {
             .collect();
         assert_eq!(actual, expected);
         let bits = read(random::bits(&root, (), DType::U32));
-        assert_eq!(
-            u32::from_ne_bytes(bits.try_into().unwrap()),
-            expected[0] ^ expected[1]
-        );
+        assert_eq!(u32::from_ne_bytes(bits.try_into().unwrap()), expected_bits);
         let x = read(random::normal(&root, (4,), DType::F64));
         assert!(
             x.chunks_exact(8)
                 .all(|v| f64::from_ne_bytes(v.try_into().unwrap()).is_finite())
         );
+    }
+
+    // JAX 0.12.1 CPU, x64 enabled: bits(fold_in(split(key, 3)[2],
+    // uint32(0xffffffff)), (2, 3), dtype=uint32). Exercise both seed words,
+    // unsigned tag conversion, and row-major counters on the Torch backend.
+    for (alg, expected) in [
+        (
+            ThreeFry2x32,
+            [
+                1218079239, 2879198823, 502612289, 553449454, 2054347927, 956530362,
+            ],
+        ),
+        (
+            Philox4x32,
+            [
+                3118957149, 3097764800, 4221275272, 2274540258, 1820916393, 3618355186,
+            ],
+        ),
+    ] {
+        let children = random::split(&random::key(u64::MAX, alg), 3);
+        let child = gnx::lax::slice_axis(&children, 0, 2, 3).reshape(());
+        let key = random::fold_in(&child, &gnx::lax::scalar(f64::from(u32::MAX), DType::U32));
+        let actual: Vec<_> = read(random::bits(&key, (2, 3), DType::U32))
+            .chunks_exact(4)
+            .map(|x| u32::from_ne_bytes(x.try_into().unwrap()))
+            .collect();
+        assert_eq!(actual, expected);
     }
 
     let seed = random::key(42, Philox4x32);

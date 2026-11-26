@@ -27,7 +27,7 @@ fn words(device: &XlaDevice, x: Array) -> Vec<u32> {
 #[test]
 fn reference_vectors() {
     let d = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
-    // JAX 0.4.38, jax_threefry_partitionable=True, seed 0, key_data(split(key, 2)).
+    // JAX 0.12.1, jax_threefry_partitionable=True, seed 0, key_data(split(key, 2)).
     let k = random::key(0, ThreeFry2x32);
     let split = random::split(&k, 2);
     assert_eq!(split.shape(), Shape::fixed([2]));
@@ -48,12 +48,38 @@ fn reference_vectors() {
         ),
         expected[2..]
     );
-    let k = random::wrap_key_data(&random::key_data(&k), Philox4x32);
-    // First two lanes of the Random123 Philox4x32-10 zero-key/zero-counter vector.
-    assert_eq!(
-        words(&d, random::key_data(&random::split(&k, 1))),
-        [0x6627e8d5, 0xe169c58d]
-    );
+    // JAX 0.12.1 CPU, x64 enabled: use both seed words and nonzero counters.
+    for (alg, key_words, split_words, folded, bits) in [
+        (
+            Philox4x32,
+            [1796003549, 1087895578],
+            [4141142979, 2623553941, 237775817, 1853558391],
+            [3169161628, 3249634532],
+            [2239733225, 3176046961],
+        ),
+        (
+            ThreeFry2x32,
+            [305419896, 2596069104],
+            [3978822521, 2696639427, 2085429205, 1499321931],
+            [2385792119, 1056902200],
+            [1301508282, 621857182],
+        ),
+    ] {
+        let k = random::key(0x123456789abcdef0, alg);
+        assert_eq!(words(&d, random::key_data(&k)), key_words);
+        assert_eq!(
+            words(&d, random::key_data(&random::split(&k, 2))),
+            split_words
+        );
+        assert_eq!(
+            words(
+                &d,
+                random::key_data(&random::fold_in(&k, &gnx::lax::scalar(17., DType::U32)))
+            ),
+            folded
+        );
+        assert_eq!(words(&d, random::bits(&k, (2,), DType::U32)), bits);
+    }
 }
 
 #[test]

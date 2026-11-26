@@ -71,11 +71,16 @@ fn check_key(k: &Array) {
 
 /// Construct a scalar key from the high and low 32-bit halves of `seed`.
 pub fn key(seed: u64, algorithm: Algorithm) -> Array {
-    pack(
-        &scalar((seed >> 32) as u32),
-        &scalar(seed as u32),
-        algorithm.dtype(),
-    )
+    let hi = scalar((seed >> 32) as u32);
+    let lo = scalar(seed as u32);
+    let [a, b] = match algorithm {
+        Algorithm::ThreeFry2x32 => [hi, lo],
+        Algorithm::Philox4x32 => {
+            let [a, b, _, _] = philox([scalar(0), scalar(0)], [hi, lo, scalar(0), scalar(0)]);
+            [a, b]
+        }
+    };
+    pack(&a, &b, algorithm.dtype())
 }
 /// Export two u32 words per key (most significant word first).
 pub fn key_data(keys: &Array) -> Array {
@@ -127,11 +132,8 @@ fn threefry([k0, k1]: [Array; 2], mut a: Array, mut b: Array) -> [Array; 2] {
     }
     [a, b]
 }
-// Random123 Philox4x32-10. Counter lanes are [low, high, 0, 0];
-// the first two result lanes form the derived key.
-fn philox([mut k0, mut k1]: [Array; 2], hi: Array, lo: Array) -> [Array; 2] {
-    let z = splat(&scalar(0), hi.shape());
-    let [mut a, mut b, mut c, mut d] = [lo, hi, z.clone(), z];
+// Random123 Philox4x32-10. JAX assigns the counter lanes at the call site.
+fn philox([mut k0, mut k1]: [Array; 2], [mut a, mut b, mut c, mut d]: [Array; 4]) -> [Array; 4] {
     for i in 0..10 {
         let p = a * scalar(0xd2511f53);
         let q = c * scalar(0xcd9e8d57);
@@ -144,18 +146,35 @@ fn philox([mut k0, mut k1]: [Array; 2], hi: Array, lo: Array) -> [Array; 2] {
             k1 = word(&(k1 + scalar(0xbb67ae85)));
         }
     }
-    [a, b]
+    [a, b, c, d]
 }
-fn hash(k: &Array, hi: Array, lo: Array) -> [Array; 2] {
+#[derive(Clone, Copy)]
+enum Purpose {
+    DeriveKey,
+    RandomBits,
+}
+fn hash(k: &Array, hi: Array, lo: Array, purpose: Purpose) -> [Array; 2] {
     check_key(k);
     let words = unpack(k).map(|x| splat(&x, hi.shape()));
     match k.dtype() {
         DType::KeyThreeFry2x32 => threefry(words, hi, lo),
-        DType::KeyPhilox4x32 => philox(words, hi, lo),
+        DType::KeyPhilox4x32 => {
+            let z = splat(&scalar(0), hi.shape());
+            match purpose {
+                Purpose::DeriveKey => {
+                    let [a, b, _, _] = philox(words, [z.clone(), z, hi, lo]);
+                    [a, b]
+                }
+                Purpose::RandomBits => {
+                    let [a, b, c, d] = philox(words, [hi, lo, z.clone(), z]);
+                    [xor(&a, &b), xor(&c, &d)]
+                }
+            }
+        }
         _ => unreachable!(),
     }
 }
-fn block(k: &Array, shape: &Shape) -> Result<[Array; 2], LoweringError> {
+fn block(k: &Array, shape: &Shape, purpose: Purpose) -> Result<[Array; 2], LoweringError> {
     let dims = fixed_dims(&ArrayInfo::new(shape, DType::I64))?;
     let n = dims
         .into_iter()
@@ -163,11 +182,11 @@ fn block(k: &Array, shape: &Shape) -> Result<[Array; 2], LoweringError> {
         .filter(|&n| i64::try_from(n).is_ok())
         .ok_or_else(|| gnx_base::ops::signature("random shape overflow"))?;
     let idx = lax::iota([n], 0, DType::I64).reshape(shape);
-    Ok(hash(k, right(&idx, 32), word(&idx)))
+    Ok(hash(k, right(&idx, 32), word(&idx), purpose))
 }
 /// Derive `n` keys, with logical shape `[n]` and the parent's dtype.
 pub fn split(k: &Array, n: usize) -> Array {
-    let [a, b] = block(k, &[n].into_shape()).expect("random::split");
+    let [a, b] = block(k, &[n].into_shape(), Purpose::DeriveKey).expect("random::split");
     pack(&a, &b, k.dtype())
 }
 /// Return the two scalar elements of `split(k, 2)`.
@@ -177,7 +196,7 @@ pub fn split2(k: &Array) -> (Array, Array) {
     (at(0), at(1))
 }
 fn fold(k: &Array, tag: Array) -> Array {
-    let [a, b] = hash(k, scalar(0), tag);
+    let [a, b] = hash(k, scalar(0), tag, Purpose::DeriveKey);
     pack(&a, &b, k.dtype())
 }
 /// Deterministically derive a scalar key from a scalar U32 tag (which may be traced).
@@ -197,7 +216,7 @@ pub fn try_bits(k: &Array, shape: impl IntoShape, dtype: DType) -> Result<Array,
     if dtype != DType::U32 {
         return Err(gnx_base::ops::signature("bits requires U32"));
     }
-    let [a, b] = block(k, &shape.into_shape())?;
+    let [a, b] = block(k, &shape.into_shape(), Purpose::RandomBits)?;
     Ok(lax::convert_element_type(&xor(&a, &b), dtype))
 }
 fn precision(dtype: DType) -> Result<(u32, DType), LoweringError> {
@@ -214,7 +233,7 @@ fn precision(dtype: DType) -> Result<(u32, DType), LoweringError> {
     })
 }
 fn fraction(k: &Array, shape: &Shape, p: u32, work: DType) -> Result<Array, LoweringError> {
-    let [a, b] = block(k, shape)?;
+    let [a, b] = block(k, shape, Purpose::RandomBits)?;
     let integer = if p > 32 {
         left(&a, p - 32) + right(&b, 64 - p)
     } else {

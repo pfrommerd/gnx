@@ -19,9 +19,10 @@ A key has scalar shape `()` and a nonnumeric, algorithm-specific dtype.
 Reusing it repeats a draw. `split` produces an array of keys; `fold_in` derives
 one key from a scalar `U32` tag. Use `map` for draws from batched keys. For
 interchange, `key_data` exposes two `U32` words per key and `wrap_key_data`
-restores them with an explicit algorithm. Threefry keys, splitting, folding,
-and `U32` bits follow JAX's partitionable Threefry2x32 convention (reference:
-JAX 0.4.38, `jax_threefry_partitionable=True`, x64 enabled for 64-bit seeds).
+restores them with an explicit algorithm. GNX targets **JAX 0.12.1** for
+`key`, `split`, `fold_in`, and `U32` bits with `threefry2x32` and `philox4x32`
+(`jax_threefry_partitionable=True`, x64 enabled for 64-bit seeds).
+This changes seeded Philox streams from the earlier GNX convention; Threefry streams are unchanged.
 Floating samples do not promise bitwise JAX or cross-backend identity.
 
 `uniform` and `normal` support `BF16`, `F16`, `F32`, and `F64`. `Rngs` draws
