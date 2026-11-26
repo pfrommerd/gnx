@@ -149,6 +149,21 @@ fn macro_accepts_filters_and_ad_distinguishes_exact_from_prefix() {
 }
 
 #[test]
+fn grad_rejects_unresolved_cell_aliases_instead_of_assuming_distinct_inputs() {
+    use gnx_common::ArrayRef;
+    use gnx_expr::CellTracer;
+    let _scope = TraceContext::enter();
+    let input = || {
+        ArrayRef::from(CellTracer::<Array>::placeholder(VarInfo::new(
+            ArrayInfo::new(Shape::fixed([]), DType::F32),
+        )))
+    };
+    let df = gnx_transforms::grad(|a: ArrayRef, _: ArrayRef| a.get()).wrt_arg(0);
+    let err = df.try_invoke((input(), input())).err().unwrap().to_string();
+    assert!(err.contains("aliases"), "{err}");
+}
+
+#[test]
 fn wrt_indices_select_top_level_arguments_only() {
     let _scope = TraceContext::enter();
     let f = |x: Array, _: Array, _: Array| x;

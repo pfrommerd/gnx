@@ -122,6 +122,7 @@ pub(crate) fn differentiated(
     objects: &[ObjectTracer],
     paths: &[Vec<Key>],
     wrt: &[Resolved<()>],
+    cell_contents: bool,
 ) -> TransformResult<Vec<bool>> {
     objects
         .iter()
@@ -131,8 +132,10 @@ pub(crate) fn differentiated(
             if selected.value.is_none() {
                 return Ok(false);
             }
-            let differentiable =
-                matches!(object, ObjectTracer::Ref(trace) if util::is_inexact(trace.info()));
+            let differentiable = match object {
+                ObjectTracer::Ref(trace) => util::is_inexact(trace.info()),
+                ObjectTracer::Cell(cell) => cell_contents && util::is_inexact(cell.type_info()),
+            };
             if !differentiable && selected.exact {
                 return Err(TransformError::invalid(format!(
                     "wrt selects a leaf that is not a floating-point array ({path:?})"

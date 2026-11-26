@@ -30,6 +30,7 @@
 //! [`Dag`]: gnx_graph::util::Dag
 
 mod api;
+mod cell_grad;
 mod stop_gradient;
 pub use stop_gradient::{StopGradientOperation, stop_gradient, stop_gradient_op};
 pub mod def;

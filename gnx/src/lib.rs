@@ -9,17 +9,22 @@ pub use gnx_graph as graph;
 /// trainable arrays by type when differentiating a loss:
 ///
 /// ```
-/// use gnx::{Array, Callable, Graph, array::DType, graph::Of, lax, nn, np, value_and_grad};
+/// use gnx::{Array, Graph, array::DType, graph::Of, lax, nn, np, value_and_grad};
 ///
 /// #[derive(Clone, Graph)]
 /// struct Model { head: nn::Linear }
 ///
 /// let head = nn::Linear::new(lax::zeros([2, 3], DType::F32), lax::zeros([2], DType::F32));
 /// let x = lax::zeros([5, 3], DType::F32);
-/// let loss = value_and_grad(|m: Model, x: Array| np::sum(&m.head.forward(x), np::ALL))
-///     .wrt(Of::<nn::Param>::filter());
-/// let (value, (grads, _)) = loss.invoke((Model { head }, x));
-/// assert_eq!(grads.head.weight.value().shape(), gnx::Shape::fixed([2, 3]));
+/// let model = Model { head };
+/// let loss = value_and_grad!(
+///     |m: &Model, x: Array| np::sum(&m.head.forward(x), np::ALL),
+///     wrt = Of::<nn::Param>::filter(),
+/// );
+/// let (value, (grads, _)) = loss(&model, x);
+/// // Apply an update outside the loss. The gradient cells are independent.
+/// let bias = &model.head.bias;
+/// bias.set(bias.value() - grads.head.bias.value() * np::scalar(0.01, DType::F32));
 /// ```
 pub use gnx_nn as nn;
 

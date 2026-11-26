@@ -81,6 +81,26 @@ impl LoweredExpr {
     pub fn trace_body(&self) -> &Arc<HRootExpr> {
         &self.trace_body
     }
+    /// Functionalized body with the original (possibly forwarded or repeated)
+    /// value results. Unlike replay, this has no cell updates to commit.
+    pub fn read_only_value_body(&self) -> Result<Arc<HRootExpr>, LoweringError> {
+        if !self.updates.is_empty() {
+            return Err(LoweringError::RegionSignature(
+                "expected a read-only cell boundary",
+            ));
+        }
+        let mut body = self.trace_source.clone();
+        body.outputs = self
+            .outputs
+            .iter()
+            .map(|output| match output {
+                Output::Value { result_idx } => Ok(self.source.outputs[*result_idx]),
+                _ => Err(LoweringError::RegionSignature("expected value results")),
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(body.build()?)
+    }
+
     pub fn results(&self) -> &[Output] {
         &self.outputs
     }

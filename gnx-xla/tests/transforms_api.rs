@@ -195,6 +195,84 @@ fn numpy_and_lax_agree_on_bias_values_and_gradients() {
 }
 
 #[test]
+fn read_only_cell_gradients_follow_identity_and_snapshot_on_each_call() {
+    use gnx::array::ArrayRef;
+    use gnx::graph::Of;
+
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let a = ArrayRef::new(scalar(3.));
+    let b = ArrayRef::new(scalar(5.));
+    let df = value_and_grad(|a: ArrayRef, b: ArrayRef| a.get() * b.get()).wrt_arg(0);
+    let result = df.invoke((a.clone(), b));
+    eval(&device, &result);
+    close(&values(&device, &result.0), &[15.]);
+    close(&values(&device, &result.1.0.get()), &[5.]);
+    close(&values(&device, &result.1.1.get()), &[0.]);
+
+    // Same cached trace; different entry value and different alias pattern.
+    a.set(scalar(4.));
+    let tied = df.invoke((a.clone(), a.clone()));
+    eval(&device, &tied);
+    close(&values(&device, &tied.0), &[16.]);
+    close(&values(&device, &tied.1.0.get()), &[8.]);
+    tied.1.0.set(scalar(17.));
+    close(&values(&device, &tied.1.1.get()), &[17.]);
+    close(&values(&device, &a.get()), &[4.]);
+
+    // A captured handle aliases the explicit input. Returning a read
+    // directly must work too (a forwarded SSA result, not an equation).
+    let captured = a.clone();
+    let (dx,) = grad(|x: ArrayRef| x.get() * captured.get())
+        .wrt(Of::<ArrayRef>::filter())
+        .invoke((a.clone(),));
+    eval(&device, &dx);
+    close(&values(&device, &dx.get()), &[8.]);
+    let square_grad = jit(|x: ArrayRef| grad(|z: ArrayRef| z.get() * z.get()).invoke((x,)).0.get());
+    let dx = square_grad.invoke((a.clone(),));
+    eval(&device, &dx);
+    close(&values(&device, &dx), &[8.]);
+
+    let (dx,) = grad(|x: ArrayRef| x.get()).invoke((a,));
+    eval(&device, &dx);
+    close(&values(&device, &dx.get()), &[1.]);
+}
+
+#[test]
+fn cell_grad_keeps_value_arguments_positional_and_rejects_writes() {
+    use gnx::array::ArrayRef;
+    let device = XlaDevice::cpu(gnx_common::cache::Cache::in_memory()).unwrap();
+    let x = scalar(2.);
+    let cell = ArrayRef::new(scalar(3.));
+    let result = grad(|x: Array, y: Array, c: ArrayRef| x + y * c.get()).invoke((
+        x.clone(),
+        x,
+        cell.clone(),
+    ));
+    eval(&device, &result);
+    close(&values(&device, &result.0), &[1.]);
+    close(&values(&device, &result.1), &[3.]);
+    close(&values(&device, &result.2.get()), &[2.]);
+
+    let write = grad(|x: ArrayRef| {
+        x.set(scalar(99.));
+        x.get()
+    });
+    let err = write.try_invoke((cell.clone(),)).err().unwrap().to_string();
+    assert!(err.contains("cannot write"), "{err}");
+    let write_capture = grad(|x: Array| {
+        cell.set(x.clone());
+        x
+    });
+    let err = write_capture
+        .try_invoke((scalar(42.),))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(err.contains("cannot write"), "{err}");
+    close(&values(&device, &cell.get()), &[3.]);
+}
+
+#[test]
 fn affine_model_differentiates_only_params() {
     use gnx::{
         graph::Of,
@@ -224,10 +302,10 @@ fn affine_model_differentiates_only_params() {
     let (loss, (dm, dx)) = result;
     close(&values(&device, &loss), &[40.]);
     close(
-        &values(&device, dm.head.weight.value()),
+        &values(&device, &dm.head.weight.value()),
         &[2., 4., 4., 2., 4., 4.],
     );
-    close(&values(&device, dm.head.bias.value()), &[4., 4.]);
+    close(&values(&device, &dm.head.bias.value()), &[4., 4.]);
     close(&values(&device, &dm.scale), &[0.]);
     close(&values(&device, &dx), &[0.; 6]);
 }

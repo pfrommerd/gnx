@@ -2,26 +2,34 @@
 //! arrays with [`Param`]; use `Of::<Param>::filter()` with GNX transforms.
 
 use gnx_graph::{Graph, Leaf, cast, util::LifetimeFree};
-use gnx_math::{Array, lax};
+use gnx_math::{Array, ArrayRef, lax};
 
-/// A trainable array. Role filters match the wrapper; tracer and array
-/// filters descend into its `value` field.
+/// A trainable array cell. Clones share the same parameter; scalar-loss
+/// gradients contain fresh cells independent of the model.
 #[derive(Clone, Graph, LifetimeFree)]
 pub struct Param {
-    value: Array,
+    value: ArrayRef,
 }
 
 impl Param {
     pub fn new(value: Array) -> Self {
-        Self { value }
+        Self {
+            value: ArrayRef::new(value),
+        }
     }
 
-    pub fn value(&self) -> &Array {
-        &self.value
+    /// Read the current value, recording a read when tracing.
+    pub fn value(&self) -> Array {
+        self.value.get()
+    }
+
+    /// Replace the contents without breaking ties with other handles.
+    pub fn set(&self, value: Array) {
+        self.value.set(value);
     }
 
     pub fn into_value(self) -> Array {
-        self.value
+        self.value.get()
     }
 }
 
@@ -83,7 +91,7 @@ impl Linear {
             .expect("Linear input needs a feature axis");
         let y = lax::dot_general(
             &input,
-            self.weight.value(),
+            &self.weight.value(),
             lax::DotDimensions {
                 lhs_contracting: vec![axis],
                 rhs_contracting: vec![1],

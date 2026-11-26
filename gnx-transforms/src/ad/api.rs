@@ -32,17 +32,23 @@ impl<L, F> Wrt<L, F> {
     }
 }
 use crate::traced::{
-    Leaves, body, constant, differentiated, objects, ones, trace_region, value, zeros, zeros_like,
+    Leaves, body, constant, differentiated, objects, ones, trace_region, value, zeros,
 };
 use crate::{
     Callable, Function, Jit, Jitable, TransformError, TransformResult, TryCallable, TryJitable,
     jit, util,
 };
 
+#[derive(Clone, Copy)]
+enum Inputs {
+    Values,
+    ReadOnlyCells,
+}
+
 /// A traced function with its differentiated argument leaves split out.
 struct Prepared<I: Graph, O: Graph> {
     leaves: Leaves<I>,
-    differentiate: Vec<bool>,
+    slots: Vec<Option<usize>>,
     entry: Arc<TraceEntry<O>>,
     body: gnx_expr::ApplyRegion,
     primals: Vec<Trace>,
@@ -51,6 +57,7 @@ struct Prepared<I: Graph, O: Graph> {
 
 impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
     fn new<L: Leaf, W: Filter<L>, A, E>(
+        inputs: Inputs,
         wrt: &Wrt<L, W>,
         input: &A,
         trace: impl FnOnce(TracerBuilder<I>, Vec<(Kind, VarInfo)>) -> Result<Arc<TraceEntry<O>>, E>,
@@ -63,21 +70,45 @@ impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
             args.validate(input)?;
         }
         let selected = crate::spec::wrt(&wrt.filter, input, &leaves.paths);
-        let differentiate = differentiated(&leaves.objects, &leaves.paths, &selected)?;
+        let cell_grads = matches!(inputs, Inputs::ReadOnlyCells);
+        let differentiate = differentiated(&leaves.objects, &leaves.paths, &selected, cell_grads)?;
         let entry = trace(leaves.builder.clone(), leaves.kinds()).map_err(ApplyError::Body)?;
         let outputs = crate::cf::value_results(entry.expr.view()).map_err(TransformError::from)?;
-        let captured: Vec<_> = differentiate.iter().map(|flag| !flag).collect();
-        let body = body(&entry, &leaves.objects, &captured)?;
-        let primals = leaves
+        if cell_grads && entry.expr.view().writes_parameters() {
+            return Err(
+                TransformError::invalid("grad cannot write an input or captured ArrayRef").into(),
+            );
+        }
+        let has_cell_inputs = leaves
             .objects
             .iter()
-            .zip(&differentiate)
-            .filter(|(_, flag)| **flag)
-            .map(|(object, _)| value(object, "a differentiated argument"))
-            .collect::<TransformResult<_>>()?;
+            .any(|o| matches!(o, ObjectTracer::Cell(_)));
+        let super::cell_grad::Operands {
+            body,
+            slots,
+            primals,
+        } = if cell_grads && has_cell_inputs {
+            super::cell_grad::prepare(&entry, &leaves.objects, &differentiate)?
+        } else {
+            let captured: Vec<_> = differentiate.iter().map(|flag| !flag).collect();
+            let body = body(&entry, &leaves.objects, &captured)?;
+            let mut primals = Vec::new();
+            let mut slots = Vec::new();
+            for (object, selected) in leaves.objects.iter().zip(differentiate) {
+                slots.push(selected.then_some(primals.len()));
+                if selected {
+                    primals.push(value(object, "a differentiated argument")?);
+                }
+            }
+            super::cell_grad::Operands {
+                body,
+                slots,
+                primals,
+            }
+        };
         Ok(Self {
             leaves,
-            differentiate,
+            slots,
             entry,
             body,
             primals,
@@ -112,8 +143,8 @@ impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
         }
         let tangents = tangents
             .iter()
-            .zip(&self.differentiate)
-            .filter(|(_, flag)| **flag)
+            .zip(&self.slots)
+            .filter(|(_, slot)| slot.is_some())
             .map(|(object, _)| value(object, "a tangent"))
             .collect::<TransformResult<Vec<_>>>()?;
         let of = self.of();
@@ -165,20 +196,7 @@ impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
             &self.wrt(),
             &of,
         )?;
-        let mut input_cts = input_cts.into_iter();
-        let leaves = self
-            .leaves
-            .objects
-            .iter()
-            .zip(&self.differentiate)
-            .map(|(object, &flag)| {
-                if flag {
-                    input_cts.next().expect("cotangent per argument").into()
-                } else {
-                    zeros_like(object)
-                }
-            })
-            .collect();
+        let leaves = super::cell_grad::cotangents(&self.leaves.objects, &self.slots, &input_cts);
         Ok((outputs, leaves))
     }
 
@@ -343,7 +361,7 @@ where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
         T: Graph,
     {
-        let prepared = Prepared::<I, F::Output>::new(&self.wrt, &primals, trace)?;
+        let prepared = Prepared::<I, F::Output>::new(Inputs::Values, &self.wrt, &primals, trace)?;
         let (outputs, tangents) = prepared.jvp(&objects(&tangents))?;
         Ok((
             prepared.rebuild_output(outputs),
@@ -398,7 +416,7 @@ where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
         C: Graph,
     {
-        let prepared = Prepared::<I, F::Output>::new(&self.wrt, &primals, trace)?;
+        let prepared = Prepared::<I, F::Output>::new(Inputs::Values, &self.wrt, &primals, trace)?;
         let cotangents = objects(&cotangents);
         if cotangents.len() != prepared.outputs.len() {
             return Err(TransformError::invalid(
@@ -456,6 +474,13 @@ pub struct Grad<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
 /// The gradient of a function returning one floating-point scalar (JAX's
 /// `grad`). The result has the arguments' structure, with zeros for leaves
 /// that aren't differentiated.
+///
+/// For an `ArrayRef`, the independent variable is the cell's contents at entry.
+/// The loss may read argument and captured cells, but may not write them.
+/// Tied cells accumulate one derivative across all uses and return one fresh
+/// gradient cell shared by the corresponding result paths. Ordinary array
+/// arguments remain independent by position. When an enclosing trace leaves
+/// cell aliases ambiguous, call `grad` outside it or pass array values instead.
 pub fn grad<I: Graph, F: Function<I>>(func: F) -> Grad<I, F> {
     Grad {
         jit: jit(func),
@@ -481,7 +506,8 @@ where
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
-        let prepared = Prepared::<I, F::Output>::new(&self.wrt, &primals, trace)?;
+        let prepared =
+            Prepared::<I, F::Output>::new(Inputs::ReadOnlyCells, &self.wrt, &primals, trace)?;
         let (_, input_cts) = prepared.grad()?;
         Ok(prepared.leaves.rebuild(input_cts))
     }
@@ -520,7 +546,8 @@ where
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
-        let prepared = Prepared::<I, F::Output>::new(&self.wrt, &primals, trace)?;
+        let prepared =
+            Prepared::<I, F::Output>::new(Inputs::ReadOnlyCells, &self.wrt, &primals, trace)?;
         let (outputs, input_cts) = prepared.grad()?;
         Ok((
             prepared.rebuild_output(outputs),
@@ -575,7 +602,7 @@ where
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
-        let prepared = Prepared::<I, F::Output>::new(&self.wrt, &primals, trace)?;
+        let prepared = Prepared::<I, F::Output>::new(Inputs::Values, &self.wrt, &primals, trace)?;
         let [x] = prepared.primals.as_slice() else {
             return Err(TransformError::invalid(
                 "hessian differentiates exactly one array argument; select it with wrt",
