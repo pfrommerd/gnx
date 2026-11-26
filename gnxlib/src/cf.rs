@@ -253,7 +253,7 @@ fn slice_info(trace: &Trace) -> PyResult<VarInfo> {
         return Err(error());
     };
     Ok(VarInfo::new(ArrayInfo::new(
-        tail.iter().copied().collect(),
+        tail.iter().copied().collect::<gnx::Shape>(),
         array.dtype(),
     )))
 }

@@ -4,6 +4,20 @@
 use gnx_graph::{Graph, Leaf, cast, util::LifetimeFree};
 use gnx_math::{Array, ArrayRef, lax};
 
+/// Conventional neural-network stream names on the generic random stream collection.
+pub trait RngsExt {
+    fn params(&self) -> Array;
+    fn dropout(&self) -> Array;
+}
+impl RngsExt for gnx_math::random::Rngs {
+    fn params(&self) -> Array {
+        self.next("params")
+    }
+    fn dropout(&self) -> Array {
+        self.next("dropout")
+    }
+}
+
 /// A trainable array cell. Clones share the same parameter; scalar-loss
 /// gradients contain fresh cells independent of the model.
 #[derive(Clone, Graph, LifetimeFree)]
@@ -60,6 +74,42 @@ pub struct Linear {
 }
 
 impl Linear {
+    /// PyTorch-style initialization: independently uniform weight and bias in
+    /// ±1/sqrt(fan_in). Each array consumes one key from the `params` stream.
+    pub fn init(
+        in_features: usize,
+        out_features: usize,
+        dtype: gnx_math::DType,
+        rngs: &gnx_math::random::Rngs,
+    ) -> Self {
+        use gnx_math::{DType, random};
+        assert!(matches!(
+            dtype,
+            DType::BF16 | DType::F16 | DType::F32 | DType::F64
+        ));
+        let work = if dtype == DType::F64 {
+            dtype
+        } else {
+            DType::F32
+        };
+        let bound = if in_features == 0 {
+            0.
+        } else {
+            (in_features as f64).sqrt().recip()
+        };
+        let init = |shape: gnx_math::Shape| {
+            let u = random::uniform(&rngs.params(), shape, work);
+            lax::convert_element_type(
+                &(u * lax::scalar(2. * bound, work) - lax::scalar(bound, work)),
+                dtype,
+            )
+        };
+        use gnx_math::IntoShape;
+        Self::new(
+            init((out_features, in_features).into_shape()),
+            init((out_features,).into_shape()),
+        )
+    }
     /// Construct from a `[out_features, in_features]` weight matrix and
     /// `[out_features]` bias of the same dtype.
     pub fn new(weight: Array, bias: Array) -> Self {

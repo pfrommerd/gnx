@@ -4,6 +4,16 @@ use tch::TchError;
 
 rule!(ConstantOperation, |op, eqn, []| {
     let (_, k) = result_layout(eqn)?;
+    if metadata(eqn.outputs().next().unwrap().info_ref())?.dtype() == DType::U32 {
+        return Ok(vec![
+            Tensor::f_full(
+                [],
+                i64::from(op.value() as u32 as i32),
+                (k, tracing_device()),
+            )
+            .map_err(io::Error::other)?,
+        ]);
+    }
     Tensor::f_full([], op.value(), (Kind::Double, tracing_device())).and_then(|v| v.f_to_kind(k))
 });
 rule!(FullOperation, |_op, eqn, [x]| {

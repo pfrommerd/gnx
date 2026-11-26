@@ -76,8 +76,9 @@ pub(super) fn layout(info: &ArrayInfo) -> io::Result<(Vec<i64>, Kind)> {
         DType::U8 => Kind::Uint8,
         DType::I8 => Kind::Int8,
         DType::I16 => Kind::Int16,
-        DType::I32 => Kind::Int,
+        DType::I32 | DType::U32 => Kind::Int,
         DType::I64 => Kind::Int64,
+        DType::KeyThreeFry2x32 | DType::KeyPhilox4x32 => Kind::Int64,
         DType::C64 => Kind::ComplexFloat,
         DType::C128 => Kind::ComplexDouble,
         other => return Err(unsupported(format!("unsupported Torch dtype {other:?}"))),
@@ -112,6 +113,14 @@ fn emit_results(body: Expr<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
         .zip(inputs)
         .map(|(p, t)| (p.var(), t.shallow_clone()))
         .collect();
+    // tch has no uint32 Kind. Preserve its four physical bytes on transport
+    // and structural ops; never send unsigned comparisons, etc. to signed kernels.
+    let mut unsigned = std::collections::HashSet::new();
+    for p in body.closure_inputs().chain(body.inputs()) {
+        if metadata(p.info_ref())?.dtype() == DType::U32 {
+            unsigned.insert(p.var());
+        }
+    }
     for (i, eqn) in body.eqns().enumerate() {
         let op = eqn.op();
         let rule = op
@@ -132,14 +141,64 @@ fn emit_results(body: Expr<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
                     .collect()
             })
             .collect::<Vec<_>>();
-        let results = rule
-            .lower_torch_regions(eqn, &operands, &captures)
-            .map_err(|e| io::Error::new(e.kind(), format!("equation {i} ({op}): {e}")))?;
+        let u32_input = eqn.inputs().iter().any(|v| unsigned.contains(v));
+        let u32_output = eqn.outputs().any(|p| {
+            p.info_ref()
+                .downcast::<ArrayInfoData>()
+                .is_some_and(|a| a.dtype() == DType::U32)
+        });
+        let results = if (u32_input || u32_output)
+            && op
+                .get()
+                .downcast_ref::<gnx_math::ops::dtype::ConvertElementTypeOperation>()
+                .is_some()
+        {
+            let mut x = operands[0].shallow_clone();
+            if u32_input {
+                x = x
+                    .f_to_kind(Kind::Int64)
+                    .and_then(|x| x.f_bitwise_and(u32::MAX as i64))
+                    .map_err(io::Error::other)?;
+            }
+            if u32_output {
+                x = x.f_to_kind(Kind::Int64).map_err(io::Error::other)?;
+            }
+            vec![
+                x.f_to_kind(result_layout(eqn)?.1)
+                    .map_err(io::Error::other)?,
+            ]
+        } else {
+            if (u32_input || u32_output)
+                && !(op.get().dialect() == "array"
+                    && matches!(
+                        op.get().name(),
+                        "zeros"
+                            | "ones"
+                            | "constant"
+                            | "reshape"
+                            | "transpose"
+                            | "broadcast_in_dim"
+                            | "concatenate"
+                            | "slice"
+                            | "bitcast_convert_type"
+                    ))
+            {
+                return Err(unsupported(format!(
+                    "{op} does not support Torch U32 operands"
+                )));
+            }
+            rule.lower_torch_regions(eqn, &operands, &captures)
+                .map_err(|e| io::Error::new(e.kind(), format!("equation {i} ({op}): {e}")))?
+        };
         if results.len() != eqn.outputs().len() {
             return Err(invalid(format!("{op}: wrong result count")));
         }
         for (p, t) in eqn.outputs().zip(results) {
-            check(&t, &metadata(p.info_ref())?, tracing_device())?;
+            let info = metadata(p.info_ref())?;
+            if info.dtype() == DType::U32 {
+                unsigned.insert(p.var());
+            }
+            check(&t, &info, tracing_device())?;
             values.insert(p.var(), t);
         }
     }

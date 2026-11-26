@@ -955,6 +955,7 @@ dependencies = [
  "cc",
  "futures-channel",
  "futures-executor",
+ "gnx",
  "gnx-common",
  "gnx-expr",
  "gnx-math",

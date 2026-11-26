@@ -22,3 +22,4 @@ torch-sys = { version = "=0.22.0", features = ["gnx-managed"] }
 cc = "1"
 
 [dev-dependencies]
+gnx = { path = "../gnx" }

@@ -3,6 +3,7 @@ pub mod device;
 pub mod lax;
 pub mod np;
 pub mod ops;
+pub mod random;
 mod rules;
 pub mod shard;
 

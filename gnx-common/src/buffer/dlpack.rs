@@ -251,6 +251,9 @@ impl DlpackSource {
     }
 
     fn export_abi(self, abi: DlpackAbi) -> io::Result<DlpackTensor> {
+        if self.source.array_info().dtype().is_key() {
+            return Err(unsupported("export PRNG keys via random::key_data"));
+        }
         let dims = dimensions(self.source.array_info())?;
         let width = scalar_width(self.source.array_info().dtype());
         let (code, bits) = encoding(self.source.array_info().dtype());
@@ -356,6 +359,9 @@ fn encoding(dtype: DType) -> (u8, u8) {
         DType::F8E4M3FN => 10,
         DType::F8E5M2 => 12,
         DType::F8E8M0FNU => 14,
+        DType::KeyThreeFry2x32 | DType::KeyPhilox4x32 => {
+            unreachable!("no DLPack encoding for keys")
+        }
     };
     (code, (scalar_width(dtype) * 8) as u8)
 }

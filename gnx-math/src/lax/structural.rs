@@ -9,6 +9,7 @@ fn fixed(x: &Array) -> Result<Vec<usize>> {
 
 /// A rank-zero constant, converted from `f64` to `dtype`.
 pub fn scalar(value: f64, dtype: DType) -> Array {
+    assert!(!dtype.is_key(), "construct keys with random::key");
     invoke_array(
         ops::creation::constant(value),
         &[],
@@ -16,19 +17,21 @@ pub fn scalar(value: f64, dtype: DType) -> Array {
     )
 }
 /// A zero-filled array of the specified shape and dtype.
-pub fn zeros(shape: impl IntoIterator<Item = usize>, dtype: DType) -> Array {
-    invoke_array(
-        ops::zeros_op(),
-        &[],
-        &ArrayInfo::new(Shape::fixed(shape), dtype),
-    )
+pub fn zeros(shape: impl IntoShape, dtype: DType) -> Array {
+    assert!(!dtype.is_key(), "construct keys with random::key");
+    invoke_array(ops::zeros_op(), &[], &ArrayInfo::new(shape, dtype))
 }
 
 primitive!(/// Coordinates along `axis` in a fixed output shape.
-    iota, try_iota(shape: &[usize], axis: usize, dtype: DType) -> Array);
+    iota, try_iota(shape: impl IntoShape, axis: usize, dtype: DType) -> Array);
 /// Checked variant of [`iota`].
-pub fn try_iota(shape: &[usize], axis: usize, dtype: DType) -> Result<Array> {
-    if axis >= shape.len() || dtype == DType::Bool {
+pub fn try_iota(shape: impl IntoShape, axis: usize, dtype: DType) -> Result<Array> {
+    let shape = shape.into_shape();
+    if !shape.dims().iter().all(|d| matches!(d, Dim::Fixed(_)))
+        || axis >= shape.dims().len()
+        || dtype == DType::Bool
+        || dtype.is_key()
+    {
         return Err(signature(
             "iota requires an in-range axis and numeric dtype",
         ));
@@ -36,7 +39,7 @@ pub fn try_iota(shape: &[usize], axis: usize, dtype: DType) -> Result<Array> {
     Ok(invoke_array(
         ops::creation::iota(axis),
         &[],
-        &ArrayInfo::new(Shape::fixed(shape.iter().copied()), dtype),
+        &ArrayInfo::new(shape, dtype),
     ))
 }
 primitive!(/// Slice one fixed-size axis with a half-open interval.
@@ -108,17 +111,14 @@ fn check_slice(dims: &[usize], sizes: &[usize], starts: &[&Array]) -> Result<()>
     Ok(())
 }
 primitive!(/// Extract a fixed-size slice starting at runtime scalar indices.
-    dynamic_slice, try_dynamic_slice(x: &Array, starts: &[&Array], sizes: &[usize]) -> Array);
+    dynamic_slice, try_dynamic_slice(x: &Array, starts: &[&Array], sizes: impl IntoShape) -> Array);
 /// Checked variant of [`dynamic_slice`].
-pub fn try_dynamic_slice(x: &Array, starts: &[&Array], sizes: &[usize]) -> Result<Array> {
-    check_slice(&fixed(x)?, sizes, starts)?;
+pub fn try_dynamic_slice(x: &Array, starts: &[&Array], sizes: impl IntoShape) -> Result<Array> {
+    let info = ArrayInfo::new(sizes, x.dtype());
+    check_slice(&fixed(x)?, &ops::fixed_dims(&info)?, starts)?;
     let mut inputs = vec![x];
     inputs.extend_from_slice(starts);
-    Ok(invoke_array(
-        ops::indexing::dynamic_slice(),
-        &inputs,
-        &ArrayInfo::new(Shape::fixed(sizes.iter().copied()), x.dtype()),
-    ))
+    Ok(invoke_array(ops::indexing::dynamic_slice(), &inputs, &info))
 }
 primitive!(/// Replace a slice starting at runtime scalar indices and return the updated array.
     dynamic_update_slice, try_dynamic_update_slice(x: &Array, update: &Array, starts: &[&Array]) -> Array);
@@ -141,7 +141,8 @@ primitive!(/// Generalized dot product. Output axes are batch, free lhs, then fr
 /// Checked variant of [`dot_general`].
 pub fn try_dot_general(lhs: &Array, rhs: &Array, axes: DotDimensions) -> Result<Array> {
     let (a, b) = (fixed(lhs)?, fixed(rhs)?);
-    if lhs.dtype() != rhs.dtype()
+    if lhs.dtype().is_key()
+        || lhs.dtype() != rhs.dtype()
         || axes.lhs_batch.len() != axes.rhs_batch.len()
         || axes.lhs_contracting.len() != axes.rhs_contracting.len()
     {
@@ -192,7 +193,7 @@ pub fn try_top_k(x: &Array, k: usize) -> Result<(Array, Array)> {
     let last = dims
         .last_mut()
         .ok_or_else(|| signature("top_k needs a non-scalar operand"))?;
-    if k > *last || matches!(x.dtype(), DType::C64 | DType::C128) {
+    if k > *last || x.dtype().is_key() || matches!(x.dtype(), DType::C64 | DType::C128) {
         return Err(signature("invalid top_k extent or dtype"));
     }
     *last = k;

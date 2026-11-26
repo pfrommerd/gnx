@@ -39,6 +39,66 @@ impl Display for Dim {
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, rkyv::Archive, rkyv::Serialize)]
 pub struct Shape(Vec<Dim>);
 
+/// A user-supplied array shape. Tuple and integer container axes are fixed;
+/// an existing `Shape` retains symbolic dimensions.
+pub trait IntoShape {
+    fn into_shape(self) -> Shape;
+}
+impl IntoShape for Shape {
+    fn into_shape(self) -> Shape {
+        self
+    }
+}
+impl IntoShape for &Shape {
+    fn into_shape(self) -> Shape {
+        self.clone()
+    }
+}
+impl IntoShape for () {
+    fn into_shape(self) -> Shape {
+        Shape::fixed([])
+    }
+}
+impl<const N: usize> IntoShape for [usize; N] {
+    fn into_shape(self) -> Shape {
+        Shape::fixed(self)
+    }
+}
+impl<const N: usize> IntoShape for &[usize; N] {
+    fn into_shape(self) -> Shape {
+        Shape::fixed(self.iter().copied())
+    }
+}
+impl IntoShape for &[usize] {
+    fn into_shape(self) -> Shape {
+        Shape::fixed(self.iter().copied())
+    }
+}
+impl IntoShape for Vec<usize> {
+    fn into_shape(self) -> Shape {
+        Shape::fixed(self)
+    }
+}
+impl IntoShape for &Vec<usize> {
+    fn into_shape(self) -> Shape {
+        self.as_slice().into_shape()
+    }
+}
+macro_rules! tuple_shape {
+    (@ty $x:ident) => {usize};
+    ($first:ident $(,$rest:ident)*) => {
+        impl IntoShape for (tuple_shape!(@ty $first), $(tuple_shape!(@ty $rest),)*) {
+            fn into_shape(self) -> Shape {
+                let ($first, $($rest,)*) = self;
+                Shape::fixed([$first, $($rest),*])
+            }
+        }
+        tuple_shape!($($rest),*);
+    };
+    () => {};
+}
+tuple_shape!(a, b, c, d, e, f, g, h);
+
 impl Shape {
     pub fn fixed(dims: impl IntoIterator<Item = usize>) -> Self {
         Shape(dims.into_iter().map(Dim::Fixed).collect())
@@ -86,6 +146,13 @@ pub enum DType {
     F16, BF16, F32, F64,
     F8E4M3FN, F8E5M2, F8E8M0FNU,
     C64, C128,
+    KeyThreeFry2x32, KeyPhilox4x32,
+}
+
+impl DType {
+    pub fn is_key(self) -> bool {
+        matches!(self, Self::KeyThreeFry2x32 | Self::KeyPhilox4x32)
+    }
 }
 
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -224,6 +291,8 @@ impl From<&'static str> for DType {
             "float64" => DType::F64,
             "complex64" => DType::C64,
             "complex128" => DType::C128,
+            "key<fry>" => DType::KeyThreeFry2x32,
+            "key<philox>" => DType::KeyPhilox4x32,
             _ => panic!("Unsupported data type: {}", s),
         }
     }
@@ -250,6 +319,8 @@ impl Into<&'static str> for DType {
             DType::F64 => "float64",
             DType::C64 => "complex64",
             DType::C128 => "complex128",
+            DType::KeyThreeFry2x32 => "key<fry>",
+            DType::KeyPhilox4x32 => "key<philox>",
         }
     }
 }
@@ -309,7 +380,7 @@ impl gnx_expr::Info for ArrayInfoData {
         if self.symbols.is_empty() {
             return None;
         }
-        let shape = self
+        let shape: Shape = self
             .shape()
             .0
             .into_iter()
@@ -347,7 +418,8 @@ impl ArrayInfo {
 }
 
 impl ArrayInfo {
-    pub fn new(shape: Shape, dtype: DType) -> Self {
+    pub fn new(shape: impl IntoShape, dtype: DType) -> Self {
+        let shape = shape.into_shape();
         let symbols = shape
             .dims()
             .iter()
@@ -402,7 +474,7 @@ impl ArrayInfo {
                     Dim::Bounded { max, .. } => Dim::Fixed(max as usize),
                     other => other,
                 })
-                .collect(),
+                .collect::<Shape>(),
             self.dtype,
         )
     }
@@ -437,6 +509,8 @@ impl Display for ArrayInfo {
             DType::F64 => "f64",
             DType::C64 => "c64",
             DType::C128 => "c128",
+            DType::KeyThreeFry2x32 => "key<fry>",
+            DType::KeyPhilox4x32 => "key<philox>",
         };
         write!(f, "<{dtype}>{}", self.shape)
     }
@@ -495,8 +569,15 @@ impl Array {
     }
 
     /// Reshape to fixed dimensions while preserving element order and dtype.
-    pub fn reshape(&self, dims: impl IntoIterator<Item = usize>) -> Self {
-        let info = ArrayInfo::new(Shape::fixed(dims), self.dtype());
+    pub fn reshape(&self, dims: impl IntoShape) -> Self {
+        let info = ArrayInfo::new(dims, self.dtype());
+        assert!(
+            info.shape()
+                .dims()
+                .iter()
+                .all(|d| matches!(d, Dim::Fixed(_))),
+            "reshape requires fixed output dimensions"
+        );
         gnx_expr::Invocation::invoke(
             crate::ops::reshape_op(),
             vec![],
@@ -522,6 +603,10 @@ impl Array {
 pub struct ArrayRef(CellTracer<Array>);
 
 impl ArrayRef {
+    /// Allocate a separate slot from this cell's home initializer and context.
+    pub fn independent(&self) -> Self {
+        Self(self.0.independent())
+    }
     pub fn new(base: impl Into<Tracer<Array>>) -> Self {
         ArrayRef(CellTracer::new(base.into()))
     }

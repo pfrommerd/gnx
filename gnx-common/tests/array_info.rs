@@ -9,7 +9,7 @@ fn array_info_displays_the_compact_dtype_before_the_shape() {
     assert_eq!(matrix.to_string(), "<i32>(2, 3)");
 
     let dynamic = ArrayInfo::new(
-        [Dim::Dynamic, Dim::Fixed(4)].into_iter().collect(),
+        [Dim::Dynamic, Dim::Fixed(4)].into_iter().collect::<Shape>(),
         DType::Bool,
     );
     assert_eq!(dynamic.to_string(), "<bool>(?, 4)");

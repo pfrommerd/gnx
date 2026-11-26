@@ -1,7 +1,7 @@
 //! Explicit, lazy array primitives. Operands are borrowed and results are traced.
 //! Binary arithmetic requires matching shapes and dtypes; use [`crate::np`] for broadcasting.
 
-use crate::{Array, ArrayInfo, DType, Dim, Shape, ops};
+use crate::{Array, ArrayInfo, DType, Dim, IntoShape, Shape, ops};
 use gnx_common::{
     invoke_array,
     ops::{signature, strictly_increasing},
@@ -45,7 +45,8 @@ pub fn add(x: &Array, y: &Array) -> Array {
 }
 
 /// Broadcast each input axis to its specified output axis, in increasing order.
-pub fn try_broadcast_in_dim(x: &Array, shape: Shape, axes: &[usize]) -> Result<Array> {
+pub fn try_broadcast_in_dim(x: &Array, shape: impl IntoShape, axes: &[usize]) -> Result<Array> {
+    let shape = shape.into_shape();
     let input = x.shape();
     if axes.len() != input.dims().len() {
         return Err(signature("broadcast needs one output axis per input axis"));
@@ -73,7 +74,7 @@ pub fn try_broadcast_in_dim(x: &Array, shape: Shape, axes: &[usize]) -> Result<A
 
 /// Infallible-call counterpart of [`try_broadcast_in_dim`]; panics on invalid dimensions.
 #[track_caller]
-pub fn broadcast_in_dim(x: &Array, shape: Shape, axes: &[usize]) -> Array {
+pub fn broadcast_in_dim(x: &Array, shape: impl IntoShape, axes: &[usize]) -> Array {
     try_broadcast_in_dim(x, shape, axes).expect("lax::broadcast_in_dim")
 }
 
@@ -101,6 +102,9 @@ pub fn tanh(x: &Array) -> Array {
 
 /// Sum over sorted, distinct axes, preserving the dtype (boolean sum is OR).
 pub fn try_reduce_sum(x: &Array, axes: &[usize]) -> Result<Array> {
+    if x.dtype().is_key() {
+        return Err(signature("cannot sum PRNG keys"));
+    }
     let input = x.shape();
     strictly_increasing(axes, input.dims().len())?;
     if axes.is_empty() {
@@ -109,7 +113,7 @@ pub fn try_reduce_sum(x: &Array, axes: &[usize]) -> Result<Array> {
     if input.dims().iter().any(|d| matches!(d, Dim::Jagged(_))) {
         return Err(signature("reduce_sum does not support jagged dimensions"));
     }
-    let shape = input
+    let shape: Shape = input
         .dims()
         .iter()
         .enumerate()

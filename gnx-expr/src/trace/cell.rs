@@ -154,6 +154,21 @@ pub struct CellTracer<T: Traceable> {
 }
 
 impl<T: Traceable> CellTracer<T> {
+    /// Allocate an independent slot in the template's owning context, even
+    /// when first requested by a nested trace. Copies the home initializer,
+    /// not a read in the nested trace. Intended for immutable cell templates.
+    pub fn independent(&self) -> Self {
+        assert!(!self.shared.is_placeholder());
+        Self {
+            shared: CellTrace(Arc::new(TraceCell {
+                context_id: self.shared.context_id().clone(),
+                type_info: self.shared.type_info().clone(),
+                home: RwLock::new(self.shared.read_home()),
+                is_input: false,
+            })),
+            _phantom: PhantomData,
+        }
+    }
     pub fn new(trace: Tracer<T>) -> Self {
         CellTracer {
             shared: CellTrace::new(trace.trace_ref().clone()),

@@ -459,7 +459,9 @@ mod tests {
         let mut b = Builder::new();
         let s = b.symbol_input();
         let info = gnx_expr::VarInfo::new(ArrayInfo::new(
-            [Dim::Bounded { symbol: s, max: 8 }].into_iter().collect(),
+            [Dim::Bounded { symbol: s, max: 8 }]
+                .into_iter()
+                .collect::<gnx_common::Shape>(),
             DType::F32,
         ));
         let x = b.input(info.clone());

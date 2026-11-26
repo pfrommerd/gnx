@@ -92,6 +92,7 @@ pub(super) fn element(dtype: DType) -> ElementType {
         DType::U16 => ElementType::U16,
         DType::U32 => ElementType::U32,
         DType::U64 => ElementType::U64,
+        DType::KeyThreeFry2x32 | DType::KeyPhilox4x32 => ElementType::S64,
         DType::I8 => ElementType::S8,
         DType::I16 => ElementType::S16,
         DType::I32 => ElementType::S32,

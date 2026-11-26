@@ -9,7 +9,7 @@ fn complex(t: DType) -> bool {
     matches!(t, C64 | C128)
 }
 fn inexact(t: DType) -> bool {
-    !integer(t) && t != Bool
+    !integer(t) && t != Bool && !t.is_key()
 }
 
 macro_rules! unary {
@@ -17,7 +17,7 @@ macro_rules! unary {
         primitive! {
             #[doc = concat!("Elementwise `", stringify!($name), "`, preserving shape and dtype.")]
             $name, $checked(x: &Array) -> Array {
-                if !($valid)(x.dtype()) { return Err(signature(concat!("unsupported dtype for ", stringify!($name)))); }
+                if x.dtype().is_key() || !($valid)(x.dtype()) { return Err(signature(concat!("unsupported dtype for ", stringify!($name)))); }
                 Ok(invoke_array(e::$op(), &[x], &ArrayInfo::new(x.shape(), x.dtype())))
             }
         }
@@ -33,7 +33,7 @@ unary!(neg, try_neg, neg, |t| t != Bool);
 primitive! {
     /// Absolute value; complex inputs produce real magnitudes.
     abs, try_abs(x: &Array) -> Array {
-        let dtype = match x.dtype() { Bool => return Err(signature("abs requires numeric input")), C64 => F32, C128 => F64, t => t };
+        let dtype = match x.dtype() { Bool | KeyThreeFry2x32 | KeyPhilox4x32 => return Err(signature("abs requires numeric input")), C64 => F32, C128 => F64, t => t };
         Ok(invoke_array(e::abs(), &[x], &ArrayInfo::new(x.shape(), dtype)))
     }
 }
@@ -45,7 +45,7 @@ macro_rules! binary {
             $name, $checked(x: &Array, y: &Array) -> Array {
                 let t = x.dtype();
                 if t != y.dtype() || x.shape() != y.shape() { return Err(signature(concat!(stringify!($name), " requires matching shapes and dtypes"))); }
-                if !($valid)(t) { return Err(signature(concat!("unsupported dtype for ", stringify!($name)))); }
+                if t.is_key() || !($valid)(t) { return Err(signature(concat!("unsupported dtype for ", stringify!($name)))); }
                 Ok(invoke_array($op, &[x,y], &ArrayInfo::new(x.shape(), ($dtype)(t))))
             }
         }
@@ -67,6 +67,10 @@ pub fn convert_element_type(x: &Array, dtype: DType) -> Array {
     if dtype == x.dtype() {
         return x.clone();
     }
+    assert!(
+        !x.dtype().is_key() && !dtype.is_key(),
+        "use random::key_data or wrap_key_data"
+    );
     invoke_array(
         ops::dtype::convert_element_type(),
         &[x],

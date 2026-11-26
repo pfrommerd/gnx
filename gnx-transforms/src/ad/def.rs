@@ -167,7 +167,11 @@ impl<'a> Val<'a> {
     }
 
     /// Operand axis `i` becomes result axis `mapping[i]` of `shape`.
-    pub fn broadcast_in_dim(self, shape: &[usize], mapping: &[usize]) -> TransformResult<Self> {
+    pub fn broadcast_in_dim(
+        self,
+        shape: impl gnx_common::IntoShape,
+        mapping: &[usize],
+    ) -> TransformResult<Self> {
         self.map(|b, x| util::broadcast_in_dim(b, x, shape, mapping))
     }
 

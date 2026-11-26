@@ -30,7 +30,7 @@ pub use gnx_nn as nn;
 
 pub use gnx_common::{cache, pass, store};
 
-pub use gnx_math::{array, buffer, device, lax, np, shard};
+pub use gnx_math::{array, buffer, device, lax, np, random, shard};
 /// Constructors for operations in expression macros.
 ///
 /// ```
@@ -65,7 +65,7 @@ pub mod util {
 // - Array and Shape from gnx-math
 // - Graph and GraphId from gnx-graph
 pub use gnx_graph::{Graph, GraphId};
-pub use gnx_math::array::{Array, Shape};
+pub use gnx_math::array::{Array, IntoShape, Shape};
 pub use gnx_math::device::{Device, ExecOpts};
 
 pub use gnx_transforms::{

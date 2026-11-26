@@ -100,7 +100,7 @@ pub(super) fn slice(info: &VarInfo) -> RegionResult<(usize, VarInfo)> {
     Ok((
         *length,
         VarInfo::new(ArrayInfo::new(
-            tail.iter().copied().collect(),
+            tail.iter().copied().collect::<gnx_common::Shape>(),
             array.dtype(),
         )),
     ))
@@ -109,7 +109,7 @@ pub(super) fn slice(info: &VarInfo) -> RegionResult<(usize, VarInfo)> {
 fn stack(info: &VarInfo, length: usize) -> RegionResult<VarInfo> {
     let array =
         ArrayInfo::from_info(info).ok_or_else(|| signature("scan step outputs must be arrays"))?;
-    let shape = std::iter::once(Dim::Fixed(length))
+    let shape: gnx_common::Shape = std::iter::once(Dim::Fixed(length))
         .chain(array.shape().dims().iter().copied())
         .collect();
     Ok(VarInfo::new(ArrayInfo::new(shape, array.dtype())))

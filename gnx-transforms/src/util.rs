@@ -3,8 +3,8 @@
 use gnx_common::ops::{
     add_op, broadcast_in_dim_op, mul_op, rev_op, select_op, transpose_op, zeros_op,
 };
-use gnx_common::{ArrayInfo, DType, Shape, fixed_dims};
 use gnx_common::pass::Builder;
+use gnx_common::{ArrayInfo, DType, IntoShape, fixed_dims};
 use gnx_expr::{Eqn, ExprHandle, Ref, SubExprBuilder, Var, VarInfo};
 
 use crate::{TransformError, TransformResult};
@@ -23,8 +23,8 @@ pub fn dtype(info: &VarInfo) -> TransformResult<DType> {
     Ok(array(info)?.dtype())
 }
 
-pub fn info(dims: &[usize], dtype: DType) -> VarInfo {
-    VarInfo::new(ArrayInfo::new(Shape::fixed(dims.iter().copied()), dtype))
+pub fn info(dims: impl IntoShape, dtype: DType) -> VarInfo {
+    VarInfo::new(ArrayInfo::new(dims, dtype))
 }
 
 /// Insert an axis of `size` at `axis`.
@@ -76,7 +76,7 @@ pub fn select(b: &mut Builder, predicate: Var, on_true: Var, on_false: Var) -> V
 pub fn broadcast_in_dim(
     b: &mut Builder,
     x: Var,
-    shape: &[usize],
+    shape: impl IntoShape,
     mapping: &[usize],
 ) -> TransformResult<Var> {
     let result = info(shape, dtype(b.info(x))?);

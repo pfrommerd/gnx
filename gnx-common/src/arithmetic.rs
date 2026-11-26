@@ -18,6 +18,9 @@ pub fn apply(op: Op, inputs: &[&Array], info: &ArrayInfo) -> Array {
 
 fn binary(lhs: &Array, rhs: &Array, op: Op) -> Result<Array, LoweringError> {
     let dtype = lhs.dtype();
+    if dtype.is_key() {
+        return Err(ops::signature("keys do not support arithmetic"));
+    }
     if dtype != rhs.dtype() {
         return Err(ops::signature("array arithmetic requires matching dtypes"));
     }

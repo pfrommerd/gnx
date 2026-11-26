@@ -2,6 +2,34 @@
 
 A JAX- and PyTorch-compatible library for generative modeling.
 
+## Random arrays and layer initialization
+
+```rust
+use gnx::{array::DType, nn::Linear, random::{self, Algorithm, Rngs}};
+
+let root = random::key(42, Algorithm::ThreeFry2x32); // or Algorithm::Philox4x32
+let (model_key, noise_key) = random::split2(&root);
+let streams = Rngs::new(model_key);
+let layer = Linear::init(128, 256, DType::BF16, &streams);
+let noise = random::normal(&noise_key, (32, 256), DType::F64);
+let mask_draw = random::uniform(&streams.next("dropout"), (32, 256), DType::F32);
+```
+
+A key has scalar shape `()` and a nonnumeric, algorithm-specific dtype.
+Reusing it repeats a draw. `split` produces an array of keys; `fold_in` derives
+one key from a scalar `U32` tag. Use `map` for draws from batched keys. For
+interchange, `key_data` exposes two `U32` words per key and `wrap_key_data`
+restores them with an explicit algorithm. Threefry keys, splitting, folding,
+and `U32` bits follow JAX's partitionable Threefry2x32 convention (reference:
+JAX 0.4.38, `jax_threefry_partitionable=True`, x64 enabled for 64-bit seeds).
+Floating samples do not promise bitwise JAX or cross-backend identity.
+
+`uniform` and `normal` support `BF16`, `F16`, `F32`, and `F64`. `Rngs` draws
+from independently named streams using traced counters. `Linear::init` uses two
+keys from `"params"` to initialize weight and bias uniformly with PyTorch's
+`1 / sqrt(in_features)` bound. Shape arguments accept tuples through rank eight,
+arrays of any rank, slices, vectors, and `Shape`; `()` denotes a scalar.
+
 ## TorchScript backend (CPU and CUDA)
 
 `gnx-torch` traces fixed-shape GNX expressions with `tch` 0.22.0. On Linux

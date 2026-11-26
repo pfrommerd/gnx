@@ -811,7 +811,12 @@ pub(crate) fn scalar_width(dtype: DType) -> usize {
         DType::U16 | DType::I16 | DType::F16 | DType::BF16 => 2,
         DType::F8E4M3FN | DType::F8E5M2 | DType::F8E8M0FNU => 1,
         DType::U32 | DType::I32 | DType::F32 => 4,
-        DType::U64 | DType::I64 | DType::F64 | DType::C64 => 8,
+        DType::KeyThreeFry2x32
+        | DType::KeyPhilox4x32
+        | DType::U64
+        | DType::I64
+        | DType::F64
+        | DType::C64 => 8,
         DType::C128 => 16,
     }
 }

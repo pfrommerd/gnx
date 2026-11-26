@@ -12,6 +12,8 @@ creating tensors without operands. Host uploads require `AllowCopy`; imported
 handles can be reused without copying on the same device. GPU smoke tests are
 in [`tests/cuda.rs`](tests/cuda.rs).
 
+Threefry and Philox keys use packed 64-bit storage. Raw `u32` random bits and key data support transport, dtype conversion, reshaping, broadcasting, transposing, concatenation, and slicing. Torch uses signed 32-bit storage for these words and zero-extends them when converting to a wider integer; general `u32` arithmetic is not supported.
+
 All traced arrays require fixed dimensions. Supported element types are `bool`,
 `u8`, `i8/i16/i32/i64`, `f16/bf16/f32/f64`, and `c64/c128`. **Numeric** below
 means these types except `bool`; **ordered** excludes complex types. The table
