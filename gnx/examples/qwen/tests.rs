@@ -78,7 +78,7 @@ fn reference(ids: &[usize]) -> Vec<f32> {
 fn check_logits<D: QwenDevice>(device: D) -> Result<()> {
     let (model, w) = fixture();
     let capacity = 4;
-    let model = pack_model(model, w);
+    let model = load_model(model, w, &device)?;
     let mut first_program = None;
     for ids in [[0, 2, 1, 0], [1, 0, 2, 1]] {
         let init = HostBuffer::new(
@@ -89,7 +89,7 @@ fn check_logits<D: QwenDevice>(device: D) -> Result<()> {
         let slot = || ArrayRef::new(Array::from_data(backing.clone()));
         let state = (ArrayRef::new(index(0)?), capacity, vec![(slot(), slot())]);
         for (pos, &id) in ids.iter().enumerate() {
-            let logits = model::step_logits(&model, &index(id as i32)?, &state);
+            let logits = model.logits(&index(id as i32)?, &state);
             let hash = gnx::expr(&(&logits, &state))?
                 .prepare()?
                 .into_parts()
@@ -137,7 +137,7 @@ fn check_reply<D: QwenDevice>(device: D) -> Result<()> {
     let mut decoder = Decoder {
         capacity: 4,
         timings: false,
-        model: pack_model(cfg, weights),
+        model: load_model(cfg, weights, &device)?,
         device,
         tokenizer: Tokenizer::new(tokenizers::models::bpe::BPE::default()),
         end: 2,
@@ -150,6 +150,80 @@ fn check_reply<D: QwenDevice>(device: D) -> Result<()> {
     assert!(decoder.generate(&[1])?.is_empty()); // delimiter wins even with no remaining space
     Ok(())
 }
+// Check the depthwise kernel layout and both recurrent slots against a scalar
+// reference. Q/K/V/Z and output projections are identity; beta and decay are 1/2.
+#[test]
+#[cfg(feature = "qwen-torch")]
+fn torch_delta_logits() -> Result<()> {
+    let device = gnx_torch::TorchDevice::cpu(gnx::cache::Cache::in_memory())?;
+    let (mut config, mut w) = fixture();
+    config.layer_types[0] = "linear_attention".into();
+    let mut add = |key: &str, shape: &[usize], values: &[f32]| -> Result<()> {
+        let host = HostBuffer::copy_from_slice(
+            ArrayInfo::new(Shape::fixed(shape.iter().copied()), DType::F32),
+            &values
+                .iter()
+                .flat_map(|x| x.to_le_bytes())
+                .collect::<Vec<_>>(),
+        )?;
+        w.insert(
+            format!("model.language_model.layers.0.linear_attn.{key}"),
+            Array::from_data(DataHandle::new(host)),
+        );
+        Ok(())
+    };
+    let identity = [1., 0., 0., 1.];
+    add("in_proj_qkv.weight", &[6, 2], &identity.repeat(3))?;
+    for key in ["in_proj_z.weight", "out_proj.weight"] {
+        add(key, &[2, 2], &identity)?;
+    }
+    for key in ["in_proj_a.weight", "in_proj_b.weight"] {
+        add(key, &[1, 2], &[0.; 2])?;
+    }
+    add("conv1d.weight", &[6, 1, 2], &[0.5, 1.].repeat(6))?;
+    add("norm.weight", &[2], &[1.; 2])?;
+    for key in ["A_log", "dt_bias"] {
+        add(key, &[1], &[0.])?;
+    }
+    let model = load_model(config, w, &device)?;
+    let slots = new_state(&model.config, 2, &device)?;
+    let mut prev = [0.; 2];
+    let mut state = [[0.; 2]; 2];
+    let silu = |v: f32| v / (1. + (-v).exp());
+    let rms = |v: [f32; 2]| v.map(|a| a / ((v[0] * v[0] + v[1] * v[1]) * 0.5 + 1e-5).sqrt());
+    for id in [0, 1] {
+        let x = rms(EMBEDDING[id]);
+        let v: [f32; 2] = std::array::from_fn(|i| silu(prev[i] * 0.5 + x[i]));
+        prev = x;
+        let k = v.map(|a| a / (v[0] * v[0] + v[1] * v[1] + 1e-6).sqrt());
+        let mut out = [0.; 2];
+        for j in 0..2 {
+            let delta = 0.5 * (v[j] - 0.5 * (k[0] * state[0][j] + k[1] * state[1][j]));
+            for i in 0..2 {
+                state[i][j] = 0.5 * state[i][j] + k[i] * delta;
+                out[j] += k[i] * state[i][j] / 2f32.sqrt();
+            }
+        }
+        let out = rms(out);
+        let hidden = rms(std::array::from_fn(|i| {
+            EMBEDDING[id][i] + out[i] * silu(x[i])
+        }));
+        let logits = model.logits(&index(id as i32)?, &slots);
+        block_on(device.eval(
+            &(&logits, &slots),
+            ExecOpts {
+                transfers: TransferPolicy::AllowCopy,
+            },
+        ))?;
+        let actual = device.readback(logits.data().unwrap())?;
+        for (bytes, e) in actual.bytes().chunks_exact(4).zip(EMBEDDING) {
+            let expected = e[0] * hidden[0] + e[1] * hidden[1];
+            assert!((f32::from_le_bytes(bytes.try_into()?) - expected).abs() < 2e-5);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "qwen-example")]
 #[test]
 fn xla_reply_loop() -> Result<()> {

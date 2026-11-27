@@ -53,6 +53,11 @@ impl Rotary {
     }
     /// Input `[batch,time,heads,rotary_dim]`; interleaved pairs for Kimi, split halves for Qwen.
     pub fn apply(&self, x: &Array, position: usize, interleaved: bool) -> Array {
+        self.apply_at(x, &lax::scalar(position, work(x.dtype())), interleaved)
+    }
+    /// Like `apply`, with a scalar start position supplied by the traced computation.
+    pub fn apply_at(&self, x: &Array, position: &Array, interleaved: bool) -> Array {
+        assert!(position.shape().dims().is_empty());
         let [b, t, h, d] = dims(x).try_into().expect("rotary expects rank four");
         assert!(d > 0 && d % 2 == 0 && self.theta > 1. && self.factor >= 1.);
         let half = d / 2;
@@ -74,7 +79,7 @@ impl Rotary {
             let ramp = &one - lax::max(&(&one - lax::max(&ramp, &zero)), &zero);
             freq * (1.0_f64 + ramp * (self.factor.recip() - 1.))
         };
-        let angle = (lax::iota([1, t, 1, 1], 1, f) + position as f64) * freq;
+        let angle = (lax::iota([1, t, 1, 1], 1, f) + position.astype(f)) * freq;
         let cos = (lax::cos(&angle) * self.magnitude).astype(x.dtype());
         let sin = (lax::sin(&angle) * self.magnitude).astype(x.dtype());
         let x = if interleaved {

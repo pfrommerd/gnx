@@ -8,7 +8,7 @@ use gnx_math::{
     ArrayInfo, DType, DataHandle, ExecOpts, HostBuffer, HostId, LocalAllocations, MemoryLocation,
     Shape, ShardStorage, TransferPolicy, ops::add_op,
 };
-use gnx_transforms::{cf::call_op, cond, scan, switch, while_loop};
+use gnx_transforms::{cf::call_op, cond, scan, switch, while_loop_captured};
 use gnx_xla::{LoweringContext, XlaDevice, XlaLowering, XlaOp, register_xla_lowering};
 
 const COPY: ExecOpts = ExecOpts {
@@ -233,7 +233,7 @@ fn runs_structured_regions() {
     let predicate = region(std::slice::from_ref(&f32_scalar), |a| {
         vec![invoke(Op::new(LessThan), &a[0], &scalar(5.), bool_scalar)]
     });
-    let carried = while_loop(&predicate, &double, &[scalar(1.)]).unwrap();
+    let carried = while_loop_captured(&predicate, &double, &[scalar(1.)]).unwrap();
     block_on(device.eval(&carried, COPY)).unwrap();
     assert_eq!(values(&carried[0]), [8.]);
     let step = region(&[f32_scalar.clone(), f32_scalar], |a| {

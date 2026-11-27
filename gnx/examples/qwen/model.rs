@@ -1,8 +1,10 @@
 use crate::tensor::*;
 use gnx::{
-    Array, Shape,
+    Array, Graph, Shape,
     array::{ArrayRef, DType},
-    lax, np,
+    lax, nn,
+    nn::activations::{sigmoid, silu},
+    np,
     ops::bounded::BoundedAxis,
 };
 use serde::Deserialize;
@@ -51,13 +53,65 @@ pub struct Rope {
 pub type Weights = HashMap<String, Array>;
 const ROOT: &str = "model.language_model";
 
-// Each JIT receives weights as explicit array arguments: equal-shaped layers share traces.
-#[gnx::jit]
-fn mlp(x: Array, gate: Array, up: Array, down: Array) -> Array {
-    linear(&(silu(&linear(&x, &gate)) * linear(&x, &up)), &down)
+#[derive(Clone, Graph)]
+pub struct Model {
+    pub config: Config,
+    embedding: nn::Embedding,
+    blocks: Vec<Block>,
+    norm: nn::RmsNorm,
+    head: nn::Linear,
 }
 
-#[gnx::jit]
+#[derive(Clone, Graph)]
+struct Block {
+    input_norm: nn::RmsNorm,
+    // Graph derives support structs; exactly one attention branch is populated.
+    attention: Option<FullAttention>,
+    recurrent: Option<DeltaAttention>,
+    post_norm: nn::RmsNorm,
+    mlp: nn::SwiGlu,
+}
+
+#[derive(Clone, Graph)]
+struct FullAttention {
+    q: nn::Linear,
+    k: nn::Linear,
+    v: nn::Linear,
+    out: nn::Linear,
+    q_norm: nn::RmsNorm,
+    k_norm: nn::RmsNorm,
+    rotary: nn::Rotary,
+    rotary_dim: usize,
+    heads: usize,
+    kv_heads: usize,
+    head_dim: usize,
+}
+
+#[derive(Clone, Graph)]
+struct DeltaAttention {
+    qkv: nn::Linear,
+    z: nn::Linear,
+    a: nn::Linear,
+    b: nn::Linear,
+    out: nn::Linear,
+    conv: nn::Conv,
+    norm: nn::RmsNorm,
+    a_log: nn::Param,
+    dt_bias: nn::Param,
+    key_heads: usize,
+    value_heads: usize,
+    key_dim: usize,
+    value_dim: usize,
+    kernel_size: usize,
+}
+
+// Project at checkpoint precision, then compute the gate and residual in F32.
+fn project(layer: &nn::Linear, x: &Array) -> Array {
+    layer
+        .forward(x.astype(layer.weight.value().dtype()))
+        .astype(DType::F32)
+}
+
 fn delta_rule(
     q: Array,
     k: Array,
@@ -151,50 +205,37 @@ impl Config {
         }
         Ok(())
     }
+}
+
+impl FullAttention {
     fn rope(&self, x: &Array, pos: &Array) -> Array {
         let d = self.head_dim;
-        let r = (d as f64 * self.rope_parameters.partial_rotary_factor) as usize;
-        let half = r / 2;
-        let freq = lax::iota(&[half], 0, DType::F32);
-        let log_scale = -self.rope_parameters.rope_theta.ln() / half as f64;
-        let angles = pos.astype(DType::F32) * np::exp(&(freq * log_scale));
-        let (cos, sin) = (np::cos(&angles), np::sin(&angles));
-        let a = x.at((.., ..half));
-        let b = x.at((.., half..r));
-        np::concatenate(
-            &[
-                &(&a * &cos - &b * &sin),
-                &(a * sin + b * cos),
-                &x.at((.., r..d)),
-            ],
-            1,
-        )
+        let r = self.rotary_dim;
+        let heads = dims(x)[0];
+        let prefix = x.at((.., ..r)).reshape([1, 1, heads, r]);
+        let rotated = self
+            .rotary
+            .apply_at(&prefix, pos, false)
+            .reshape([heads, r]);
+        if r == d {
+            rotated
+        } else {
+            np::concatenate(&[&rotated, &x.at((.., r..))], 1)
+        }
     }
-    fn attention(
+    fn forward(
         &self,
         x: &Array,
-        w: impl Fn(&str) -> Array,
         cache: &(ArrayRef, ArrayRef),
         pos: &Array,
         time: &BoundedAxis,
     ) -> Array {
-        let (h, k, d) = (
-            self.num_attention_heads,
-            self.num_key_value_heads,
-            self.head_dim,
-        );
-        let qg = linear(x, &w("q_proj.weight")).reshape([h, 2 * d]);
-        let gate = lax::logistic(&qg.at((.., d..)));
-        let q = self.rope(
-            &rms(&qg.at((.., ..d)), &w("q_norm.weight"), self.rms_norm_eps),
-            pos,
-        );
+        let (h, k, d) = (self.heads, self.kv_heads, self.head_dim);
+        let qg = project(&self.q, x).reshape([h, 2 * d]);
+        let gate = sigmoid(&qg.at((.., d..)));
+        let q = self.rope(&self.q_norm.forward(qg.at((.., ..d))), pos);
         let key = self.rope(
-            &rms(
-                &linear(x, &w("k_proj.weight")).reshape([k, d]),
-                &w("k_norm.weight"),
-                self.rms_norm_eps,
-            ),
+            &self.k_norm.forward(project(&self.k, x).reshape([k, d])),
             pos,
         );
         let append = |slot: &ArrayRef, v: Array| {
@@ -205,58 +246,64 @@ impl Config {
             updated
         };
         let key = append(&cache.0, key);
-        let value = append(&cache.1, linear(x, &w("v_proj.weight")));
+        let value = append(&cache.1, project(&self.v, x));
         let value = time.prefix(&value, 1).padded(0.);
-        let scores = dot(&q.reshape([k, h / k, d]), &key, 2, 2, 1) * (d as f64).sqrt().recip();
-        let scores = time.prefix(&scores, 2).padded(f64::NEG_INFINITY);
-        let probs = np::softmax(&scores);
-        let y = dot(&probs, &value, 2, 1, 1).reshape([h, d]) * gate;
-        linear(&y.reshape([h * d]), &w("o_proj.weight"))
+        let capacity = dims(&key)[1];
+        let kv = |a: &Array| lax::transpose(a, &[1, 0, 2]).reshape([1, capacity, k, d]);
+        let keep = lax::broadcast_in_dim(&Array::scalar(true), [1, capacity], &[]);
+        let mask = time.prefix(&keep, 1).padded(0.);
+        let attended = nn::scaled_dot_product_attention(
+            &q.reshape([1, 1, h, d]),
+            &kv(&key),
+            &kv(&value),
+            (d as f64).sqrt().recip(),
+            false,
+            Some(&mask),
+        );
+        let y = attended.reshape([h, d]) * gate;
+        project(&self.out, &y.reshape([h * d]))
     }
-    fn recurrent(
-        &self,
-        x: &Array,
-        w: impl Fn(&str) -> Array,
-        prev: &[Array],
-    ) -> (Array, [Array; 2]) {
+}
+
+impl DeltaAttention {
+    #[gnx::jit]
+    fn forward(&self, x: &Array, slots: &(ArrayRef, ArrayRef)) -> Array {
         let (kh, h, d, f, t) = (
-            self.linear_num_key_heads,
-            self.linear_num_value_heads,
-            self.linear_key_head_dim,
-            self.linear_value_head_dim,
-            self.linear_conv_kernel_dim,
+            self.key_heads,
+            self.value_heads,
+            self.key_dim,
+            self.value_dim,
+            self.kernel_size,
         );
         let kd = kh * d;
         let vd = h * f;
         let c = 2 * kd + vd;
-        let proj = |name: &str| linear(x, &w(&format!("in_proj_{name}.weight")));
-        let window = np::concatenate(&[&prev[0], &proj("qkv").reshape([c, 1])], 1);
-        let qkv = silu(&np::sum(
-            &(&window * w("conv1d.weight").astype(DType::F32).reshape([c, t])),
-            1,
-        ));
+        let window = np::concatenate(&[&slots.0.get(), &project(&self.qkv, x).reshape([c, 1])], 1);
+        let input = lax::transpose(&window, &[1, 0]).reshape([1, t, c]);
+        let qkv = silu(&self.conv.forward(input).reshape([c]));
         let heads = |start| {
-            let x = norm(&qkv.at(start..start + kd).reshape([kh, d]), 1., 1e-6);
+            let x = qkv.at(start..start + kd).reshape([kh, d]);
+            // Delta-rule keys and queries use L2 normalization, not RMSNorm.
+            let x = &x * lax::rsqrt(&(np::sum(&(&x * &x), -1).reshape([kh, 1]) + 1e-6));
             lax::broadcast_in_dim(&x, Shape::fixed([kh, h / kh, d]), &[0, 2]).reshape([h, d])
         };
         let q = heads(0) * (d as f64).sqrt().recip();
         let k = heads(kd);
         let v = qkv.at(2 * kd..c).reshape([h, f]);
-        let a = proj("a") + w("dt_bias").astype(DType::F32);
+        let a = project(&self.a, x) + self.dt_bias.value();
         let softplus = lax::max(&a, &np::zeros(dims(&a), a.dtype()))
             + np::log1p(&np::exp(&np::negative(&np::abs(&a))));
-        let rate = np::exp(&w("A_log").astype(DType::F32));
+        let rate = np::exp(&self.a_log.value());
         let decay = np::exp(&np::negative(&(rate * softplus)));
-        let state = prev[1].clone();
-        let (out, state) = delta_rule(q, k, v, lax::logistic(&proj("b")), decay, state);
-        let gated = norm(&out, f as f64, self.rms_norm_eps)
-            * w("norm.weight").astype(DType::F32)
-            * silu(&proj("z").reshape([h, f]));
-        (
-            linear(&gated.reshape([vd]), &w("out_proj.weight")),
-            [window.at((.., 1..t)), state],
-        )
+        let (out, state) = delta_rule(q, k, v, sigmoid(&project(&self.b, x)), decay, slots.1.get());
+        slots.0.set(window.at((.., 1..t)));
+        slots.1.set(state);
+        let gated = self.norm.forward(out) * silu(&project(&self.z, x).reshape([h, f]));
+        project(&self.out, &gated.reshape([vd]))
     }
+}
+
+impl Config {
     pub fn state_shapes(&self, capacity: usize) -> impl Iterator<Item = Vec<usize>> + '_ {
         self.layer_types.iter().flat_map(move |ty| {
             if ty == "full_attention" {
@@ -278,115 +325,169 @@ impl Config {
             }
         })
     }
-    fn logits(&self, w: &Weights, id: &Array, (cursor, capacity, layers): &DecodeState) -> Array {
+}
+
+impl Model {
+    pub fn from_weights(config: Config, weights: Weights) -> Result<Self, String> {
+        config.validate(&weights)?;
+        let embedding = nn::Embedding {
+            weight: nn::Param::new(weights[&format!("{ROOT}.embed_tokens.weight")].clone()),
+        };
+        let head = if config.tie_word_embeddings {
+            embedding.tied_head()
+        } else {
+            nn::Linear::new(weights["lm_head.weight"].clone(), None)
+        };
+        // The checkpoint stores ordinary RMSNorm scales as offsets from one.
+        let norm = |w: Array| nn::RmsNorm {
+            scale: nn::Param::new(w.astype(DType::F32) + 1.),
+            eps: config.rms_norm_eps,
+        };
+        let final_norm = norm(weights[&format!("{ROOT}.norm.weight")].clone());
+        let blocks = config
+            .layer_types
+            .iter()
+            .enumerate()
+            .map(|(i, kind)| {
+                let weight = |key: &str| weights[&format!("{ROOT}.layers.{i}.{key}")].clone();
+                let linear = |key: &str| nn::Linear::new(weight(&format!("{key}.weight")), None);
+                let (attention, recurrent) = if kind == "full_attention" {
+                    (
+                        Some(FullAttention {
+                            q: linear("self_attn.q_proj"),
+                            k: linear("self_attn.k_proj"),
+                            v: linear("self_attn.v_proj"),
+                            out: linear("self_attn.o_proj"),
+                            q_norm: norm(weight("self_attn.q_norm.weight")),
+                            k_norm: norm(weight("self_attn.k_norm.weight")),
+                            rotary: nn::Rotary::new(config.rope_parameters.rope_theta),
+                            rotary_dim: (config.head_dim as f64
+                                * config.rope_parameters.partial_rotary_factor)
+                                as usize,
+                            heads: config.num_attention_heads,
+                            kv_heads: config.num_key_value_heads,
+                            head_dim: config.head_dim,
+                        }),
+                        None,
+                    )
+                } else {
+                    let kernel = weight("linear_attn.conv1d.weight").astype(DType::F32);
+                    let channels = dims(&kernel)[0];
+                    (
+                        None,
+                        Some(DeltaAttention {
+                            qkv: linear("linear_attn.in_proj_qkv"),
+                            z: linear("linear_attn.in_proj_z"),
+                            a: linear("linear_attn.in_proj_a"),
+                            b: linear("linear_attn.in_proj_b"),
+                            out: linear("linear_attn.out_proj"),
+                            conv: nn::Conv::new(
+                                lax::transpose(&kernel, &[2, 1, 0]),
+                                None,
+                                channels,
+                            ),
+                            // The gated delta-rule norm stores its scale directly.
+                            norm: nn::RmsNorm {
+                                scale: nn::Param::new(
+                                    weight("linear_attn.norm.weight").astype(DType::F32),
+                                ),
+                                eps: config.rms_norm_eps,
+                            },
+                            a_log: nn::Param::new(weight("linear_attn.A_log").astype(DType::F32)),
+                            dt_bias: nn::Param::new(
+                                weight("linear_attn.dt_bias").astype(DType::F32),
+                            ),
+                            key_heads: config.linear_num_key_heads,
+                            value_heads: config.linear_num_value_heads,
+                            key_dim: config.linear_key_head_dim,
+                            value_dim: config.linear_value_head_dim,
+                            kernel_size: config.linear_conv_kernel_dim,
+                        }),
+                    )
+                };
+                Block {
+                    input_norm: norm(weight("input_layernorm.weight")),
+                    post_norm: norm(weight("post_attention_layernorm.weight")),
+                    attention,
+                    recurrent,
+                    mlp: nn::SwiGlu {
+                        gate: linear("mlp.gate_proj"),
+                        up: linear("mlp.up_proj"),
+                        down: linear("mlp.down_proj"),
+                    },
+                }
+            })
+            .collect();
+        Ok(Self {
+            config,
+            embedding,
+            blocks,
+            norm: final_norm,
+            head,
+        })
+    }
+    #[gnx::jit]
+    pub fn logits(&self, id: &Array, state: &DecodeState) -> Array {
+        let (cursor, capacity, layers) = state;
         let pos = cursor.get();
         let length = &pos + 1;
         let time = BoundedAxis::new(*capacity, &length);
-        let embed = &w[&format!("{ROOT}.embed_tokens.weight")];
-        let row = lax::dynamic_slice(embed, &[id, &Array::scalar(0_i32)], &[1, self.hidden_size]);
-        let mut x = row.astype(DType::F32).reshape([self.hidden_size]);
-        for (n, ty) in self.layer_types.iter().enumerate() {
-            let wt = |key: &str| w[&format!("{ROOT}.layers.{n}.{key}")].clone();
-            let y = rms(&x, &wt("input_layernorm.weight"), self.rms_norm_eps);
-            let slots = &layers[n];
-            let y = if ty == "full_attention" {
-                self.attention(
-                    &y,
-                    |key| wt(&format!("self_attn.{key}")),
-                    slots,
-                    &pos,
-                    &time,
-                )
-            } else {
-                let (y, [history, carry]) = self.recurrent(
-                    &y,
-                    |key| wt(&format!("linear_attn.{key}")),
-                    &[slots.0.get(), slots.1.get()],
-                );
-                slots.0.set(history);
-                slots.1.set(carry);
-                y
+        let mut x = self.embedding.forward(id).astype(DType::F32);
+        assert_eq!(self.blocks.len(), layers.len());
+        for (block, slots) in self.blocks.iter().zip(layers) {
+            let y = block.input_norm.forward(x.clone());
+            let y = match (&block.attention, &block.recurrent) {
+                (Some(a), None) => a.forward(&y, slots, &pos, &time),
+                (None, Some(a)) => a.forward(&y, slots),
+                _ => unreachable!("block has exactly one attention layer"),
             };
             x = x + y;
-            let y = rms(
-                &x,
-                &wt("post_attention_layernorm.weight"),
-                self.rms_norm_eps,
-            );
-            x = x + mlp(
-                y,
-                wt("mlp.gate_proj.weight"),
-                wt("mlp.up_proj.weight"),
-                wt("mlp.down_proj.weight"),
-            );
+            let y = block
+                .mlp
+                .forward_with(&block.post_norm.forward(x.clone()), project);
+            x = x + y;
         }
-        let logits = {
-            let y = rms(&x, &w[&format!("{ROOT}.norm.weight")], self.rms_norm_eps);
-            linear(
-                &y,
-                if self.tie_word_embeddings {
-                    embed
-                } else {
-                    &w["lm_head.weight"]
-                },
-            )
-        };
+        let logits = project(&self.head, &self.norm.forward(x));
         cursor.set(length);
         logits
+    }
+    /// One traced computation for prompt and decode tokens, including state writes.
+    #[gnx::jit]
+    pub fn step(&self, id: &Array, state: &DecodeState) -> Array {
+        lax::top_k(&self.logits(id, state), 1).1
+    }
+
+    /// Prefill supplies the first prediction. Feed each non-delimiter token back
+    /// through the same step and collect it in a capacity-sized device buffer.
+    #[gnx::jit]
+    pub fn decode(&self, first: &Array, state: &DecodeState, end: &Array) -> (Array, Array, Array) {
+        let (cursor, capacity, _) = state;
+        let capacity = *capacity;
+        let limit = lax::scalar(capacity, DType::I32);
+        let count = ArrayRef::new(Array::scalar(0_i32));
+        let tokens = ArrayRef::new(np::zeros([capacity], DType::I32));
+        let last = gnx::transforms::cf::while_loop(
+            &first.reshape([]),
+            |id| {
+                let pending = lax::ne(id, end);
+                let room = lax::lt(&cursor.get(), &limit);
+                lax::bitwise_and(&pending, &room)
+            },
+            |id| {
+                let n = count.get();
+                tokens.set(lax::dynamic_update_slice(
+                    &tokens.get(),
+                    &id.reshape([1]),
+                    &[&n],
+                ));
+                count.set(n + 1);
+                self.step(id, state).reshape([])
+            },
+        )
+        .expect("decoder while loop has a scalar token carry");
+        (tokens.get(), count.get(), last)
     }
 }
 
 /// Cursor, time bound, and two persistent slots per model layer.
 pub type DecodeState = (ArrayRef, usize, Vec<(ArrayRef, ArrayRef)>);
-pub type Model = (Config, Vec<(String, Array)>);
-
-/// One traced computation for prompt and decode tokens, including state writes.
-#[gnx::jit]
-pub fn step(model: &Model, id: &Array, state: &DecodeState) -> Array {
-    let (config, params) = model;
-    let weights = params.iter().cloned().collect();
-    lax::top_k(&config.logits(&weights, id, state), 1).1
-}
-
-#[cfg(test)]
-#[gnx::jit]
-pub fn step_logits(model: &Model, id: &Array, state: &DecodeState) -> Array {
-    model
-        .0
-        .logits(&model.1.iter().cloned().collect(), id, state)
-}
-/// Prefill supplies the first prediction. Feed each non-delimiter token back
-/// through the same step and collect it in a capacity-sized device buffer.
-#[gnx::jit]
-pub fn decode(
-    model: &Model,
-    first: &Array,
-    state: &DecodeState,
-    end: &Array,
-) -> (Array, Array, Array) {
-    let (cursor, capacity, _) = state;
-    let capacity = *capacity;
-    let limit = lax::scalar(capacity, DType::I32);
-    let count = ArrayRef::new(Array::scalar(0_i32));
-    let tokens = ArrayRef::new(np::zeros([capacity], DType::I32));
-    let last = gnx::transforms::cf::while_array(
-        &first.reshape([]),
-        |id| {
-            let pending = lax::ne(id, end);
-            let room = lax::lt(&cursor.get(), &limit);
-            lax::bitwise_and(&pending, &room)
-        },
-        |id| {
-            let n = count.get();
-            tokens.set(lax::dynamic_update_slice(
-                &tokens.get(),
-                &id.reshape([1]),
-                &[&n],
-            ));
-            count.set(n + 1);
-            step(model, id, state).reshape([])
-        },
-    )
-    .expect("decoder while loop has a scalar token carry");
-    (tokens.get(), count.get(), last)
-}

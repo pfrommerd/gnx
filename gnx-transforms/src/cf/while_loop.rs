@@ -30,41 +30,54 @@ pub fn while_op() -> Op {
     Op::new(While { state_len: 0 })
 }
 
-/// Trace a while loop with one array carry. The body can also update captured
-/// `ArrayRef`s; these become loop state just as in the capture-level API.
-pub fn while_array(
-    carry: &gnx_base::Array,
-    predicate: impl FnOnce(&gnx_base::Array) -> gnx_base::Array,
-    body: impl FnOnce(&gnx_base::Array) -> gnx_base::Array,
-) -> crate::TransformResult<gnx_base::Array> {
-    fn array(t: Trace) -> gnx_base::Array {
-        gnx_expr::Tracer::<gnx_expr::Generic>::from(t)
-            .try_cast::<gnx_base::Array>()
-            .expect("array carry")
-            .into()
-    }
-    fn region(
-        carry: &Trace,
-        f: impl FnOnce(&gnx_base::Array) -> gnx_base::Array,
-    ) -> crate::TransformResult<Capture> {
-        crate::traced::trace_region(std::slice::from_ref(carry.info()), |inputs| {
-            Ok(vec![
-                f(&array(inputs[0].clone())).into_tracer().into_trace_ref(),
-            ])
-        })
-    }
-    let carry = carry.tracer().trace_ref();
-    let pred = region(carry, predicate)?;
-    let body = region(carry, body)?;
-    Ok(array(
-        while_loop(&pred, &body, std::slice::from_ref(carry))?.remove(0),
-    ))
+/// Trace `carry = body(&carry)` while `predicate(&carry)` is true.
+/// Each closure is traced once; the predicate must return a scalar boolean array.
+/// The carry may be an array, tuple, or graph struct. Its structure, static fields,
+/// and array shapes and dtypes must stay fixed. Capture mutable cells in the
+/// closures instead of passing them in the carry; only the body may write them.
+pub fn while_loop<C>(
+    carry: &C,
+    predicate: impl FnOnce(&C) -> gnx_base::Array,
+    body: impl FnOnce(&C) -> C,
+) -> crate::TransformResult<C>
+where
+    C: gnx_graph::Graph<Owned = C> + gnx_graph::GraphEq,
+{
+    use crate::cache::{rebuild_graph, split_graph};
+    use crate::traced::{trace_region, value};
+
+    let (builder, leaves) = split_graph(carry);
+    let values = leaves
+        .iter()
+        .map(|v| value(v, "while carry"))
+        .collect::<crate::TransformResult<Vec<_>>>()?;
+    let infos: Vec<_> = values.iter().map(|v| v.info().clone()).collect();
+    let rebuild =
+        |args: &[Trace]| rebuild_graph(&builder, args.iter().cloned().map(ObjectTracer::from));
+    let predicate = trace_region(&infos, |args| {
+        Ok(vec![
+            predicate(&rebuild(args)).into_tracer().into_trace_ref(),
+        ])
+    })?;
+    let body = trace_region(&infos, |args| {
+        let (next, leaves) = split_graph(&body(&rebuild(args)));
+        if !C::builders_eq::<ObjectTracer>(&builder, &next, &mut Default::default()) {
+            return Err(crate::TransformError::invalid(
+                "while carry structure changed",
+            ));
+        }
+        leaves
+            .iter()
+            .map(|v| value(v, "while body result"))
+            .collect()
+    })?;
+    Ok(rebuild(&while_loop_captured(&predicate, &body, &values)?))
 }
 
 /// Loop over immutable carry values. `predicate` returns a single bool scalar;
 /// it may read captured cells but cannot write them. `body` returns the original
 /// carry signature and may read and write captured cells.
-pub fn while_loop(
+pub fn while_loop_captured(
     predicate: &Capture,
     body: &Capture,
     carry: &[Trace],

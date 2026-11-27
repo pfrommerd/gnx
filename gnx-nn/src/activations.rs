@@ -8,6 +8,10 @@ pub fn relu(x: &Array) -> Array {
 pub fn silu(x: &Array) -> Array {
     x * sigmoid(x)
 }
+/// Gate a value projection with the SiLU of its gate projection.
+pub fn swiglu(gate: &Array, value: &Array) -> Array {
+    silu(gate) * value
+}
 /// Tanh approximation to GELU.
 pub fn gelu(x: &Array) -> Array {
     x * 0.5

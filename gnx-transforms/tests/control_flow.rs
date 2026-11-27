@@ -3,7 +3,9 @@ use gnx_expr::{
     Capture, CellTrace, HExpr, HParam, InputSpec, Kind, LoweringError, ObjectTracer, Trace,
     TraceContext, VarInfo, hexpr,
 };
-use gnx_transforms::cf::{ScanParameters, cond, scan, scan_op, switch, while_loop};
+use gnx_transforms::cf::{
+    ScanParameters, cond, scan, scan_op, switch, while_loop, while_loop_captured,
+};
 use gnx_transforms::ops;
 
 fn info(shape: &[usize], dtype: DType) -> VarInfo {
@@ -223,6 +225,29 @@ fn scan_counts_use_usize_and_check_carry_overflow() {
 }
 
 #[test]
+fn while_loop_rebuilds_graph_carry_and_checks_its_signature() {
+    use gnx_base::Array;
+
+    let init = (7usize, vec![Array::scalar(true), Array::scalar(1i32)]);
+    let result = while_loop(
+        &init,
+        |c| c.1[0].clone(),
+        |(tag, values)| (*tag, vec![Array::scalar(false), values[1].clone()]),
+    )
+    .unwrap();
+    assert_eq!(result.0, 7);
+    assert_eq!(result.1.len(), 2);
+    assert_eq!(result.1[0].dtype(), DType::Bool);
+    assert_eq!(result.1[1].dtype(), DType::I32);
+
+    let pred = |c: &(usize, Vec<Array>)| c.1[0].clone();
+    assert!(while_loop(&init, pred, |c| (c.0, vec![c.1[0].clone()])).is_err());
+    assert!(while_loop(&init, pred, |c| (c.0 + 1, c.1.clone())).is_err());
+    assert!(while_loop(&init, pred, |c| (c.0, vec![c.1[0].clone(); 2])).is_err());
+    assert!(while_loop(&init, |c| c.1[1].clone(), Clone::clone).is_err());
+}
+
+#[test]
 fn control_flow_rejects_invalid_region_interfaces() {
     let guard = TraceContext::enter();
     let scalar = info(&[], DType::F32);
@@ -246,7 +271,7 @@ fn control_flow_rejects_invalid_region_interfaces() {
         vec![Trace::concrete(gnx_expr::Value::new(TestBool), info(&[], DType::Bool)).into()]
     });
     assert!(matches!(
-        while_loop(&predicate, &one, &[carry.clone()]),
+        while_loop_captured(&predicate, &one, &[carry.clone()]),
         Err(LoweringError::RegionSignature(
             "while predicate cannot write a captured cell"
         ))

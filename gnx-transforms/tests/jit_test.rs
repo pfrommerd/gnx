@@ -35,6 +35,32 @@ fn jit_attribute_reuses_its_static_wrapper() {
 }
 
 #[test]
+fn jit_methods_key_traces_on_the_receiver() {
+    #[derive(Clone, gnx_derive::Graph)]
+    struct Offset {
+        value: u32,
+    }
+    static TRACES: AtomicUsize = AtomicUsize::new(0);
+    impl Offset {
+        #[jit]
+        fn add(&self, x: &u32) -> u32 {
+            TRACES.fetch_add(1, Ordering::Relaxed);
+            self.value + *x
+        }
+        #[jit]
+        fn into_value(self) -> u32 {
+            self.value
+        }
+    }
+    for value in [2, 3, 2] {
+        let offset = Offset { value };
+        assert_eq!(offset.add(&5), value + 5);
+        assert_eq!(offset.into_value(), value);
+    }
+    assert_eq!(TRACES.load(Ordering::Relaxed), 2);
+}
+
+#[test]
 fn different_signatures_can_trace_concurrently() {
     let (started, ready) = (std::sync::Mutex::new(0), std::sync::Condvar::new());
     let function = jit_fn!(|x: u32| {

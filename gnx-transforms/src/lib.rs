@@ -16,7 +16,10 @@ pub mod util;
 
 pub use ad::{grad, hessian, jvp, value_and_grad, vjp};
 pub use callable::{Callable, Function, Jitable, TryCallable, TryJitable};
-pub use cf::{call, call_immutable, call_lowered, cond, scan, scan_graph, switch, while_loop};
+pub use cf::{
+    call, call_immutable, call_lowered, cond, scan, scan_graph, switch, while_loop,
+    while_loop_captured,
+};
 pub use error::{ApplyError, TransformError, TransformResult};
 pub use expand::{ExpandTransforms, Transform, expand_transforms};
 pub use filters::on_axis;

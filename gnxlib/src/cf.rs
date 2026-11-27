@@ -240,8 +240,9 @@ pub fn while_loop<'py>(
             "while_loop body_fun must return the structure of init_val",
         ));
     }
-    let traces = gnx::transforms::cf::while_loop(&predicate.capture, &body.capture, &carry)
-        .map_err(lowering_error)?;
+    let traces =
+        gnx::transforms::cf::while_loop_captured(&predicate.capture, &body.capture, &carry)
+            .map_err(lowering_error)?;
     results(py, &builder, traces)
 }
 

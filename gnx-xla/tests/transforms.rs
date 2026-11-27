@@ -23,7 +23,7 @@ fn map(
 ) -> Result<Vec<Trace>, gnx_expr::LoweringError> {
     gnx_transforms::map::region::map(body, inputs, in_axes, out_axes, None)
 }
-use gnx_transforms::{cond, scan, while_loop};
+use gnx_transforms::{cond, scan, while_loop_captured};
 use gnx_xla::{LoweringContext, XlaDevice, XlaLowering, XlaOp, register_xla_lowering};
 
 const COPY: ExecOpts = ExecOpts {
@@ -292,7 +292,7 @@ fn map_over_data_dependent_control_flow() {
     let predicate = region(&[scalar.clone()], |a| vec![less(&a[0], &limit)]);
     let double = region(&[scalar.clone()], |a| vec![add(&a[0], &a[0])]);
     let grow = region(&[scalar.clone()], |a| {
-        while_loop(&predicate, &double, &[a[0].clone()]).unwrap()
+        while_loop_captured(&predicate, &double, &[a[0].clone()]).unwrap()
     });
     let grown = map(&grow, &[floats(&[3], &[1., 3., 7.])], &[0], &[0]).unwrap();
 
@@ -323,7 +323,7 @@ fn jvp_through_while_and_nested_transformations() {
     let predicate = region(&[scalar.clone()], |a| vec![less(&a[0], &limit)]);
     let double = region(&[scalar.clone()], |a| vec![add(&a[0], &a[0])]);
     let grow = region(&[scalar.clone()], |a| {
-        while_loop(&predicate, &double, &[a[0].clone()]).unwrap()
+        while_loop_captured(&predicate, &double, &[a[0].clone()]).unwrap()
     });
     let (out, tangent) = jvp(
         &grow,

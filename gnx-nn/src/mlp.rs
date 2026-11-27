@@ -17,8 +17,12 @@ impl SwiGlu {
         }
     }
     pub fn forward(&self, x: Array) -> Array {
-        self.down
-            .forward(activations::silu(&self.gate.forward(x.clone())) * self.up.forward(x))
+        self.forward_with(&x, |layer, x| layer.forward(x.clone()))
+    }
+    /// Apply a projection policy (for example, checkpoint-precision matmuls with F32 gating).
+    pub fn forward_with(&self, x: &Array, project: impl Fn(&Linear, &Array) -> Array) -> Array {
+        let gated = activations::swiglu(&project(&self.gate, x), &project(&self.up, x));
+        project(&self.down, &gated)
     }
 }
 

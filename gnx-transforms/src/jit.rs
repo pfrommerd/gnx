@@ -39,6 +39,18 @@ pub use gnx_derive::{jit, jit_fn, jittable, try_jit_fn};
 /// let _ = gnx_transforms::jit_fn!(|x: u32| -> Result<u32, &'static str> { Ok(x) });
 /// ```
 ///
+/// On inherent methods, `self` and `&self` are graph inputs just like other
+/// arguments. Mutable receivers are rejected because a cached trace cannot
+/// replay mutations on the caller's object:
+/// ```compile_fail
+/// #[derive(Clone, gnx_derive::Graph)]
+/// struct Counter { value: u32 }
+/// impl Counter {
+///     #[gnx_transforms::jit]
+///     fn increment(&mut self) { self.value += 1; }
+/// }
+/// ```
+///
 /// The attribute currently accepts no options:
 /// ```compile_fail
 /// #[gnx_transforms::jit(unsupported)]
@@ -64,6 +76,27 @@ impl<I: Graph, F: Function<I>> Jit<I, F> {
     /// Wrap a function and label its traces for display.
     pub const fn new_with_hint(func: F, name_hint: Cow<'static, str>) -> Self {
         Self::new(func, Some(name_hint))
+    }
+
+    /// Used by `#[jit]` on inherent methods. The generated adapter wraps a
+    /// function item, so its type identifies the exact method instantiation.
+    #[doc(hidden)]
+    pub fn cached_method(func: F, name: &'static str) -> Arc<Self>
+    where
+        Self: Send + Sync + 'static,
+    {
+        use dashmap::DashMap;
+        use std::any::{Any, TypeId};
+        use std::sync::LazyLock;
+        static METHODS: LazyLock<DashMap<TypeId, Arc<dyn Any + Send + Sync>>> =
+            LazyLock::new(DashMap::new);
+        let wrapper = METHODS
+            .entry(TypeId::of::<Self>())
+            .or_insert_with(|| Arc::new(Self::new_with_hint(func, Cow::Borrowed(name))))
+            .clone();
+        wrapper
+            .downcast::<Self>()
+            .expect("method cache type mismatch")
     }
 
     pub(crate) fn set_name_hint(&mut self, name_hint: Cow<'static, str>) {

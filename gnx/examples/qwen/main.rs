@@ -167,7 +167,6 @@ fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()>
         .filter(|&id| (id as usize) < model.vocab_size)
         .ok_or("tokenizer must define a valid <|im_end|> token")?;
     let mut w = weights(&dir)?;
-    model.validate(&w)?;
     if import_weights {
         // Upload each weight once; subsequent token steps reuse its device buffer.
         for array in w.values_mut() {
@@ -177,7 +176,7 @@ fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()>
     let session = Decoder {
         capacity,
         timings: args.timings,
-        model: pack_model(model, w),
+        model: load_model(model, w, &device)?,
         device,
         tokenizer,
         end,
@@ -191,11 +190,18 @@ fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()>
     Ok(())
 }
 
-fn pack_model(config: Config, w: Weights) -> Model {
-    let mut weights: Vec<_> = w.into_iter().collect();
-    weights.sort_by(|a, b| a.0.cmp(&b.0));
-    (config, weights)
+fn load_model(config: Config, weights: Weights, device: &impl QwenDevice) -> Result<Model> {
+    let model = Model::from_weights(config, weights)?;
+    // Materialize checkpoint layout and scale conversions before tracing the first token.
+    block_on(device.eval(
+        &model,
+        ExecOpts {
+            transfers: TransferPolicy::AllowCopy,
+        },
+    ))?;
+    Ok(model)
 }
+
 fn index(i: i32) -> io::Result<Array> {
     Ok(Array::from_data(DataHandle::new(
         HostBuffer::copy_from_slice(
@@ -289,7 +295,7 @@ impl<D: QwenDevice> Decoder<D> {
         let Self {
             model, device, end, ..
         } = self;
-        if ids.is_empty() || ids.iter().any(|&id| id as usize >= model.0.vocab_size) {
+        if ids.is_empty() || ids.iter().any(|&id| id as usize >= model.config.vocab_size) {
             return Err("expected a nonempty text prompt with valid token IDs".into());
         }
         if ids.len() > self.capacity {
@@ -303,10 +309,10 @@ impl<D: QwenDevice> Decoder<D> {
             transfers: TransferPolicy::AllowCopy,
         };
         let started = std::time::Instant::now();
-        let state = new_state(&model.0, self.capacity, device)?;
+        let state = new_state(&model.config, self.capacity, device)?;
         let mut first = None;
         for &id in ids {
-            let prediction = model::step(model, &index(id as i32)?, &state);
+            let prediction = model.step(&index(id as i32)?, &state);
             block_on(device.eval(&(&prediction, &state), opts))?;
             first = Some(prediction);
         }
@@ -316,7 +322,7 @@ impl<D: QwenDevice> Decoder<D> {
             eprintln!("First token: {:.3} s", started.elapsed().as_secs_f64());
         }
         let decode_started = std::time::Instant::now();
-        let result = model::decode(model, &first, &state, &index(*end as i32)?);
+        let result = model.decode(&first, &state, &index(*end as i32)?);
         drop(state);
         block_on(device.eval(&result, opts))?;
         let read = |x: &Array| device.readback(x.data().expect("decode evaluated"));

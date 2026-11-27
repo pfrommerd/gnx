@@ -141,6 +141,71 @@ pub fn jit(attr: ProcTokenStream, input: ProcTokenStream) -> ProcTokenStream {
         ReturnType::Default => parse_quote! { () },
         ReturnType::Type(_, ty) => ty.as_ref().clone(),
     };
+    if let Some(receiver) = sig.receiver() {
+        if receiver.colon_token.is_some() {
+            return syn::Error::new_spanned(receiver, "#[jit] expects self, &self, or &mut self")
+                .to_compile_error()
+                .into();
+        }
+        // A trace cannot replay arbitrary mutations to the caller's receiver.
+        if receiver.reference.is_some() && receiver.mutability.is_some() {
+            return syn::Error::new_spanned(
+                receiver,
+                "#[jit] does not support &mut self; use self or &self",
+            )
+            .to_compile_error()
+            .into();
+        }
+        // Keep the original body in method scope, including `self` inside macros.
+        let mut body_sig = sig.clone();
+        let helper = quote::format_ident!("__gnx_jit_body_{}", name);
+        body_sig.ident = helper.clone();
+        let params = sig.generics.params.iter().filter_map(|param| match param {
+            syn::GenericParam::Type(p) => Some(&p.ident),
+            syn::GenericParam::Const(p) => Some(&p.ident),
+            syn::GenericParam::Lifetime(_) => None,
+        });
+        let mut args = args_gathered
+            .iter()
+            .map(|arg| quote!(#arg))
+            .collect::<Vec<_>>();
+        args[0] = quote!(self);
+        // Local impls can't refer to the outer Self. Infer their types from
+        // the helper function item, retaining the distinction between &T and T.
+        let mut cache_inputs = inputs_ty.clone();
+        let body_fn = quote!(Self::#helper::<#(#params),*>);
+        let callable = parse_quote!(#body_fn);
+        let adapter_inputs = cache_inputs
+            .iter_mut()
+            .map(|ty| {
+                if let Type::Reference(reference) = ty {
+                    reference.lifetime = Some(parse_quote!('static));
+                    parse_quote!(&_)
+                } else {
+                    parse_quote!(_)
+                }
+            })
+            .collect();
+        let adapter = expand_jittable(
+            Some(JittableSignature {
+                inputs: adapter_inputs,
+                output: Some(parse_quote!(_)),
+            }),
+            callable,
+        );
+        let invoke = quote!(wrapper.try_invoke_compatible((#(#args,)*)));
+        let attrs = &input.attrs;
+        return quote! {
+            #[doc(hidden)]
+            #body_sig #block
+            #(#attrs)* #vis #mod_sig {
+                #err
+                let wrapper = #jit_type::<(#(#cache_inputs,)*), _>::cached_method(#adapter, #name);
+                #graph::util::GraphResult::from_result(#invoke)
+            }
+        }
+        .into();
+    }
     let f = quote! {
         |#inputs| -> #output_ty #block
     };
