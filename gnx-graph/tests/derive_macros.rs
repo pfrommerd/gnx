@@ -1,5 +1,5 @@
-use gnx_graph::Leaf;
-use gnx_graph::util::{LifetimeFree, cast, impl_lifetime_free};
+use gnx_graph::util::{GraphExt, LifetimeFree, cast, impl_lifetime_free};
+use gnx_graph::{Graph, Leaf, MaybeLeaf, Of};
 
 #[derive(LifetimeFree)]
 #[allow(dead_code)]
@@ -16,6 +16,19 @@ struct GenericPair<A, B>(A, B);
 #[derive(Clone, Leaf)]
 #[allow(dead_code)]
 struct LeafNewtype(u32);
+
+#[derive(Clone, Graph, LifetimeFree, MaybeLeaf)]
+struct Wrapper {
+    value: u32,
+}
+
+#[test]
+fn maybe_leaf_can_select_wrapper_or_child() {
+    let wrapper = Wrapper { value: 42 };
+    let selected = wrapper.collect_leaves(Of::<Wrapper>::filter());
+    assert!(matches!(selected.as_slice(), [Wrapper { value: 42 }]));
+    assert_eq!(wrapper.collect_leaves(Of::<u32>::filter()), [42]);
+}
 
 struct ContainerA<T>(T);
 struct ContainerB<T>(T);

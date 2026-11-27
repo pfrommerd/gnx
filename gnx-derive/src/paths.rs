@@ -5,8 +5,8 @@ use syn::Path;
 
 pub fn graph_crate() -> Path {
     match crate_name("gnx-graph") {
-        Ok(FoundCrate::Itself) => syn::parse_quote!(crate),
-        Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx_graph),
+        // `crate` can be an integration test. The library aliases itself as `gnx_graph`.
+        Ok(_) => syn::parse_quote!(::gnx_graph),
         Err(_) => match crate_name("gnx") {
             Ok(FoundCrate::Itself) | Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx::graph),
             Err(_) => syn::parse_quote!(::gnx_graph),
@@ -16,8 +16,7 @@ pub fn graph_crate() -> Path {
 
 pub fn graph_util_mod() -> Path {
     match crate_name("gnx-graph") {
-        Ok(FoundCrate::Itself) => syn::parse_quote!(crate::util),
-        Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx_graph::util),
+        Ok(_) => syn::parse_quote!(::gnx_graph::util),
         Err(_) => match crate_name("gnx") {
             Ok(FoundCrate::Itself) | Ok(FoundCrate::Name(_)) => syn::parse_quote!(::gnx::util),
             Err(_) => syn::parse_quote!(::gnx_graph::util),
@@ -27,8 +26,7 @@ pub fn graph_util_mod() -> Path {
 
 pub fn cast() -> TokenStream2 {
     match crate_name("gnx-graph") {
-        Ok(FoundCrate::Itself) => quote!(crate::cast),
-        Ok(FoundCrate::Name(_)) => quote!(::gnx_graph::cast),
+        Ok(_) => quote!(::gnx_graph::cast),
         Err(_) => match crate_name("gnx") {
             Ok(FoundCrate::Itself) | Ok(FoundCrate::Name(_)) => quote!(::gnx::util::cast),
             Err(_) => quote!(::gnx_graph::cast),

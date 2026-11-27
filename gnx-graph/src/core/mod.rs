@@ -5,7 +5,7 @@ mod path;
 pub use context::GraphContext;
 pub use error::Error;
 pub use path::{GraphId, Key, KeyRef, Path};
-pub use gnx_derive::{Graph, Leaf, impl_leaf};
+pub use gnx_derive::{Graph, Leaf, MaybeLeaf, impl_leaf};
 
 mod filters;
 mod source;

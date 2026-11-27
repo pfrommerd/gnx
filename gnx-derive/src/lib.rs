@@ -53,6 +53,13 @@ pub fn derive_leaf(input: ProcTokenStream) -> ProcTokenStream {
     leaf::derive_leaf(input)
 }
 
+/// Implement only `Leaf` for a type that separately implements `Graph` and
+/// `LifetimeFree`. The existing `Graph` implementation controls traversal.
+#[proc_macro_derive(MaybeLeaf)]
+pub fn derive_maybe_leaf(input: ProcTokenStream) -> ProcTokenStream {
+    leaf::derive_maybe_leaf(input)
+}
+
 #[proc_macro_derive(LifetimeFree)]
 pub fn derive_lifetime_free(input: ProcTokenStream) -> ProcTokenStream {
     lifetime_free::derive_lifetime_free(input)
