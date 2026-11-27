@@ -1,4 +1,4 @@
-use gnx_base::Deserialize;
+use gnx_io::Deserialize;
 use gnx_io::toml::TomlError;
 use gnx_io::toml::{Map, TomlParser, Value, to_string, value_to_string};
 use gnx_io::util::StrSource;

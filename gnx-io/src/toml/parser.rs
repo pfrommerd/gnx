@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use gnx_base::{
+use crate::{
     DataVisitor, DeserializeSeed, Deserializer, EnumAccess, MapAccess, SeqAccess, VariantAccess,
 };
 

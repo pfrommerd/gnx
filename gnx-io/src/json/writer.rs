@@ -1,12 +1,13 @@
 use std::fmt::Display;
 use std::io::Write;
 
+use crate::{
+    Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
+    SerializeTupleStruct, SerializeTupleVariant, Serializer,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gnx_base::Array;
-use gnx_base::{
-    GraphId, Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
-    SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
-};
+use gnx_graph::GraphId;
 
 use super::{JsonError, Result};
 

@@ -47,7 +47,7 @@ impl std::fmt::Display for TomlError {
 
 impl std::error::Error for TomlError {}
 
-impl gnx_base::Error for TomlError {
+impl gnx_graph::Error for TomlError {
     fn custom<T: std::fmt::Display>(msg: T) -> Self {
         Self::Other(msg.to_string())
     }

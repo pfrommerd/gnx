@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use gnx_base::{
-    DataVisitor, Deserialize, Deserializer, Error, Expecting, MapAccess, SeqAccess, Serialize,
-    Serializer,
+use crate::{
+    DataVisitor, Deserialize, Deserializer, Expecting, MapAccess, SeqAccess, Serialize, Serializer,
 };
+use gnx_graph::Error;
 use ordered_float::OrderedFloat;
 
 pub type Map<K, V> = BTreeMap<K, V>;

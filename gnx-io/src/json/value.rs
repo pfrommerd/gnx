@@ -1,7 +1,7 @@
-use gnx_base::{
-    DataVisitor, Deserialize, Deserializer, Error, Expecting, MapAccess, SeqAccess, Serialize,
-    Serializer,
+use crate::{
+    DataVisitor, Deserialize, Deserializer, Expecting, MapAccess, SeqAccess, Serialize, Serializer,
 };
+use gnx_graph::Error;
 
 use super::JsonError;
 use ordered_float::NotNan;

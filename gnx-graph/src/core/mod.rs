@@ -1,4 +1,10 @@
-pub use gnx_base::{Error, GraphContext, GraphId, Key, KeyRef, Path};
+mod context;
+mod error;
+mod path;
+
+pub use context::GraphContext;
+pub use error::Error;
+pub use path::{GraphId, Key, KeyRef, Path};
 pub use gnx_derive::{Graph, Leaf, impl_leaf};
 
 mod filters;

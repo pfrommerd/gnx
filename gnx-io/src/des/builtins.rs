@@ -1,6 +1,6 @@
 use super::{DataVisitor, Deserialize, Deserializer, Expecting, MapAccess, SeqAccess};
 
-use crate::Error;
+use gnx_graph::Error;
 
 use std::collections::HashMap;
 use std::hash::Hash;

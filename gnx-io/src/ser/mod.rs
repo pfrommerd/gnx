@@ -1,4 +1,5 @@
-use crate::{Array, Error, GraphId};
+use gnx_base::Array;
+use gnx_graph::{Error, GraphId};
 
 use std::fmt::Display;
 

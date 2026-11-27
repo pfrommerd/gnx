@@ -1,7 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-use gnx_base::{DataVisitor, Deserializer};
-use gnx_base::{DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess};
+use crate::{
+    DataVisitor, DeserializeSeed, Deserializer, EnumAccess, MapAccess, SeqAccess, VariantAccess,
+};
 
 use super::*;
 use crate::util::{ScratchBuffer, TextSource};

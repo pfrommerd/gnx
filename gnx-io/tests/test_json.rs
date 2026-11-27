@@ -1,6 +1,6 @@
-use gnx_base::{Deserialize, Serialize};
 use gnx_io::json::{JsonError, JsonParser, Map, Number, Value, to_string};
 use gnx_io::util::StrSource;
+use gnx_io::{Deserialize, Serialize};
 
 fn parse_json(json: &str) -> Result<Value, JsonError> {
     let mut parser = JsonParser::new(StrSource::from(json));
@@ -202,7 +202,7 @@ fn test_json_writer_escapes_strings_and_rejects_nonfinite_numbers() {
     struct Infinite;
 
     impl Serialize for Infinite {
-        fn serialize<S: gnx_base::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        fn serialize<S: gnx_io::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
             serializer.serialize_f64(f64::INFINITY)
         }
     }
