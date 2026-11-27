@@ -5,12 +5,13 @@ A JAX- and PyTorch-compatible library for generative modeling.
 ## Random arrays and layer initialization
 
 ```rust
-use gnx::{array::DType, nn::{Linear, Rngs}, random::{self, Algorithm}};
+use gnx::{array::DType, nn::{InitializeWith, Linear, LinearConfig, Model, Rngs}, random::{self, Algorithm}};
 
 let root = random::key(42, Algorithm::ThreeFry2x32); // or Algorithm::Philox4x32
 let (model_key, noise_key) = random::split2(&root);
 let streams = Rngs::new(model_key);
-let layer = Linear::init(128, 256, DType::BF16, &streams);
+let config = LinearConfig { in_features: 128, out_features: 256, bias: true, dtype: DType::BF16 };
+let layer = Linear::init(config, <Linear as Model>::DefaultInit::default(), &streams);
 let noise = random::normal(&noise_key, (32, 256), DType::F64);
 let mask_draw = random::uniform(&streams.next("dropout"), (32, 256), DType::F32);
 ```
@@ -28,8 +29,21 @@ Floating samples do not promise bitwise JAX or cross-backend identity.
 `uniform` and `normal` support `BF16`, `F16`, `F32`, and `F64`. `Rngs` draws
 from independently named streams using traced counters. `Linear::init` uses two
 keys from `"params"` to initialize weight and bias uniformly with PyTorch's
-`1 / sqrt(in_features)` bound. Use `Linear::init_with(in_features, out_features,
-false, dtype, &streams)` for a weight-only layer; it consumes just one key.
+`1 / sqrt(in_features)` bound. Set `bias: false` in `LinearConfig` for a weight-only layer; it consumes just one key.
+`Linear::empty(config)` constructs the same layout with placeholders for checkpoint loading.
+To override one field, pass a typed initializer bundle. For example, this uses a custom
+weight initializer and retains the usual bias distribution:
+
+```rust
+use gnx::{Array, array::{DType, Shape}, nn::{FanInUniform, LinearInit}, random};
+
+let init = LinearInit {
+    weight: |key: &Array, shape: Shape, dtype: DType| random::normal(key, shape, dtype) * 0.02,
+    bias: FanInUniform,
+};
+// Linear::init(config, init, &streams)
+```
+
 `layer.bias()` returns `Option<&Param>`. Shape arguments accept tuples through rank eight,
 arrays of any rank, slices, vectors, and `Shape`; `()` denotes a scalar.
 

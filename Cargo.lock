@@ -927,6 +927,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "gnx-base",
+ "gnx-derive",
  "gnx-graph",
  "ordered-float",
  "paste",
@@ -951,6 +952,7 @@ name = "gnx-nn"
 version = "0.1.0"
 dependencies = [
  "gnx-graph",
+ "gnx-io",
  "gnx-math",
 ]
 

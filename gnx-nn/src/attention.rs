@@ -1,6 +1,11 @@
 //! Channels-last decoder attention. Positions count tokens, not cache entries.
-use crate::{CacheKey, KVCache, KvPrefix, Linear, RmsNorm, Rngs, activations, tensor::*};
+use crate::{
+    CacheKey, KVCache, KvPrefix, Linear, LinearConfig, RmsNorm, RmsNormConfig, activations,
+    tensor::*,
+};
+use crate::{InitializeWith, LinearInit, Model, ModelConfig, RmsNormInit, Rngs};
 use gnx_graph::Graph;
+use gnx_io::{Deserialize, Serialize};
 use gnx_math::{
     Array, DType, Dim, lax,
     ops::bounded::{axis_length, pad_to_bound},
@@ -37,7 +42,7 @@ impl KvPrefix {
 }
 
 /// Rotary frequencies, optionally interpolated (linear scaling or YaRN).
-#[derive(Clone, Graph)]
+#[derive(Clone, Graph, Serialize, Deserialize)]
 pub struct Rotary {
     pub theta: f64,
     pub factor: f64,
@@ -249,6 +254,122 @@ pub struct GroupedQueryAttention {
     pub head_dim: usize,
     pub rotary: Rotary,
 }
+#[derive(Clone, Graph, Serialize, Deserialize)]
+pub struct GroupedQueryAttentionConfig {
+    pub hidden: usize,
+    pub heads: usize,
+    pub kv_heads: usize,
+    pub head_dim: usize,
+    pub norm_eps: Option<f64>,
+    pub rotary: Rotary,
+    pub dtype: DType,
+    pub cache_key: CacheKey,
+}
+impl ModelConfig for GroupedQueryAttentionConfig {
+    type Model = GroupedQueryAttention;
+}
+
+/// Initializers for the fields of [`GroupedQueryAttention`].
+#[derive(Default)]
+pub struct GroupedQueryAttentionInit<
+    Query = LinearInit,
+    Key = LinearInit,
+    Value = LinearInit,
+    Output = LinearInit,
+    QueryNorm = RmsNormInit,
+    KeyNorm = RmsNormInit,
+> {
+    pub query: Query,
+    pub key: Key,
+    pub value: Value,
+    pub output: Output,
+    pub query_norm: QueryNorm,
+    pub key_norm: KeyNorm,
+}
+impl Model for GroupedQueryAttention {
+    type Config = GroupedQueryAttentionConfig;
+    type DefaultInit = GroupedQueryAttentionInit;
+
+    fn empty(config: Self::Config) -> Self {
+        Self::init(
+            config,
+            GroupedQueryAttentionInit {
+                query: Linear::empty_bundle(),
+                key: Linear::empty_bundle(),
+                value: Linear::empty_bundle(),
+                output: Linear::empty_bundle(),
+                query_norm: RmsNorm::empty_bundle(),
+                key_norm: RmsNorm::empty_bundle(),
+            },
+            &Rngs::default(),
+        )
+    }
+}
+impl<Query, Key, Value, Output, QueryNorm, KeyNorm>
+    InitializeWith<GroupedQueryAttentionInit<Query, Key, Value, Output, QueryNorm, KeyNorm>>
+    for GroupedQueryAttention
+where
+    Linear: InitializeWith<Query>,
+    Linear: InitializeWith<Key>,
+    Linear: InitializeWith<Value>,
+    Linear: InitializeWith<Output>,
+    RmsNorm: InitializeWith<QueryNorm>,
+    RmsNorm: InitializeWith<KeyNorm>,
+{
+    fn init(
+        config: GroupedQueryAttentionConfig,
+        init: GroupedQueryAttentionInit<Query, Key, Value, Output, QueryNorm, KeyNorm>,
+        rngs: &Rngs,
+    ) -> Self {
+        let GroupedQueryAttentionConfig {
+            hidden,
+            heads,
+            kv_heads: kv,
+            head_dim: d,
+            norm_eps,
+            rotary,
+            dtype: t,
+            cache_key: key,
+        } = config;
+        assert!(heads > 0 && kv > 0 && heads % kv == 0 && d > 0 && d % 2 == 0);
+        let norm_config = |eps| RmsNormConfig {
+            features: d,
+            eps,
+            dtype: t,
+        };
+        GroupedQueryAttention {
+            query: Linear::init(
+                LinearConfig::projection(hidden, heads * d, t),
+                init.query,
+                rngs,
+            ),
+            cache_keys: key.split(),
+            key: Linear::init(LinearConfig::projection(hidden, kv * d, t), init.key, rngs),
+            value: Linear::init(
+                LinearConfig::projection(hidden, kv * d, t),
+                init.value,
+                rngs,
+            ),
+            output: Linear::init(
+                LinearConfig::projection(heads * d, hidden, t),
+                init.output,
+                rngs,
+            ),
+            query_norm: norm_eps
+                .map(|eps| RmsNorm::init(norm_config(eps), init.query_norm, rngs))
+                .into_iter()
+                .collect(),
+            key_norm: norm_eps
+                .map(|eps| RmsNorm::init(norm_config(eps), init.key_norm, rngs))
+                .into_iter()
+                .collect(),
+            heads,
+            kv_heads: kv,
+            head_dim: d,
+            rotary,
+        }
+    }
+}
 impl GroupedQueryAttention {
     pub fn init_cache(&self, cache: &mut KVCache) {
         for key in [&self.cache_keys.0, &self.cache_keys.1] {
@@ -259,39 +380,7 @@ impl GroupedQueryAttention {
             );
         }
     }
-    pub fn init(
-        hidden: usize,
-        heads: usize,
-        kv: usize,
-        d: usize,
-        norm_eps: Option<f64>,
-        rotary: Rotary,
-        t: DType,
-        r: &Rngs,
-        key: CacheKey,
-    ) -> Self {
-        assert!(heads > 0 && kv > 0 && heads % kv == 0 && d > 0 && d % 2 == 0);
-        let p = |o| Linear::init_with(hidden, o, false, t, r);
-        let norm = || {
-            norm_eps
-                .map(|e| RmsNorm::init(d, e, t))
-                .into_iter()
-                .collect()
-        };
-        Self {
-            query: p(heads * d),
-            cache_keys: key.split(),
-            key: p(kv * d),
-            value: p(kv * d),
-            output: Linear::init_with(heads * d, hidden, false, t, r),
-            query_norm: norm(),
-            key_norm: norm(),
-            heads,
-            kv_heads: kv,
-            head_dim: d,
-            rotary,
-        }
-    }
+
     pub fn forward(
         &self,
         x: &Array,
@@ -346,37 +435,139 @@ pub struct LatentAttention {
     pub rotary: Rotary,
     pub score_scale: f64,
 }
-impl LatentAttention {
-    pub fn init_cache(&self, cache: &mut KVCache) {
-        let dtype = self.kv_down.weight.value().dtype();
-        cache.init_time(self.cache_keys.0.clone(), &[self.rank], dtype);
-        cache.init_time(self.cache_keys.1.clone(), &[1, self.rope], dtype);
+#[derive(Clone, Graph, Serialize, Deserialize)]
+pub struct LatentAttentionConfig {
+    pub hidden: usize,
+    pub heads: usize,
+    pub query_rank: usize,
+    pub rank: usize,
+    pub nope: usize,
+    pub rope: usize,
+    pub value_dim: usize,
+    pub eps: f64,
+    pub rotary: Rotary,
+    pub dtype: DType,
+    pub cache_key: CacheKey,
+}
+impl ModelConfig for LatentAttentionConfig {
+    type Model = LatentAttention;
+}
+
+/// Initializers for the fields of [`LatentAttention`].
+#[derive(Default)]
+pub struct LatentAttentionInit<
+    QueryDown = LinearInit,
+    QueryNorm = RmsNormInit,
+    Query = LinearInit,
+    KvDown = LinearInit,
+    KvNorm = RmsNormInit,
+    KvUp = LinearInit,
+    Output = LinearInit,
+> {
+    pub query_down: QueryDown,
+    pub query_norm: QueryNorm,
+    pub query: Query,
+    pub kv_down: KvDown,
+    pub kv_norm: KvNorm,
+    pub kv_up: KvUp,
+    pub output: Output,
+}
+impl Model for LatentAttention {
+    type Config = LatentAttentionConfig;
+    type DefaultInit = LatentAttentionInit;
+
+    fn empty(config: Self::Config) -> Self {
+        Self::init(
+            config,
+            LatentAttentionInit {
+                query_down: Linear::empty_bundle(),
+                query_norm: RmsNorm::empty_bundle(),
+                query: Linear::empty_bundle(),
+                kv_down: Linear::empty_bundle(),
+                kv_norm: RmsNorm::empty_bundle(),
+                kv_up: Linear::empty_bundle(),
+                output: Linear::empty_bundle(),
+            },
+            &Rngs::default(),
+        )
     }
-    pub fn init(
-        hidden: usize,
-        heads: usize,
-        query_rank: usize,
-        rank: usize,
-        nope: usize,
-        rope: usize,
-        value_dim: usize,
-        eps: f64,
-        rotary: Rotary,
-        t: DType,
-        r: &Rngs,
-        key: CacheKey,
+}
+impl<QueryDown, QueryNorm, Query, KvDown, KvNorm, KvUp, Output>
+    InitializeWith<LatentAttentionInit<QueryDown, QueryNorm, Query, KvDown, KvNorm, KvUp, Output>>
+    for LatentAttention
+where
+    Linear: InitializeWith<QueryDown>,
+    RmsNorm: InitializeWith<QueryNorm>,
+    Linear: InitializeWith<Query>,
+    Linear: InitializeWith<KvDown>,
+    RmsNorm: InitializeWith<KvNorm>,
+    Linear: InitializeWith<KvUp>,
+    Linear: InitializeWith<Output>,
+{
+    fn init(
+        config: LatentAttentionConfig,
+        init: LatentAttentionInit<QueryDown, QueryNorm, Query, KvDown, KvNorm, KvUp, Output>,
+        rngs: &Rngs,
     ) -> Self {
+        let LatentAttentionConfig {
+            hidden,
+            heads,
+            query_rank,
+            rank,
+            nope,
+            rope,
+            value_dim,
+            eps,
+            rotary,
+            dtype: t,
+            cache_key: key,
+        } = config;
         assert!(rope > 0 && rope % 2 == 0 && nope > 0 && rank > 0);
-        let p = |i, o| Linear::init_with(i, o, false, t, r);
-        Self {
-            query_down: p(hidden, query_rank),
+        LatentAttention {
+            query_down: Linear::init(
+                LinearConfig::projection(hidden, query_rank, t),
+                init.query_down,
+                rngs,
+            ),
             cache_keys: key.split(),
-            query_norm: RmsNorm::init(query_rank, eps, t),
-            query: p(query_rank, heads * (nope + rope)),
-            kv_down: p(hidden, rank + rope),
-            kv_norm: RmsNorm::init(rank, eps, t),
-            kv_up: p(rank, heads * (nope + value_dim)),
-            output: p(heads * value_dim, hidden),
+            query_norm: RmsNorm::init(
+                RmsNormConfig {
+                    features: query_rank,
+                    eps,
+                    dtype: t,
+                },
+                init.query_norm,
+                rngs,
+            ),
+            query: Linear::init(
+                LinearConfig::projection(query_rank, heads * (nope + rope), t),
+                init.query,
+                rngs,
+            ),
+            kv_down: Linear::init(
+                LinearConfig::projection(hidden, rank + rope, t),
+                init.kv_down,
+                rngs,
+            ),
+            kv_norm: RmsNorm::init(
+                RmsNormConfig {
+                    features: rank,
+                    eps,
+                    dtype: t,
+                },
+                init.kv_norm,
+                rngs,
+            ),
+            kv_up: Linear::init(
+                LinearConfig::projection(rank, heads * (nope + value_dim), t),
+                init.kv_up,
+                rngs,
+            ),
+            output: Linear::init(
+                LinearConfig::projection(heads * value_dim, hidden, t),
+                init.output,
+                rngs,
+            ),
             heads,
             rank,
             nope,
@@ -386,6 +577,14 @@ impl LatentAttention {
             score_scale: ((nope + rope) as f64).sqrt().recip(),
         }
     }
+}
+impl LatentAttention {
+    pub fn init_cache(&self, cache: &mut KVCache) {
+        let dtype = self.kv_down.weight.value().dtype();
+        cache.init_time(self.cache_keys.0.clone(), &[self.rank], dtype);
+        cache.init_time(self.cache_keys.1.clone(), &[1, self.rope], dtype);
+    }
+
     pub fn forward(
         &self,
         x: &Array,

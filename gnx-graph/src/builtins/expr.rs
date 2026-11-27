@@ -7,8 +7,8 @@ use gnx_expr::trace::{CellTrace, CellTracer, Generic, ObjectTracer, Tracer};
 use super::trace::{cell_ref, into_cell_ref, into_value_ref, value_ref};
 use std::any::TypeId;
 
-impl_lifetime_free!(Array, ArrayRef, ArrayInfo);
-impl_leaf!(ArrayInfo);
+impl_lifetime_free!(Array, ArrayRef, ArrayInfo, gnx_base::DType);
+impl_leaf!(ArrayInfo, gnx_base::DType);
 
 impl Graph for Array {
     type Owned = Self;

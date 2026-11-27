@@ -118,3 +118,4 @@ impl_trace_traits!(ObjectTracer, object_identity);
 impl_trace_traits!(Array, array_identity);
 impl_trace_traits!(ArrayRef, array_cell_identity);
 impl_trace_traits!(ArrayInfo, ArrayInfo::clone);
+impl_trace_traits!(gnx_base::DType, gnx_base::DType::clone);

@@ -36,7 +36,18 @@ fn c(v: f64) -> Array {
 #[test]
 fn grouped_conv_and_norms() {
     let d = device();
-    let conv = Conv::init_with(2, 2, &[2], 2, false, F32, &rng());
+    let conv = Conv::init(
+        ConvConfig {
+            input: 2,
+            output: 2,
+            kernel: vec![2],
+            groups: 2,
+            bias: false,
+            dtype: F32,
+        },
+        <Conv as Model>::DefaultInit::default(),
+        &rng(),
+    );
     conv.kernel
         .set(lax::broadcast_in_dim(&c(1.), [2, 1, 2], &[]));
     let x = lax::iota([6], 0, F32).reshape([1, 3, 2]);
@@ -44,13 +55,43 @@ fn grouped_conv_and_norms() {
     let biased = Conv::new(conv.kernel.value(), Some(lax::iota([2], 0, F32)), 2);
     close(&read(&d, biased.forward(x.clone())), &[2., 5., 6., 9.]);
     close(
-        &read(&d, LayerNorm::init(2, 0., F32).forward(x.clone())),
+        &read(
+            &d,
+            LayerNorm::init(
+                LayerNormConfig {
+                    features: 2,
+                    eps: 0.,
+                    dtype: F32,
+                },
+                <LayerNorm as Model>::DefaultInit::default(),
+                &rng(),
+            )
+            .forward(x.clone()),
+        ),
         &[-1., 1., -1., 1., -1., 1.],
     );
-    let group = GroupNorm::init(2, 2, 0., F32);
+    let group = GroupNorm::init(
+        GroupNormConfig {
+            features: 2,
+            groups: 2,
+            eps: 0.,
+            dtype: F32,
+        },
+        <GroupNorm as Model>::DefaultInit::default(),
+        &rng(),
+    );
     let a = (1.5_f32).sqrt();
     close(&read(&d, group.forward(x.clone())), &[-a, -a, 0., 0., a, a]);
-    let norm = BatchNorm::init(2, 0.5, 0., F32);
+    let norm = BatchNorm::init(
+        BatchNormConfig {
+            features: 2,
+            momentum: 0.5,
+            eps: 0.,
+            dtype: F32,
+        },
+        <BatchNorm as Model>::DefaultInit::default(),
+        &rng(),
+    );
     let train = jit({
         let norm = norm.clone();
         move |x: Array| norm.forward(x, true)
@@ -83,7 +124,19 @@ fn attention_masks_and_router_selection() {
         ),
         &[0.; 4],
     );
-    let mut m = RoutedExperts::init(2, 3, 3, 2, 0, true, F32, &rng());
+    let mut m = RoutedExperts::init(
+        RoutedExpertsConfig {
+            hidden: 2,
+            width: 3,
+            experts: 3,
+            top_k: 2,
+            shared: 0,
+            sigmoid: true,
+            dtype: F32,
+        },
+        <RoutedExperts as Model>::DefaultInit::default(),
+        &rng(),
+    );
     m.normalize = false;
     m.router
         .weight
@@ -126,15 +179,18 @@ fn check_cache(
 #[test]
 fn grouped_attention_chunked_cache() {
     let layer = GroupedQueryAttention::init(
-        4,
-        2,
-        1,
-        2,
-        Some(1e-6),
-        Rotary::new(10000.),
-        F32,
+        GroupedQueryAttentionConfig {
+            hidden: 4,
+            heads: 2,
+            kv_heads: 1,
+            head_dim: 2,
+            norm_eps: Some(1e-6),
+            rotary: Rotary::new(10000.),
+            dtype: F32,
+            cache_key: CacheKey::root(),
+        },
+        <GroupedQueryAttention as Model>::DefaultInit::default(),
         &rng(),
-        CacheKey::root(),
     );
     check_cache(
         |c| layer.init_cache(c),
@@ -144,18 +200,21 @@ fn grouped_attention_chunked_cache() {
 #[test]
 fn latent_attention_chunked_cache() {
     let layer = LatentAttention::init(
-        4,
-        2,
-        3,
-        2,
-        2,
-        2,
-        2,
-        1e-6,
-        Rotary::new(10000.),
-        F32,
+        LatentAttentionConfig {
+            hidden: 4,
+            heads: 2,
+            query_rank: 3,
+            rank: 2,
+            nope: 2,
+            rope: 2,
+            value_dim: 2,
+            eps: 1e-6,
+            rotary: Rotary::new(10000.),
+            dtype: F32,
+            cache_key: CacheKey::root(),
+        },
+        <LatentAttention as Model>::DefaultInit::default(),
         &rng(),
-        CacheKey::root(),
     );
     check_cache(
         |c| layer.init_cache(c),

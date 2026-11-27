@@ -19,6 +19,18 @@ impl_graph_serialize!(
     bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64
 );
 
+impl Serialize for usize {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(*self as u64)
+    }
+}
+
+impl Serialize for gnx_base::DType {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str((*self).into())
+    }
+}
+
 impl Serialize for String {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self)

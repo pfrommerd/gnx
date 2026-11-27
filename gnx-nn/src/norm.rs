@@ -1,6 +1,8 @@
 //! Channels-last normalization. Half-precision inputs accumulate statistics in F32.
+use crate::{Empty, Fill, InitializeWith, Initializer, Model, ModelConfig, Rngs};
 use crate::{Param, tensor::*};
 use gnx_graph::Graph;
+use gnx_io::{Deserialize, Serialize};
 use gnx_math::{Array, ArrayRef, DType, lax};
 fn mean(x: &Array, axes: &[usize]) -> Array {
     let d = dims(x);
@@ -13,10 +15,6 @@ fn normalize(x: &Array, axes: &[usize], eps: f64, center: bool) -> Array {
     let var = mean(&(&z * &z), axes);
     z * lax::rsqrt(&(var + eps))
 }
-fn weight(n: usize, t: DType) -> Param {
-    assert!(n > 0);
-    Param::new(constant(1., [n], t))
-}
 fn input(x: &Array, p: &Param) -> Array {
     assert_eq!(dims(x).last(), dims(&p.value()).first());
     x.astype(work(x.dtype()))
@@ -26,13 +24,53 @@ pub struct RmsNorm {
     pub scale: Param,
     pub eps: f64,
 }
+#[derive(Clone, Graph, Serialize, Deserialize)]
+pub struct RmsNormConfig {
+    pub features: usize,
+    pub eps: f64,
+    pub dtype: DType,
+}
+impl ModelConfig for RmsNormConfig {
+    type Model = RmsNorm;
+}
+
+/// Initializers for the fields of [`RmsNorm`].
+#[derive(Default)]
+pub struct RmsNormInit<Scale = Fill> {
+    pub scale: Scale,
+}
 impl RmsNorm {
-    pub fn init(features: usize, eps: f64, t: DType) -> Self {
-        Self {
-            scale: weight(features, t),
+    pub(crate) fn empty_bundle() -> RmsNormInit<Empty> {
+        RmsNormInit { scale: Empty }
+    }
+}
+
+impl Model for RmsNorm {
+    type Config = RmsNormConfig;
+    type DefaultInit = RmsNormInit;
+
+    fn empty(config: Self::Config) -> Self {
+        Self::init(config, Self::empty_bundle(), &Rngs::default())
+    }
+}
+impl<Scale> InitializeWith<RmsNormInit<Scale>> for RmsNorm
+where
+    Scale: Initializer,
+{
+    fn init(config: RmsNormConfig, init: RmsNormInit<Scale>, rngs: &Rngs) -> Self {
+        let RmsNormConfig {
+            features,
+            eps,
+            dtype: t,
+        } = config;
+        assert!(features > 0);
+        RmsNorm {
+            scale: Param::new(init.scale.initialize_from(rngs, [features], t)),
             eps,
         }
     }
+}
+impl RmsNorm {
     pub fn forward(&self, x: Array) -> Array {
         let z = input(&x, &self.scale);
         let z = normalize(&z, &[dims(&z).len() - 1], self.eps, false);
@@ -45,14 +83,57 @@ pub struct LayerNorm {
     pub bias: Param,
     pub eps: f64,
 }
-impl LayerNorm {
-    pub fn init(features: usize, eps: f64, t: DType) -> Self {
-        Self {
-            scale: weight(features, t),
-            bias: Param::new(lax::zeros([features], t)),
+#[derive(Clone, Graph, Serialize, Deserialize)]
+pub struct LayerNormConfig {
+    pub features: usize,
+    pub eps: f64,
+    pub dtype: DType,
+}
+impl ModelConfig for LayerNormConfig {
+    type Model = LayerNorm;
+}
+
+/// Initializers for the fields of [`LayerNorm`].
+#[derive(Default)]
+pub struct LayerNormInit<Scale = Fill, Bias = Fill> {
+    pub scale: Scale,
+    pub bias: Bias,
+}
+impl Model for LayerNorm {
+    type Config = LayerNormConfig;
+    type DefaultInit = LayerNormInit;
+
+    fn empty(config: Self::Config) -> Self {
+        Self::init(
+            config,
+            LayerNormInit {
+                scale: Empty,
+                bias: Empty,
+            },
+            &Rngs::default(),
+        )
+    }
+}
+impl<Scale, Bias> InitializeWith<LayerNormInit<Scale, Bias>> for LayerNorm
+where
+    Scale: Initializer,
+    Bias: Initializer,
+{
+    fn init(config: LayerNormConfig, init: LayerNormInit<Scale, Bias>, rngs: &Rngs) -> Self {
+        let LayerNormConfig {
+            features,
+            eps,
+            dtype: t,
+        } = config;
+        assert!(features > 0);
+        LayerNorm {
+            scale: Param::new(init.scale.initialize_from(rngs, [features], t)),
+            bias: Param::new(init.bias.initialize_from(rngs, [features], t)),
             eps,
         }
     }
+}
+impl LayerNorm {
     pub fn forward(&self, x: Array) -> Array {
         let z = input(&x, &self.scale);
         let z = normalize(&z, &[dims(&z).len() - 1], self.eps, true);
@@ -66,16 +147,61 @@ pub struct GroupNorm {
     pub groups: usize,
     pub eps: f64,
 }
-impl GroupNorm {
-    pub fn init(features: usize, groups: usize, eps: f64, t: DType) -> Self {
+#[derive(Clone, Graph, Serialize, Deserialize)]
+pub struct GroupNormConfig {
+    pub features: usize,
+    pub groups: usize,
+    pub eps: f64,
+    pub dtype: DType,
+}
+impl ModelConfig for GroupNormConfig {
+    type Model = GroupNorm;
+}
+
+/// Initializers for the fields of [`GroupNorm`].
+#[derive(Default)]
+pub struct GroupNormInit<Scale = Fill, Bias = Fill> {
+    pub scale: Scale,
+    pub bias: Bias,
+}
+impl Model for GroupNorm {
+    type Config = GroupNormConfig;
+    type DefaultInit = GroupNormInit;
+
+    fn empty(config: Self::Config) -> Self {
+        Self::init(
+            config,
+            GroupNormInit {
+                scale: Empty,
+                bias: Empty,
+            },
+            &Rngs::default(),
+        )
+    }
+}
+impl<Scale, Bias> InitializeWith<GroupNormInit<Scale, Bias>> for GroupNorm
+where
+    Scale: Initializer,
+    Bias: Initializer,
+{
+    fn init(config: GroupNormConfig, init: GroupNormInit<Scale, Bias>, rngs: &Rngs) -> Self {
+        let GroupNormConfig {
+            features,
+            groups,
+            eps,
+            dtype: t,
+        } = config;
+        assert!(features > 0);
         assert!(groups > 0 && features % groups == 0);
-        Self {
-            scale: weight(features, t),
-            bias: Param::new(lax::zeros([features], t)),
+        GroupNorm {
+            scale: Param::new(init.scale.initialize_from(rngs, [features], t)),
+            bias: Param::new(init.bias.initialize_from(rngs, [features], t)),
             groups,
             eps,
         }
     }
+}
+impl GroupNorm {
     pub fn forward(&self, x: Array) -> Array {
         let z = input(&x, &self.scale);
         let mut d = dims(&z);
@@ -97,19 +223,80 @@ pub struct BatchNorm {
     pub momentum: f64,
     pub eps: f64,
 }
-impl BatchNorm {
-    /// `momentum` is the fraction of the previous running statistic retained.
-    pub fn init(features: usize, momentum: f64, eps: f64, t: DType) -> Self {
+/// `momentum` is the fraction of the previous running statistic retained.
+#[derive(Clone, Graph, Serialize, Deserialize)]
+pub struct BatchNormConfig {
+    pub features: usize,
+    pub momentum: f64,
+    pub eps: f64,
+    pub dtype: DType,
+}
+impl ModelConfig for BatchNormConfig {
+    type Model = BatchNorm;
+}
+
+/// Initializers for the fields of [`BatchNorm`].
+#[derive(Default)]
+pub struct BatchNormInit<Scale = Fill, Bias = Fill, RunningMean = Fill, RunningVar = Fill> {
+    pub scale: Scale,
+    pub bias: Bias,
+    pub running_mean: RunningMean,
+    pub running_var: RunningVar,
+}
+
+impl Model for BatchNorm {
+    type Config = BatchNormConfig;
+    type DefaultInit = BatchNormInit;
+
+    fn empty(config: Self::Config) -> Self {
+        Self::init(
+            config,
+            BatchNormInit {
+                scale: Empty,
+                bias: Empty,
+                running_mean: Empty,
+                running_var: Empty,
+            },
+            &Rngs::default(),
+        )
+    }
+}
+impl<Scale, Bias, RunningMean, RunningVar>
+    InitializeWith<BatchNormInit<Scale, Bias, RunningMean, RunningVar>> for BatchNorm
+where
+    Scale: Initializer,
+    Bias: Initializer,
+    RunningMean: Initializer,
+    RunningVar: Initializer,
+{
+    fn init(
+        config: BatchNormConfig,
+        init: BatchNormInit<Scale, Bias, RunningMean, RunningVar>,
+        rngs: &Rngs,
+    ) -> Self {
+        let BatchNormConfig {
+            features,
+            momentum,
+            eps,
+            dtype: t,
+        } = config;
+        assert!(features > 0);
         assert!((0.0..=1.).contains(&momentum));
-        Self {
-            scale: weight(features, t),
-            bias: Param::new(lax::zeros([features], t)),
-            running_mean: ArrayRef::new(lax::zeros([features], work(t))),
-            running_var: ArrayRef::new(constant(1., [features], work(t))),
+        BatchNorm {
+            scale: Param::new(init.scale.initialize_from(rngs, [features], t)),
+            bias: Param::new(init.bias.initialize_from(rngs, [features], t)),
+            running_mean: ArrayRef::new(init.running_mean.initialize_from(
+                rngs,
+                [features],
+                work(t),
+            )),
+            running_var: ArrayRef::new(init.running_var.initialize_from(rngs, [features], work(t))),
             momentum,
             eps,
         }
     }
+}
+impl BatchNorm {
     pub fn forward(&self, x: Array, training: bool) -> Array {
         let z = input(&x, &self.scale);
         let (m, v) = if training {

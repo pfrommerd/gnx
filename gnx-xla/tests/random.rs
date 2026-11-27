@@ -1,7 +1,7 @@
 use futures_executor::block_on;
 use gnx::{
     Array, Callable, Eval, jit,
-    nn::{Linear, Rngs},
+    nn::{InitializeWith, Linear, LinearConfig, Model, Rngs},
     random::{self, Algorithm::*},
 };
 use gnx_math::{DType, ExecOpts, Shape, TransferPolicy};
@@ -22,6 +22,48 @@ fn words(device: &XlaDevice, x: Array) -> Vec<u32> {
         .chunks_exact(4)
         .map(|b| u32::from_ne_bytes(b.try_into().unwrap()))
         .collect()
+}
+
+#[test]
+fn custom_weight_and_default_bias_share_the_params_stream() {
+    use gnx::nn::{Empty, FanInUniform, LinearInit, RngsExt};
+    let d = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
+    let rngs = Rngs::default();
+    let reference = Rngs::default();
+    let config = LinearConfig {
+        in_features: 4,
+        out_features: 3,
+        bias: true,
+        dtype: DType::F64,
+    };
+    let shift = 2.;
+    let layer = Linear::init(
+        config.clone(),
+        LinearInit {
+            weight: |key: &Array, shape: Shape, dtype| random::uniform(key, shape, dtype) + shift,
+            bias: FanInUniform,
+        },
+        &rngs,
+    );
+    let expected_weight = random::uniform(&reference.params(), (3, 4), DType::F64) + shift;
+    assert_eq!(bytes(&d, layer.weight.value()), bytes(&d, expected_weight));
+    let expected_bias = || random::uniform(&reference.params(), [3], DType::F64) - 0.5;
+    assert_eq!(
+        bytes(&d, layer.bias().unwrap().value()),
+        bytes(&d, expected_bias())
+    );
+    let partial = Linear::init(
+        config,
+        LinearInit {
+            weight: Empty,
+            bias: FanInUniform,
+        },
+        &rngs,
+    );
+    assert_eq!(
+        bytes(&d, partial.bias().unwrap().value()),
+        bytes(&d, expected_bias())
+    );
 }
 
 #[test]
@@ -110,12 +152,32 @@ fn sample_dtypes_and_named_state() {
     let draw = jit(move |_: Array| streams.next("aux"));
     let a = draw.invoke((root.clone(),));
     let b = draw.invoke((root.clone(),));
+    let expected = Rngs::new(root.clone());
     let reference = Rngs::new(root);
     let _ = reference.next("unused");
     assert_eq!(bytes(&d, a), bytes(&d, reference.next("aux")));
     assert_eq!(bytes(&d, b), bytes(&d, reference.next("aux")));
-    let linear = Linear::init(4, 8, DType::F64, &reference);
+    let linear = Linear::init(
+        LinearConfig {
+            in_features: 4,
+            out_features: 8,
+            bias: true,
+            dtype: DType::F64,
+        },
+        <Linear as Model>::DefaultInit::default(),
+        &reference,
+    );
+    // fan_in = 4 gives a unit-width uniform centered on zero. Weight and
+    // bias must consume the first and second params keys respectively.
+    let weight_draw = random::uniform(&expected.next("params"), [8, 4], DType::F64) - 0.5;
+    let bias_draw = random::uniform(&expected.next("params"), [8], DType::F64) - 0.5;
+    assert_eq!(bytes(&d, linear.weight.value()), bytes(&d, weight_draw));
     let bias = bytes(&d, linear.bias().unwrap().value());
+    assert_eq!(bias, bytes(&d, bias_draw));
+    assert_eq!(
+        bytes(&d, reference.next("params")),
+        bytes(&d, expected.next("params"))
+    );
     assert!(
         bias.chunks_exact(8)
             .map(|b| f64::from_ne_bytes(b.try_into().unwrap()))

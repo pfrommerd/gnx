@@ -3,7 +3,20 @@ use proc_macro::TokenStream as ProcTokenStream;
 mod dag;
 mod graph;
 mod graph_traits;
+mod io;
 mod leaf;
+
+/// Serialize a named-field struct using GNX I/O.
+#[proc_macro_derive(Serialize)]
+pub fn derive_serialize(input: ProcTokenStream) -> ProcTokenStream {
+    io::derive(input, false)
+}
+
+/// Deserialize a named-field struct using GNX I/O.
+#[proc_macro_derive(Deserialize)]
+pub fn derive_deserialize(input: ProcTokenStream) -> ProcTokenStream {
+    io::derive(input, true)
+}
 mod lifetime_free;
 mod paths;
 mod transform_fn;

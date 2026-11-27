@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 gnx-graph = { path = "../gnx-graph", version = "0.1.0" }
 gnx-math = { path = "../gnx-math", version = "0.1.0" }
+gnx-io = { path = "../gnx-io", version = "0.1.0" }

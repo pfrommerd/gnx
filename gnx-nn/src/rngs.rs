@@ -9,6 +9,13 @@ pub struct Rngs {
     counters: Mutex<BTreeMap<String, ArrayRef>>,
 }
 
+/// Default streams use seed zero and the ThreeFry algorithm.
+impl Default for Rngs {
+    fn default() -> Self {
+        Self::key(0, random::Algorithm::ThreeFry2x32)
+    }
+}
+
 impl Rngs {
     /// Create named streams from a seed, equivalent to `Rngs::new(random::key(seed, algorithm))`.
     pub fn key(seed: u64, algorithm: random::Algorithm) -> Self {

@@ -273,7 +273,15 @@ impl<'r> std::fmt::Display for Data<'r> {
 
 impl From<&'static str> for DType {
     fn from(s: &'static str) -> Self {
-        match s {
+        s.parse()
+            .unwrap_or_else(|_| panic!("Unsupported data type: {s}"))
+    }
+}
+
+impl std::str::FromStr for DType {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "bool" => DType::Bool,
             "uint8" => DType::U8,
             "uint16" => DType::U16,
@@ -294,8 +302,8 @@ impl From<&'static str> for DType {
             "complex128" => DType::C128,
             "key<fry>" => DType::KeyThreeFry2x32,
             "key<philox>" => DType::KeyPhilox4x32,
-            _ => panic!("Unsupported data type: {}", s),
-        }
+            _ => return Err("unsupported data type"),
+        })
     }
 }
 

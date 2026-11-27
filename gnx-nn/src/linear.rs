@@ -1,21 +1,11 @@
-use crate::{Param, Rngs, RngsExt, tensor::*};
+use crate::{Empty, FanInUniform, InitializeWith, Model, ModelConfig, Rngs, WeightInitializer};
+use crate::{Param, tensor::*};
 use gnx_graph::Graph;
+use gnx_io::{Deserialize, Serialize};
 use gnx_math::{
     Array, DType,
     lax::{self, ConvAxes, ConvKernelAxes, ConvParameters},
-    random,
 };
-
-fn uniform(shape: Vec<usize>, fan: usize, t: DType, r: &Rngs) -> Array {
-    let w = work(t);
-    let bound = if fan == 0 {
-        0.
-    } else {
-        (fan as f64).sqrt().recip()
-    };
-    let u = random::uniform(&r.params(), shape, w);
-    (u * (2. * bound) - bound).astype(t)
-}
 
 /// N-dimensional channels-last convolution, kernel `[spatial..., in/groups, out]`.
 #[derive(Clone, Graph)]
@@ -27,28 +17,54 @@ pub struct Conv {
     pub dilation: Vec<usize>,
     pub groups: usize,
 }
-impl Conv {
-    /// Initialize both kernel and bias. Use `init_with` to omit the bias.
-    pub fn init(
-        input: usize,
-        output: usize,
-        kernel: &[usize],
-        groups: usize,
-        t: DType,
-        r: &Rngs,
-    ) -> Self {
-        Self::init_with(input, output, kernel, groups, true, t, r)
-    }
+#[derive(Clone, Graph, Serialize, Deserialize)]
+pub struct ConvConfig {
+    pub input: usize,
+    pub output: usize,
+    pub kernel: Vec<usize>,
+    pub groups: usize,
+    pub bias: bool,
+    pub dtype: DType,
+}
+impl ModelConfig for ConvConfig {
+    type Model = Conv;
+}
 
-    pub fn init_with(
-        input: usize,
-        output: usize,
-        kernel: &[usize],
-        groups: usize,
-        bias: bool,
-        t: DType,
-        r: &Rngs,
-    ) -> Self {
+/// Initializers for the fields of [`Conv`].
+#[derive(Default)]
+pub struct ConvInit<Kernel = FanInUniform, Bias = FanInUniform> {
+    pub kernel: Kernel,
+    pub bias: Bias,
+}
+impl Model for Conv {
+    type Config = ConvConfig;
+    type DefaultInit = ConvInit;
+
+    fn empty(config: Self::Config) -> Self {
+        Self::init(
+            config,
+            ConvInit {
+                kernel: Empty,
+                bias: Empty,
+            },
+            &Rngs::default(),
+        )
+    }
+}
+impl<Kernel, Bias> InitializeWith<ConvInit<Kernel, Bias>> for Conv
+where
+    Kernel: WeightInitializer,
+    Bias: WeightInitializer,
+{
+    fn init(config: ConvConfig, init: ConvInit<Kernel, Bias>, rngs: &Rngs) -> Self {
+        let ConvConfig {
+            input,
+            output,
+            kernel,
+            groups,
+            bias,
+            dtype: t,
+        } = config;
         assert!(
             groups > 0
                 && input > 0
@@ -59,15 +75,17 @@ impl Conv {
                 && !kernel.contains(&0)
         );
         let fan = kernel.iter().product::<usize>() * (input / groups);
-        let mut shape = kernel.to_vec();
+        let mut shape = kernel;
         shape.extend([input / groups, output]);
-        Self::new(
-            uniform(shape, fan, t, r),
-            bias.then(|| uniform(vec![output], fan, t, r)),
+        Conv::new(
+            init.kernel.initialize_weight(rngs, shape, t, fan),
+            bias.then(|| init.bias.initialize_weight(rngs, [output], t, fan)),
             groups,
         )
     }
+}
 
+impl Conv {
     /// Construct from a `[spatial..., in/groups, out]` kernel and optional `[out]` bias.
     pub fn new(kernel: Array, bias: Option<Array>, groups: usize) -> Self {
         Self::from_params(Param::new(kernel), bias.map(Param::new), groups)
@@ -148,32 +166,75 @@ pub struct Linear {
     pub bias: Option<Param>,
 }
 
-impl Linear {
-    /// PyTorch-style initialization: independently uniform weight and bias in
-    /// ±1/sqrt(fan_in). Each array consumes one key from the `params` stream.
-    pub fn init(
-        in_features: usize,
-        out_features: usize,
-        dtype: gnx_math::DType,
-        rngs: &Rngs,
-    ) -> Self {
-        Self::init_with(in_features, out_features, true, dtype, rngs)
-    }
+/// Each initialized array consumes one key and is uniform in ±1/sqrt(in_features).
+#[derive(Clone, Graph, Serialize, Deserialize)]
+pub struct LinearConfig {
+    pub in_features: usize,
+    pub out_features: usize,
+    pub bias: bool,
+    pub dtype: DType,
+}
+impl ModelConfig for LinearConfig {
+    type Model = Linear;
+}
 
-    /// When `bias` is false, initialize only the weight, consuming one key.
-    pub fn init_with(
-        in_features: usize,
-        out_features: usize,
-        bias: bool,
-        dtype: DType,
-        rngs: &Rngs,
-    ) -> Self {
-        Self::new(
-            uniform(vec![out_features, in_features], in_features, dtype, rngs),
-            bias.then(|| uniform(vec![out_features], in_features, dtype, rngs)),
+impl LinearConfig {
+    pub(crate) fn projection(in_features: usize, out_features: usize, dtype: DType) -> Self {
+        Self {
+            in_features,
+            out_features,
+            bias: false,
+            dtype,
+        }
+    }
+}
+
+/// Initializers for the fields of [`Linear`].
+#[derive(Default)]
+pub struct LinearInit<Weight = FanInUniform, Bias = FanInUniform> {
+    pub weight: Weight,
+    pub bias: Bias,
+}
+impl Linear {
+    pub(crate) fn empty_bundle() -> LinearInit<Empty, Empty> {
+        LinearInit {
+            weight: Empty,
+            bias: Empty,
+        }
+    }
+}
+
+impl Model for Linear {
+    type Config = LinearConfig;
+    type DefaultInit = LinearInit;
+
+    fn empty(config: Self::Config) -> Self {
+        Self::init(config, Self::empty_bundle(), &Rngs::default())
+    }
+}
+impl<Weight, Bias> InitializeWith<LinearInit<Weight, Bias>> for Linear
+where
+    Weight: WeightInitializer,
+    Bias: WeightInitializer,
+{
+    fn init(config: LinearConfig, init: LinearInit<Weight, Bias>, rngs: &Rngs) -> Self {
+        let LinearConfig {
+            in_features,
+            out_features,
+            bias,
+            dtype,
+        } = config;
+        Linear::new(
+            init.weight
+                .initialize_weight(rngs, [out_features, in_features], dtype, in_features),
+            bias.then(|| {
+                init.bias
+                    .initialize_weight(rngs, [out_features], dtype, in_features)
+            }),
         )
     }
-
+}
+impl Linear {
     /// Construct from an `[out, in]` matrix and an optional `[out]` bias.
     pub fn new(weight: Array, bias: Option<Array>) -> Self {
         Self::from_params(Param::new(weight), bias.map(Param::new))

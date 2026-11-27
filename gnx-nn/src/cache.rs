@@ -6,7 +6,7 @@ use std::{borrow::Borrow, collections::HashMap};
 
 /// Deterministic binary path. Splitting does not allocate a tracer or depend on
 /// construction order. Use each child for one slot or split it further.
-#[derive(Clone, Graph, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Graph, Debug, Eq, PartialEq, Hash, gnx_io::Serialize, gnx_io::Deserialize)]
 pub struct CacheKey {
     path: String,
 }

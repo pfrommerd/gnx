@@ -1,7 +1,7 @@
 //! Axis reductions used by array operations and transform rules.
 
-use crate::{ArrayInfo, Shape, fixed_dims};
 use crate::pass::Builder;
+use crate::{ArrayInfo, Shape, fixed_dims};
 use gnx_expr::{Eqn, Expr, ExprHandle, Op, SubExprBuilder, Var, VarInfo};
 use rkyv::{Archive, Serialize};
 

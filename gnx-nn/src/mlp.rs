@@ -1,21 +1,73 @@
 //! Bias-free feed-forward blocks and token-wise sparse expert routing.
-use crate::{Linear, Param, Rngs, RngsExt, activations, tensor::*};
+use crate::{Empty, Fill, InitializeWith, Initializer, LinearInit, Model, ModelConfig, Rngs};
+use crate::{Linear, LinearConfig, Param, RngsExt, activations, tensor::*};
 use gnx_graph::Graph;
+use gnx_io::{Deserialize, Serialize};
 use gnx_math::{Array, ArrayRef, DType, lax, random};
+
 #[derive(Clone, Graph)]
 pub struct SwiGlu {
     pub gate: Linear,
     pub up: Linear,
     pub down: Linear,
 }
+#[derive(Clone, Graph, Serialize, Deserialize)]
+pub struct SwiGluConfig {
+    pub hidden: usize,
+    pub width: usize,
+    pub dtype: DType,
+}
+impl ModelConfig for SwiGluConfig {
+    type Model = SwiGlu;
+}
+
+/// Initializers for the fields of [`SwiGlu`].
+#[derive(Default)]
+pub struct SwiGluInit<Gate = LinearInit, Up = LinearInit, Down = LinearInit> {
+    pub gate: Gate,
+    pub up: Up,
+    pub down: Down,
+}
 impl SwiGlu {
-    pub fn init(hidden: usize, width: usize, t: DType, r: &Rngs) -> Self {
-        Self {
-            gate: Linear::init_with(hidden, width, false, t, r),
-            up: Linear::init_with(hidden, width, false, t, r),
-            down: Linear::init_with(width, hidden, false, t, r),
+    pub(crate) fn empty_bundle()
+    -> SwiGluInit<LinearInit<Empty, Empty>, LinearInit<Empty, Empty>, LinearInit<Empty, Empty>>
+    {
+        SwiGluInit {
+            gate: Linear::empty_bundle(),
+            up: Linear::empty_bundle(),
+            down: Linear::empty_bundle(),
         }
     }
+}
+
+impl Model for SwiGlu {
+    type Config = SwiGluConfig;
+    type DefaultInit = SwiGluInit;
+
+    fn empty(config: Self::Config) -> Self {
+        Self::init(config, Self::empty_bundle(), &Rngs::default())
+    }
+}
+impl<Gate, Up, Down> InitializeWith<SwiGluInit<Gate, Up, Down>> for SwiGlu
+where
+    Linear: InitializeWith<Gate>,
+    Linear: InitializeWith<Up>,
+    Linear: InitializeWith<Down>,
+{
+    fn init(config: SwiGluConfig, init: SwiGluInit<Gate, Up, Down>, rngs: &Rngs) -> Self {
+        let SwiGluConfig {
+            hidden,
+            width,
+            dtype: t,
+        } = config;
+        SwiGlu {
+            gate: Linear::init(LinearConfig::projection(hidden, width, t), init.gate, rngs),
+            up: Linear::init(LinearConfig::projection(hidden, width, t), init.up, rngs),
+            down: Linear::init(LinearConfig::projection(width, hidden, t), init.down, rngs),
+        }
+    }
+}
+impl SwiGlu {
     pub fn forward(&self, x: Array) -> Array {
         self.forward_with(&x, |layer, x| layer.forward(x.clone()))
     }
@@ -23,6 +75,47 @@ impl SwiGlu {
     pub fn forward_with(&self, x: &Array, project: impl Fn(&Linear, &Array) -> Array) -> Array {
         let gated = activations::swiglu(&project(&self.gate, x), &project(&self.up, x));
         project(&self.down, &gated)
+    }
+}
+
+/// Uniform expert banks in `[experts, out, in]` layout. Split large banks so
+/// the flattened iota used by a random draw fits GNX's 32-bit axis limit.
+#[derive(Default)]
+pub struct ExpertUniform;
+impl ExpertUniform {
+    fn draw(
+        shape: impl gnx_math::IntoShape,
+        dtype: DType,
+        mut key: impl FnMut() -> Array,
+    ) -> Array {
+        let info = gnx_math::ArrayInfo::new(shape, dtype);
+        let [experts, out, input]: [usize; 3] = gnx_math::fixed_dims(&info)
+            .expect("fixed expert bank shape")
+            .try_into()
+            .expect("expected [experts, out, in]");
+        let chunk = u32::MAX as usize / input.checked_mul(out).expect("expert size overflow");
+        assert!(chunk > 0, "one expert matrix exceeds the random draw limit");
+        let mut draw = |n| random::uniform(&key(), [n, out, input], work(dtype));
+        let z = if experts <= chunk {
+            draw(experts)
+        } else {
+            let parts: Vec<_> = (0..experts)
+                .step_by(chunk)
+                .map(|start| draw(chunk.min(experts - start)))
+                .collect();
+            lax::concatenate(&parts.iter().collect::<Vec<_>>(), 0)
+        };
+        ((z - 0.5) * (2. / (input as f64).sqrt())).astype(dtype)
+    }
+}
+impl Initializer for ExpertUniform {
+    fn initialize(&self, key: &Array, shape: impl gnx_math::IntoShape, dtype: DType) -> Array {
+        let mut keys = std::iter::once(key.clone())
+            .chain((1u32..).map(|i| random::fold_in(key, &Array::scalar(i))));
+        Self::draw(shape, dtype, || keys.next().unwrap())
+    }
+    fn initialize_from(&self, rngs: &Rngs, shape: impl gnx_math::IntoShape, dtype: DType) -> Array {
+        Self::draw(shape, dtype, || rngs.params())
     }
 }
 
@@ -40,44 +133,103 @@ pub struct RoutedExperts {
     pub normalize: bool,
     pub scale: f64,
 }
-impl RoutedExperts {
-    pub fn init(
-        hidden: usize,
-        width: usize,
-        experts: usize,
-        top_k: usize,
-        shared: usize,
-        sigmoid: bool,
-        t: DType,
-        r: &Rngs,
+#[derive(Clone, Graph, Serialize, Deserialize)]
+pub struct RoutedExpertsConfig {
+    pub hidden: usize,
+    pub width: usize,
+    pub experts: usize,
+    pub top_k: usize,
+    pub shared: usize,
+    pub sigmoid: bool,
+    pub dtype: DType,
+}
+impl ModelConfig for RoutedExpertsConfig {
+    type Model = RoutedExperts;
+}
+
+/// Initializers for the fields of [`RoutedExperts`].
+#[derive(Default)]
+pub struct RoutedExpertsInit<
+    Router = LinearInit,
+    Correction = Fill,
+    Gate = ExpertUniform,
+    Up = ExpertUniform,
+    Down = ExpertUniform,
+    Shared = SwiGluInit,
+> {
+    pub router: Router,
+    pub correction: Correction,
+    pub gate: Gate,
+    pub up: Up,
+    pub down: Down,
+    pub shared: Shared,
+}
+impl Model for RoutedExperts {
+    type Config = RoutedExpertsConfig;
+    type DefaultInit = RoutedExpertsInit;
+
+    fn empty(config: Self::Config) -> Self {
+        Self::init(
+            config,
+            RoutedExpertsInit {
+                router: Linear::empty_bundle(),
+                correction: Empty,
+                gate: Empty,
+                up: Empty,
+                down: Empty,
+                shared: SwiGlu::empty_bundle(),
+            },
+            &Rngs::default(),
+        )
+    }
+}
+impl<Router, Correction, Gate, Up, Down, Shared>
+    InitializeWith<RoutedExpertsInit<Router, Correction, Gate, Up, Down, Shared>> for RoutedExperts
+where
+    Linear: InitializeWith<Router>,
+    Correction: Initializer,
+    Gate: Initializer,
+    Up: Initializer,
+    Down: Initializer,
+    SwiGlu: InitializeWith<Shared>,
+{
+    fn init(
+        config: RoutedExpertsConfig,
+        init: RoutedExpertsInit<Router, Correction, Gate, Up, Down, Shared>,
+        rngs: &Rngs,
     ) -> Self {
+        let RoutedExpertsConfig {
+            hidden,
+            width,
+            experts,
+            top_k,
+            shared,
+            sigmoid,
+            dtype: t,
+        } = config;
         assert!(top_k > 0 && top_k <= experts && hidden > 0 && width > 0);
-        let stack = |i: usize, o: usize| {
-            let f = work(t);
-            // Random draws use a flattened iota. GNX shape metadata stores axis
-            // extents in 32 bits; a K2 expert bank exceeds this as a single axis.
-            let chunk = u32::MAX as usize / i.checked_mul(o).expect("expert size overflow");
-            assert!(chunk > 0, "one expert matrix exceeds the random draw limit");
-            let draw = |n| random::uniform(&r.params(), [n, o, i], f);
-            let z = if experts <= chunk {
-                draw(experts)
-            } else {
-                let parts: Vec<_> = (0..experts)
-                    .step_by(chunk)
-                    .map(|start| draw(chunk.min(experts - start)))
-                    .collect();
-                lax::concatenate(&parts.iter().collect::<Vec<_>>(), 0)
-            };
-            Param::new(((z - 0.5) * (2. / (i as f64).sqrt())).astype(t))
-        };
-        Self {
-            router: Linear::init_with(hidden, experts, false, t, r),
-            correction: ArrayRef::new(lax::zeros([experts], work(t))),
-            gate: stack(hidden, width),
-            up: stack(hidden, width),
-            down: stack(width, hidden),
+        RoutedExperts {
+            router: Linear::init(
+                LinearConfig::projection(hidden, experts, t),
+                init.router,
+                rngs,
+            ),
+            correction: ArrayRef::new(init.correction.initialize_from(rngs, [experts], work(t))),
+            gate: Param::new(init.gate.initialize_from(rngs, [experts, width, hidden], t)),
+            up: Param::new(init.up.initialize_from(rngs, [experts, width, hidden], t)),
+            down: Param::new(init.down.initialize_from(rngs, [experts, hidden, width], t)),
             shared: (shared > 0)
-                .then(|| SwiGlu::init(hidden, shared * width, t, r))
+                .then(|| {
+                    SwiGlu::init(
+                        SwiGluConfig {
+                            hidden,
+                            width: shared * width,
+                            dtype: t,
+                        },
+                        init.shared,
+                        rngs,
+                    )
+                })
                 .into_iter()
                 .collect(),
             top_k,
@@ -86,6 +238,8 @@ impl RoutedExperts {
             scale: 1.,
         }
     }
+}
+impl RoutedExperts {
     /// Returns `[tokens,k]` expert indices and combination weights.
     pub fn route(&self, x: &Array) -> (Array, Array) {
         let d = dims(x);
