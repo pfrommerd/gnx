@@ -3,6 +3,7 @@
 use super::*;
 
 mod containers;
+mod named_map;
 mod option;
 mod expr;
 mod refs;

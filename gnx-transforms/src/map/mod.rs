@@ -5,6 +5,11 @@
 //! whose annotation is `usize`. Matches cover the tracer leaves below them; the
 //! annotation supplies the axis. Output filters run on the per-instance result at
 //! trace time. An unmatched input is shared; every dynamic output needs an axis.
+//! A mapped `ArrayRef` is a batch of independent mutable slots: writes are
+//! stacked back along its input axis. A fresh cell returned from the body
+//! becomes a fresh cell containing the stacked results. Shared cells may be
+//! read, but not written. Writable aliases must be known when applying `map`;
+//! map the jitted function if an enclosing trace obscures those identities.
 //!
 //! ```ignore
 //! let per_row = map(|x: Array, w: Array| f(x, w)).in_axes(dag!(0, *));
@@ -29,6 +34,7 @@
 
 mod api;
 pub mod batch;
+mod cells;
 pub mod def;
 pub mod region;
 pub(crate) mod rules;

@@ -6,6 +6,7 @@ use gnx_math::{Array, ArrayRef};
 
 pub mod activations;
 pub mod attention;
+pub mod cache;
 pub mod embedding;
 pub mod linear;
 pub mod mlp;
@@ -13,6 +14,7 @@ pub mod norm;
 pub mod rngs;
 mod tensor;
 pub use attention::*;
+pub use cache::{CacheKey, KVCache, KvPrefix};
 pub use embedding::*;
 pub use linear::*;
 pub use mlp::*;

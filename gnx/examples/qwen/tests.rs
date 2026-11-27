@@ -82,15 +82,19 @@ fn check_logits<D: QwenDevice>(device: D) -> Result<()> {
     let mut first_program = None;
     for ids in [[0, 2, 1, 0], [1, 0, 2, 1]] {
         let init = HostBuffer::new(
-            ArrayInfo::new(Shape::fixed([1, capacity, 2]), DType::F32),
+            ArrayInfo::new(Shape::fixed([capacity, 1, 2]), DType::F32),
             f32::NAN.to_le_bytes().repeat(capacity * 2),
         )?;
         let backing = device.upload(&DataHandle::new(init))?;
-        let slot = || ArrayRef::new(Array::from_data(backing.clone()));
-        let state = (ArrayRef::new(index(0)?), capacity, vec![(slot(), slot())]);
+        let cache = start_session(&model, capacity, &device)?;
+        let (k, v) = CacheKey::root().split().0.split();
+        for key in [k, v] {
+            cache.slot(&key).set(Array::from_data(backing.clone()));
+        }
         for (pos, &id) in ids.iter().enumerate() {
-            let logits = model.logits(&index(id as i32)?, &state);
-            let hash = gnx::expr(&(&logits, &state))?
+            let logits = model.forward_cached(&index(id as i32)?, &cache);
+            cache.step();
+            let hash = gnx::expr(&(&logits, &cache))?
                 .prepare()?
                 .into_parts()
                 .0
@@ -101,7 +105,7 @@ fn check_logits<D: QwenDevice>(device: D) -> Result<()> {
                 "position and fresh state must not specialize the executable"
             );
             block_on(device.eval(
-                &(&logits, &state),
+                &(&logits, &cache),
                 ExecOpts {
                     transfers: TransferPolicy::AllowCopy,
                 },
@@ -118,6 +122,96 @@ fn check_logits<D: QwenDevice>(device: D) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(feature = "qwen-torch")]
+#[test]
+fn mapped_cache_forward_matches_independent_sessions() -> Result<()> {
+    let device = gnx_torch::TorchDevice::cpu(gnx::cache::Cache::in_memory())?;
+    let opts = ExecOpts {
+        transfers: TransferPolicy::AllowCopy,
+    };
+    let (cfg, w) = fixture();
+    let model = load_model(cfg, w, &device)?;
+    // Prime lane 1 with one extra token, so reads, writes, and masks must use
+    // each lane's own cursor even though the physical storage bound is shared.
+    let init = gnx::map!(
+        |model: &Model, initial_length: Array| {
+            let mut cache = KVCache::new(4);
+            model.init_cache(&mut cache);
+            gnx::transforms::cf::while_loop(&Array::scalar(0_i32),
+                |n| gnx::lax::lt(n, &initial_length),
+                |n| { model.step(&Array::scalar(0_i32), &cache); n + 1 },
+            ).unwrap();
+            cache
+        },
+        in_axes = (*, 0)
+    );
+    let ids = |a: i32, b: i32| {
+        gnx::np::concatenate(
+            &[
+                &Array::scalar(a).reshape([1]),
+                &Array::scalar(b).reshape([1]),
+            ],
+            0,
+        )
+    };
+    let batch = init(&model, ids(0, 1));
+    block_on(device.eval(&batch, opts))?;
+    let forward = gnx::map!(
+        |model: &Model, id: Array, cache: &KVCache| model.forward_cached(&id, cache),
+        in_axes = (*, 0, 0)
+    );
+    let step = gnx::map!(|c: &KVCache| {
+        c.step();
+        c.position()
+    });
+    let lanes = [
+        start_session(&model, 4, &device)?,
+        start_session(&model, 4, &device)?,
+    ];
+    model.step(&index(0)?, &lanes[1]);
+    block_on(device.eval(&lanes[1], opts))?;
+    let (k, v) = CacheKey::root().split().0.split();
+    let bytes = |x: &Array| -> Result<Vec<u8>> {
+        block_on(device.eval(x, opts))?;
+        Ok(device.readback(x.data().unwrap())?.bytes().to_vec())
+    };
+    let mut first_program = None;
+    for tokens in [[0, 1], [1, 2], [2, 0]] {
+        let input = ids(tokens[0], tokens[1]);
+        block_on(device.eval(&input, opts))?;
+        let y = forward(&model, input, &batch);
+        let positions = step(&batch);
+        let hash = gnx::expr(&(&y, &positions, &batch))?
+            .prepare()?
+            .into_parts()
+            .0
+            .hash();
+        assert_eq!(*first_program.get_or_insert(hash), hash);
+        block_on(device.eval(&(&y, &positions, &batch), opts))?;
+        for (i, c) in lanes.iter().enumerate() {
+            let expected = model.forward_cached(&index(tokens[i])?, c);
+            c.step();
+            block_on(device.eval(&(&expected, c), opts))?;
+            let actual = bytes(&y.at(i))?;
+            let expected = bytes(&expected)?;
+            for (a, b) in actual.chunks_exact(4).zip(expected.chunks_exact(4)) {
+                assert!(
+                    (f32::from_le_bytes(a.try_into()?) - f32::from_le_bytes(b.try_into()?)).abs()
+                        < 2e-5
+                );
+            }
+            assert_eq!(bytes(&positions.at(i))?, bytes(&c.position())?);
+            for key in [&k, &v] {
+                assert_eq!(
+                    bytes(&batch.slot(key).get().at(i))?,
+                    bytes(&c.slot(key).get())?
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 // A tiny model with an untied output head and deterministic transition
 // 2 -> 0 -> 1 -> 2. Exercise the actual prefill, compiled loop and readback.
 fn check_reply<D: QwenDevice>(device: D) -> Result<()> {
@@ -186,7 +280,7 @@ fn torch_delta_logits() -> Result<()> {
         add(key, &[1], &[0.])?;
     }
     let model = load_model(config, w, &device)?;
-    let slots = new_state(&model.config, 2, &device)?;
+    let cache = start_session(&model, 2, &device)?;
     let mut prev = [0.; 2];
     let mut state = [[0.; 2]; 2];
     let silu = |v: f32| v / (1. + (-v).exp());
@@ -208,9 +302,10 @@ fn torch_delta_logits() -> Result<()> {
         let hidden = rms(std::array::from_fn(|i| {
             EMBEDDING[id][i] + out[i] * silu(x[i])
         }));
-        let logits = model.logits(&index(id as i32)?, &slots);
+        let logits = model.forward_cached(&index(id as i32)?, &cache);
+        cache.step();
         block_on(device.eval(
-            &(&logits, &slots),
+            &(&logits, &cache),
             ExecOpts {
                 transfers: TransferPolicy::AllowCopy,
             },

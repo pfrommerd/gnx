@@ -13,6 +13,20 @@ fn signed_axes_are_distinct_after_normalization() {
 }
 
 #[test]
+fn dot_keeps_free_axes_and_handles_vectors_and_scalars() {
+    let x = np::zeros([2, 3, 4], DType::F32);
+    let y = np::zeros([5, 4, 6], DType::F32);
+    let v = np::zeros([4], DType::F32);
+    let scalar = Array::scalar(2f32);
+    assert_eq!(np::dot(&x, &y).shape(), Shape::fixed([2, 3, 5, 6]));
+    assert_eq!(np::dot(&x, &v).shape(), Shape::fixed([2, 3]));
+    assert_eq!(np::dot(&v, &v).shape(), scalar.shape());
+    assert_eq!(np::dot(&scalar, &y).shape(), y.shape());
+    assert_eq!(np::dot(&x, &scalar).shape(), x.shape());
+    assert!(np::try_dot(&v, &x).is_err());
+}
+
+#[test]
 fn dot_general_orders_batch_then_free_axes() {
     let a = np::zeros([3, 2, 4], DType::F32);
     let b = np::zeros([4, 5, 2], DType::F32);

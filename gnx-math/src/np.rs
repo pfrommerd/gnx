@@ -31,6 +31,33 @@ pub fn add(x: &Array, y: &Array) -> Array {
     x + y
 }
 
+/// NumPy-style dot product. Scalars multiply; otherwise contract the last
+/// axis of `x` with the second-to-last axis of `y` (its only axis for vectors).
+/// Other axes are retained independently, not treated as batch dimensions.
+pub fn try_dot(x: &Array, y: &Array) -> Result<Array, LoweringError> {
+    let lhs_rank = x.shape().dims().len();
+    let rhs_rank = y.shape().dims().len();
+    if lhs_rank == 0 || rhs_rank == 0 {
+        return x.try_mul(y);
+    }
+    lax::try_dot_general(
+        x,
+        y,
+        lax::DotDimensions {
+            lhs_contracting: vec![lhs_rank - 1],
+            rhs_contracting: vec![rhs_rank.saturating_sub(2)],
+            lhs_batch: vec![],
+            rhs_batch: vec![],
+        },
+    )
+}
+
+/// See [`try_dot`]. Panics on incompatible operands.
+#[track_caller]
+pub fn dot(x: &Array, y: &Array) -> Array {
+    try_dot(x, y).expect("np::dot")
+}
+
 /// Reduction axes. Negative indices count from the end; an empty list is an identity.
 pub enum Axes {
     All,

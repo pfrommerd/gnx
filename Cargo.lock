@@ -944,11 +944,6 @@ dependencies = [
 [[package]]
 name = "gnx-models"
 version = "0.1.0"
-dependencies = [
- "gnx-graph",
- "gnx-math",
- "gnx-nn",
-]
 
 [[package]]
 name = "gnx-nn"
@@ -1002,7 +997,6 @@ dependencies = [
  "gnx-expr",
  "gnx-graph",
  "gnx-math",
- "gnx-models",
  "gnx-transforms",
  "gnx-xla-sys",
  "rkyv",

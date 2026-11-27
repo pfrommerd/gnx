@@ -81,6 +81,21 @@ impl LoweredExpr {
     pub fn trace_body(&self) -> &Arc<HRootExpr> {
         &self.trace_body
     }
+    /// Select immutable SSA results, including forwarded parameters and final cell updates.
+    pub fn projected_value_body(&self, results: &[usize]) -> Result<Arc<HRootExpr>, LoweringError> {
+        let mut body = self.trace_source.clone();
+        body.outputs = results
+            .iter()
+            .map(|&i| {
+                self.source
+                    .outputs
+                    .get(i)
+                    .copied()
+                    .ok_or(LoweringError::InvalidResultIndex(i))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(body.build()?)
+    }
     /// Functionalized body with the original (possibly forwarded or repeated)
     /// value results. Unlike replay, this has no cell updates to commit.
     pub fn read_only_value_body(&self) -> Result<Arc<HRootExpr>, LoweringError> {

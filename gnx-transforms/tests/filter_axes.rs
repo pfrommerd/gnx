@@ -73,6 +73,44 @@ fn domain_match_is_a_prefix_and_output_axes_belong_to_the_map_cache() {
 }
 
 #[test]
+fn map_preserves_fresh_and_passed_through_cell_aliases() {
+    use gnx_base::ArrayRef;
+    use gnx_expr::CellKey;
+    let _scope = TraceContext::enter();
+    let identity = |r: &ArrayRef| CellKey::from(r.tracer().cell_ref());
+    let pair = map(|x: Array| {
+        let r = ArrayRef::new(x);
+        (r.clone(), r)
+    });
+    let (a, b) = pair.invoke((array(&[3, 2]),));
+    assert_eq!(identity(&a), identity(&b));
+    assert_eq!(shape(&a.get()), [3, 2]);
+    let update = map(|dst: ArrayRef, alias: ArrayRef, x: Array| {
+        dst.set(x);
+        alias
+    });
+    let result = update.invoke((a.clone(), b, array(&[3, 2])));
+    assert_eq!(identity(&result), identity(&a));
+}
+
+#[test]
+fn map_rejects_writes_to_unmapped_cells() {
+    use gnx_base::ArrayRef;
+    let _scope = TraceContext::enter();
+    let shared = ArrayRef::new(array(&[2]));
+    let f = map(|x: Array, shared: ArrayRef| {
+        shared.set(x.clone());
+        x
+    })
+    .in_axes(dag!(0,*));
+    let err = f.try_invoke((array(&[3, 2]), shared)).err().unwrap();
+    assert!(
+        err.to_string().contains("cannot write captured cells"),
+        "{err}"
+    );
+}
+
+#[test]
 fn uncovered_map_result_is_an_error() {
     let _scope = TraceContext::enter();
     let f = map(|x: Array| x).out_axes(WeightPairs);

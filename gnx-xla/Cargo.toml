@@ -19,7 +19,6 @@ gnx-transforms = { path = "../gnx-transforms" }
 xla = { package = "gnx-xla-sys", path = "../gnx-xla-sys", features = ["pjrt"] }
 
 [dev-dependencies]
-gnx-models = { path = "../gnx-models" }
 futures-util = "0.3.34"
 gnx = { path = "../gnx" }
 gnx-graph = { path = "../gnx-graph" }

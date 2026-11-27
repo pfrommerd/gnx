@@ -1,32 +1,38 @@
 //! Channels-last decoder attention. Positions count tokens, not cache entries.
-use crate::{Linear, RmsNorm, Rngs, activations, tensor::*};
+use crate::{CacheKey, KVCache, KvPrefix, Linear, RmsNorm, Rngs, activations, tensor::*};
 use gnx_graph::Graph;
-use gnx_math::{Array, DType, lax};
+use gnx_math::{
+    Array, DType, Dim, lax,
+    ops::bounded::{axis_length, pad_to_bound},
+};
 
-/// Caller-owned history for one layer. MLA stores compressed latents and rotary keys.
-#[derive(Default, Clone)]
-pub struct AttentionCache {
-    history: Option<(Array, Array)>,
-    next_position: usize,
+fn lane(x: &Array) -> Array {
+    let shape = dims(x);
+    assert_eq!(shape[0], 1, "map cached attention over sequences");
+    x.reshape(&shape[1..])
 }
-impl AttentionCache {
-    pub fn len(&self) -> usize {
-        self.history.as_ref().map_or(0, |(a, _)| dims(a)[1])
-    }
-    pub fn is_empty(&self) -> bool {
-        self.history.is_none()
-    }
-    fn append(&mut self, a: Array, b: Array, pos: usize) -> (Array, Array) {
-        let t = dims(&a)[1];
-        let pair = if let Some((x, y)) = &self.history {
-            assert_eq!(pos, self.next_position, "discontinuous cache positions");
-            (lax::concatenate(&[x, &a], 1), lax::concatenate(&[y, &b], 1))
-        } else {
-            (a, b)
-        };
-        self.next_position = pos + t;
-        self.history = Some(pair.clone());
-        pair
+
+fn singleton_batch(x: &Array) -> Array {
+    let mut shape = vec![1];
+    shape.extend(dims(x));
+    x.reshape(shape)
+}
+
+impl KvPrefix {
+    /// Attend to this logical history. Queries are `[time, heads, width]`;
+    /// causal chunks align to the end of the *prefix*, not the storage bound.
+    /// Optional user padding is a one-dimensional keep mask at cache capacity.
+    pub fn attend(&self, q: &Array, scale: f64, causal: bool, padding: Option<&Array>) -> Array {
+        let padding = padding.map(singleton_batch);
+        lane(&attention(
+            &singleton_batch(q),
+            &singleton_batch(&self.key),
+            &singleton_batch(&self.value),
+            scale,
+            causal,
+            Some(&self.len),
+            padding.as_ref(),
+        ))
     }
 }
 
@@ -94,7 +100,8 @@ impl Rotary {
 }
 
 /// Scaled attention on `[batch,time,heads,width]`. `padding` is a boolean `[batch,key_time]`
-/// keep mask. A causal query chunk is aligned to the end of the key sequence.
+/// keep mask at storage capacity. K and V may share a bounded time axis;
+/// softmax and causal alignment use its runtime length.
 pub fn scaled_dot_product_attention(
     q: &Array,
     k: &Array,
@@ -103,11 +110,51 @@ pub fn scaled_dot_product_attention(
     causal: bool,
     padding: Option<&Array>,
 ) -> Array {
+    let ks = k.shape();
+    let vs = v.shape();
+    assert_eq!(ks.dims()[1], vs.dims()[1], "K/V time axes must agree");
+    if matches!(ks.dims()[1], Dim::Bounded { .. }) {
+        for shape in [&ks, &vs] {
+            assert!(
+                shape
+                    .dims()
+                    .iter()
+                    .enumerate()
+                    .all(|(i, d)| i == 1 || matches!(d, Dim::Fixed(_))),
+                "only K/V time may be bounded"
+            );
+        }
+        let len = axis_length(k, 1);
+        attention(
+            q,
+            &pad_to_bound(k),
+            &pad_to_bound(v),
+            scale,
+            causal,
+            Some(&len),
+            padding,
+        )
+    } else {
+        attention(q, k, v, scale, causal, None, padding)
+    }
+}
+
+// Dense lowering for both symbolic inputs and cursor-backed views. The
+// contractions use capacity storage; no padding lane participates in softmax.
+fn attention(
+    q: &Array,
+    k: &Array,
+    v: &Array,
+    scale: f64,
+    causal: bool,
+    len: Option<&Array>,
+    padding: Option<&Array>,
+) -> Array {
     let [b, t, h, d] = dims(q).try_into().expect("rank four queries");
     let [bk, s, kv, dk] = dims(k).try_into().expect("rank four keys");
     let [bv, sv, hv, dv] = dims(v).try_into().expect("rank four values");
     assert_eq!((b, s, kv), (bv, sv, hv));
-    assert!(b == bk && dk == d && kv > 0 && h % kv == 0 && s > 0 && (!causal || t <= s));
+    assert!(b == bk && dk == d && kv > 0 && h % kv == 0 && s > 0);
     let g = h / kv;
     let f = work(q.dtype());
     let dot = |a: &Array, b: &Array, i, j| {
@@ -125,33 +172,59 @@ pub fn scaled_dot_product_attention(
     let q = q.astype(f).reshape([b, t, kv, g, d]);
     let logits = dot(&q, &k.astype(f), 4, 3) * scale;
     let shape = [b, kv, t, g, s];
-    let mut mask = padding.map(|p| {
+    let mut keep = padding.map(|p| {
         assert_eq!(dims(p), [b, s]);
         assert_eq!(p.dtype(), DType::Bool);
-        lax::broadcast_in_dim(p, shape, &[0, 4])
+        p.clone()
     });
-    if causal {
-        let i = lax::iota([t, s], 0, DType::I64) + (s - t + 1) as u64;
+    if let Some(n) = len {
+        let occupied = lax::lt(
+            &lax::iota([b, s], 1, DType::I32),
+            &lax::broadcast_in_dim(n, [b, s], &[]),
+        );
+        keep = Some(keep.map_or_else(|| occupied.clone(), |p| lax::bitwise_and(&occupied, &p)));
+    }
+    // A zero probability alone is insufficient when unwritten V contains NaNs.
+    let v = keep.as_ref().map_or_else(
+        || v.clone(),
+        |m| {
+            lax::select(
+                &lax::broadcast_in_dim(m, v.shape(), &[0, 1]),
+                v,
+                &lax::zeros(v.shape(), v.dtype()),
+            )
+        },
+    );
+    let mut mask = keep.map(|m| lax::broadcast_in_dim(&m, shape, &[0, 4]));
+    if causal && !(len.is_some() && t == 1) {
+        assert!(t <= s);
+        let end = len.map_or_else(|| lax::scalar(s, DType::I64), |n| n.astype(DType::I64));
+        let i = lax::iota([t, s], 0, DType::I64) + (end - t as i64 + 1);
         let j = lax::iota([t, s], 1, DType::I64);
         let m = lax::broadcast_in_dim(&lax::lt(&j, &i), shape, &[2, 4]);
         mask = Some(mask.map_or_else(|| m.clone(), |p| lax::bitwise_and(&m, &p)));
     }
     let prob = if let Some(m) = mask {
-        // A finite floor keeps even fully masked rows well-defined before zeroing them.
+        // Use a finite floor for the maximum, but exclude masked terms from
+        // the sum itself (even a valid logit equal to the floor must work).
         let floor = if f == DType::F64 {
             f64::MIN
         } else {
             f32::MIN as f64
         };
         let masked = lax::select(&m, &logits, &constant(floor, shape, f));
-        let p = activations::softmax(&masked);
-        lax::select(&m, &p, &lax::zeros(shape, f))
+        let max = lax::top_k(&masked, 1).0;
+        let weights = lax::select(&m, &lax::exp(&(&masked - &max)), &lax::zeros(shape, f));
+        let sum = lax::reduce_sum(&weights, &[4]).reshape(max.shape());
+        // A nonempty row has at least one unit weight after subtracting its
+        // maximum. Only an empty row needs the denominator of one.
+        weights / lax::max(&sum, &constant(1., max.shape(), f))
     } else {
         activations::softmax(&logits)
     };
     let y = lax::dot_general(
         &prob.astype(v.dtype()),
-        v,
+        &v,
         lax::DotDimensions {
             lhs_batch: vec![0, 1],
             rhs_batch: vec![0, 2],
@@ -164,6 +237,7 @@ pub fn scaled_dot_product_attention(
 
 #[derive(Clone, Graph)]
 pub struct GroupedQueryAttention {
+    cache_keys: (CacheKey, CacheKey),
     pub query: Linear,
     pub key: Linear,
     pub value: Linear,
@@ -176,6 +250,15 @@ pub struct GroupedQueryAttention {
     pub rotary: Rotary,
 }
 impl GroupedQueryAttention {
+    pub fn init_cache(&self, cache: &mut KVCache) {
+        for key in [&self.cache_keys.0, &self.cache_keys.1] {
+            cache.init_time(
+                key.clone(),
+                &[self.kv_heads, self.head_dim],
+                self.key.weight.value().dtype(),
+            );
+        }
+    }
     pub fn init(
         hidden: usize,
         heads: usize,
@@ -185,6 +268,7 @@ impl GroupedQueryAttention {
         rotary: Rotary,
         t: DType,
         r: &Rngs,
+        key: CacheKey,
     ) -> Self {
         assert!(heads > 0 && kv > 0 && heads % kv == 0 && d > 0 && d % 2 == 0);
         let p = |o| Linear::init_with(hidden, o, false, t, r);
@@ -196,6 +280,7 @@ impl GroupedQueryAttention {
         };
         Self {
             query: p(heads * d),
+            cache_keys: key.split(),
             key: p(kv * d),
             value: p(kv * d),
             output: Linear::init_with(heads * d, hidden, false, t, r),
@@ -210,14 +295,14 @@ impl GroupedQueryAttention {
     pub fn forward(
         &self,
         x: &Array,
-        pos: usize,
-        cache: Option<&mut AttentionCache>,
+        pos: &Array,
+        cache: Option<&KVCache>,
         mask: Option<&Array>,
     ) -> Array {
         let [b, t, _] = dims(x).try_into().expect("expected [batch,time,hidden]");
         let proj = |p: &Linear, h| p.forward(x.clone()).reshape([b, t, h, self.head_dim]);
         let rot = |z: Array, n: &[RmsNorm]| {
-            self.rotary.apply(
+            self.rotary.apply_at(
                 &n.first()
                     .map_or_else(|| z.clone(), |a| a.forward(z.clone())),
                 pos,
@@ -227,27 +312,25 @@ impl GroupedQueryAttention {
         let q = rot(proj(&self.query, self.heads), &self.query_norm);
         let k = rot(proj(&self.key, self.kv_heads), &self.key_norm);
         let v = proj(&self.value, self.kv_heads);
-        let (k, v) = match cache {
-            Some(c) => c.append(k, v, pos),
-            None => (k, v),
-        };
-        self.output.forward(
-            scaled_dot_product_attention(
-                &q,
-                &k,
-                &v,
-                (self.head_dim as f64).sqrt().recip(),
+        let scale = (self.head_dim as f64).sqrt().recip();
+        let y = match cache {
+            Some(c) => c.write_kv(&self.cache_keys, &lane(&k), &lane(&v)).attend(
+                &lane(&q),
+                scale,
                 true,
-                mask,
-            )
-            .reshape([b, t, self.heads * self.head_dim]),
-        )
+                mask.map(lane).as_ref(),
+            ),
+            None => scaled_dot_product_attention(&q, &k, &v, scale, true, mask),
+        };
+        self.output
+            .forward(y.reshape([b, t, self.heads * self.head_dim]))
     }
 }
 
 /// Multi-head latent attention with a shared rotary key and compressed KV cache.
 #[derive(Clone, Graph)]
 pub struct LatentAttention {
+    cache_keys: (CacheKey, CacheKey),
     pub query_down: Linear,
     pub query_norm: RmsNorm,
     pub query: Linear,
@@ -264,6 +347,11 @@ pub struct LatentAttention {
     pub score_scale: f64,
 }
 impl LatentAttention {
+    pub fn init_cache(&self, cache: &mut KVCache) {
+        let dtype = self.kv_down.weight.value().dtype();
+        cache.init_time(self.cache_keys.0.clone(), &[self.rank], dtype);
+        cache.init_time(self.cache_keys.1.clone(), &[1, self.rope], dtype);
+    }
     pub fn init(
         hidden: usize,
         heads: usize,
@@ -276,11 +364,13 @@ impl LatentAttention {
         rotary: Rotary,
         t: DType,
         r: &Rngs,
+        key: CacheKey,
     ) -> Self {
         assert!(rope > 0 && rope % 2 == 0 && nope > 0 && rank > 0);
         let p = |i, o| Linear::init_with(i, o, false, t, r);
         Self {
             query_down: p(hidden, query_rank),
+            cache_keys: key.split(),
             query_norm: RmsNorm::init(query_rank, eps, t),
             query: p(query_rank, heads * (nope + rope)),
             kv_down: p(hidden, rank + rope),
@@ -299,8 +389,8 @@ impl LatentAttention {
     pub fn forward(
         &self,
         x: &Array,
-        pos: usize,
-        cache: Option<&mut AttentionCache>,
+        pos: &Array,
+        cache: Option<&KVCache>,
         mask: Option<&Array>,
     ) -> Array {
         let [b, t, _] = dims(x).try_into().expect("expected [batch,time,hidden]");
@@ -314,20 +404,27 @@ impl LatentAttention {
                 &q.at((.., .., .., ..self.nope)),
                 &self
                     .rotary
-                    .apply(&q.at((.., .., .., self.nope..)), pos, true),
+                    .apply_at(&q.at((.., .., .., self.nope..)), pos, true),
             ],
             3,
         );
         let raw = self.kv_down.forward(x.clone());
         let latent = self.kv_norm.forward(raw.at((.., .., ..self.rank)));
-        let pe = self.rotary.apply(
+        let pe = self.rotary.apply_at(
             &raw.at((.., .., self.rank..)).reshape([b, t, 1, self.rope]),
             pos,
             true,
         );
-        let (latent, pe) = match cache {
-            Some(c) => c.append(latent, pe, pos),
-            None => (latent, pe),
+        let (latent, pe, len) = match cache {
+            Some(c) => {
+                let prefix = c.write_kv(&self.cache_keys, &lane(&latent), &lane(&pe));
+                (
+                    singleton_batch(&prefix.key),
+                    singleton_batch(&prefix.value),
+                    Some(prefix.len),
+                )
+            }
+            None => (latent, pe, None),
         };
         let s = dims(&latent)[1];
         let kv = self
@@ -343,7 +440,7 @@ impl LatentAttention {
         );
         let v = kv.at((.., .., .., self.nope..));
         self.output.forward(
-            scaled_dot_product_attention(&q, &k, &v, self.score_scale, true, mask).reshape([
+            attention(&q, &k, &v, self.score_scale, true, len.as_ref(), mask).reshape([
                 b,
                 t,
                 h * self.value_dim,

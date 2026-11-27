@@ -1,10 +1,6 @@
 use futures_executor::block_on;
 use gnx::{Array, Callable, Eval, jit, lax, nn::*, random::Algorithm};
-use gnx_math::{
-    DType::{F32, I32},
-    ExecOpts, TransferPolicy,
-};
-use gnx_models::*;
+use gnx_math::{DType::F32, ExecOpts, TransferPolicy};
 use gnx_xla::XlaDevice;
 fn device() -> XlaDevice {
     XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap()
@@ -97,117 +93,72 @@ fn attention_masks_and_router_selection() {
     close(&read(&d, ids), &[0., 1.]);
     close(&read(&d, w), &[0.5, 1. / (1. + (-2_f32).exp())]);
 }
-/// One token, identity embedding/head, unit value and output weights, zero MLP.
-/// Attention then adds the projected value directly. Compute expected logits in scalar Rust.
-#[test]
-fn single_token_reference_logits() {
+fn check_cache(
+    init: impl Fn(&mut KVCache),
+    forward: impl Fn(&Array, &Array, Option<&KVCache>) -> Array,
+) {
     let d = device();
-    let ids = lax::zeros([1, 1], I32);
-    let eps = 1e-6;
-    let set = |p: &Param, v: f64| p.set(lax::broadcast_in_dim(&c(v), p.value().shape(), &[]));
-    let eye = lax::ne(&lax::iota([2, 2], 0, I32), &lax::iota([2, 2], 1, I32)).astype(F32);
-    let reference = |v: f64| {
-        let norm = (((1. + v).powi(2) + v * v) / 2. + eps).sqrt();
-        [((v / norm) as f32), (((1. + v) / norm) as f32)]
-    };
-    let a = (0.5_f64 + eps).sqrt().recip();
-    let qc = Qwen3Config {
-        vocab: 2,
-        hidden: 2,
-        layers: 1,
-        heads: 1,
-        kv_heads: 1,
-        head_dim: 2,
-        intermediate: 2,
-        ..Default::default()
-    };
-    let q = Qwen3LM::init(&qc, F32, &rng());
-    q.embedding.weight.set(eye.clone());
-    let b = &q.blocks[0];
-    set(&b.attention.value.weight, 1.);
-    set(&b.attention.output.weight, 1.);
-    set(&b.mlp.dense_layer().unwrap().down.weight, 0.);
-    // Row zero is [0,1]. The tied head swaps the two normalized residual coordinates.
-    let mut expected = reference(2. * a);
-    expected.reverse();
-    close(&read(&d, q.forward(&ids)), &expected);
-    let kc = KimiK2Config {
-        vocab: 2,
-        hidden: 2,
-        layers: 1,
-        heads: 1,
-        query_rank: 2,
-        kv_rank: 2,
-        nope: 2,
-        rope: 2,
-        value_dim: 2,
-        intermediate: 2,
-        tied: true,
-        ..Default::default()
-    };
-    let k = KimiK2LM::init(&kc, F32, &rng());
-    k.embedding.weight.set(eye);
-    let b = &k.blocks[0];
-    set(&b.attention.kv_down.weight, 1.);
-    set(&b.attention.kv_up.weight, 1.);
-    set(&b.attention.output.weight, 1.);
-    set(&b.mlp.dense_layer().unwrap().down.weight, 0.);
-    let mut expected = reference(4. * a / (a * a + eps).sqrt());
-    expected.reverse();
-    close(&read(&d, k.forward(&ids)), &expected);
-}
-fn check_cache(run: impl Fn(&Array, usize, Option<&mut DecoderCache>) -> Array) {
-    let d = device();
-    let ids = lax::iota([1, 3], 1, I32);
-    let reference = read(&d, run(&ids, 7, None));
-    let mut cache = DecoderCache::default();
-    let mut result = vec![];
-    for i in 0..3 {
-        result.extend(read(
-            &d,
-            run(&ids.at((.., i..i + 1)), 7 + i, Some(&mut cache)),
-        ));
-        assert_eq!(cache.len(), i + 1);
-    }
-    close(&result, &reference);
+    let x =
+        lax::iota([2, 3, 4], 1, F32) + lax::iota([2, 3, 4], 2, F32) + lax::iota([2, 3, 4], 0, F32);
+    let reference = read(&d, forward(&x, &Array::scalar(7_i32), None));
+    let cache = gnx_transforms::map(|| {
+        let mut cache = KVCache::new(5);
+        init(&mut cache);
+        cache
+    })
+    .axis_size(2)
+    .invoke(());
+    let run = gnx_transforms::map(|chunk: Array, cache: KVCache| {
+        let t = chunk.fixed_dims().unwrap()[0];
+        let result = forward(
+            &chunk.reshape([1, t, 4]),
+            &(cache.position() + 7),
+            Some(&cache),
+        );
+        cache.advance(t);
+        result.reshape([t, 4])
+    });
+    let first = run.invoke((x.at((.., 0..1, ..)), cache.clone()));
+    let rest = run.invoke((x.at((.., 1..3, ..)), cache.clone()));
+    close(&read(&d, lax::concatenate(&[&first, &rest], 1)), &reference);
+    close(&read(&d, cache.position()), &[3., 3.]);
 }
 #[test]
-fn qwen_chunked_logits() {
-    let c = Qwen3Config {
-        vocab: 8,
-        hidden: 4,
-        layers: 2,
-        heads: 2,
-        kv_heads: 1,
-        head_dim: 2,
-        intermediate: 6,
-        expert_width: 3,
-        experts: 3,
-        top_k: 2,
-        mlp_only_layers: vec![0],
-        ..Default::default()
-    };
-    let m = Qwen3LM::init(&c, F32, &rng());
-    check_cache(|ids, p, c| m.forward_at(ids, p, c, None));
+fn grouped_attention_chunked_cache() {
+    let layer = GroupedQueryAttention::init(
+        4,
+        2,
+        1,
+        2,
+        Some(1e-6),
+        Rotary::new(10000.),
+        F32,
+        &rng(),
+        CacheKey::root(),
+    );
+    check_cache(
+        |c| layer.init_cache(c),
+        |x, p, c| layer.forward(x, p, c, None),
+    );
 }
 #[test]
-fn kimi_chunked_logits() {
-    let c = KimiK2Config {
-        vocab: 8,
-        hidden: 4,
-        layers: 2,
-        heads: 2,
-        query_rank: 3,
-        kv_rank: 2,
-        nope: 2,
-        rope: 2,
-        value_dim: 2,
-        intermediate: 6,
-        experts: 3,
-        expert_width: 3,
-        top_k: 2,
-        ..Default::default()
-    };
-    let m = KimiK2LM::init(&c, F32, &rng());
-    check_cache(|ids, p, c| m.forward_at(ids, p, c, None));
+fn latent_attention_chunked_cache() {
+    let layer = LatentAttention::init(
+        4,
+        2,
+        3,
+        2,
+        2,
+        2,
+        2,
+        1e-6,
+        Rotary::new(10000.),
+        F32,
+        &rng(),
+        CacheKey::root(),
+    );
+    check_cache(
+        |c| layer.init_cache(c),
+        |x, p, c| layer.forward(x, p, c, None),
+    );
 }

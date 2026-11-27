@@ -9,7 +9,7 @@ use gnx_graph::{Graph, GraphEq, GraphHash};
 use crate::cache::{TraceEntry, TracerBuilder};
 use crate::error::{ApplyError, TransformError};
 use crate::filters::{AxisType, DefaultAxes, IntoAxisFilter};
-use crate::traced::{Leaves, body, value};
+use crate::traced::{Leaves, body};
 use crate::{Callable, Function, Jit, Jitable, TryCallable, TryJitable, jit, util};
 
 /// A function vectorized over mapped axes of its arguments; see [`map`].
@@ -105,13 +105,14 @@ where
                     captured.push(true);
                 }
                 Some(axis) => {
-                    let trace = value(object, "a mapped argument")
+                    let (kind, info) = crate::cache::kind(object);
+                    let (_, instance) = util::without_axis(&info, axis)
                         .map_err(|e| crate::spec::at_path("in_axes", path, e))?;
-                    let (_, instance) = util::without_axis(trace.info(), axis)
-                        .map_err(|e| crate::spec::at_path("in_axes", path, e))?;
-                    kinds.push((Kind::Value, instance));
+                    kinds.push((kind, instance));
                     captured.push(false);
-                    mapped.push(trace);
+                    if let ObjectTracer::Ref(trace) = object {
+                        mapped.push(trace.clone());
+                    }
                     in_axes.push(axis);
                 }
             }
@@ -122,6 +123,27 @@ where
             .output_axes
             .as_deref()
             .expect("map trace contains output axes");
+        let expr = entry.expr.view();
+        if expr
+            .inputs()
+            .zip(&captured)
+            .any(|(p, shared)| !shared && p.kind() == Kind::Cell)
+            || expr
+                .outputs()
+                .iter()
+                .any(|&v| expr.definition(v).unwrap().kind() == Kind::Cell)
+        {
+            let axes = axes.iter().map(|a| a.value).collect::<Vec<_>>();
+            let results = super::cells::apply(
+                expr,
+                &entry.closure,
+                &leaves.objects,
+                &axes,
+                out_axes,
+                self.axis_size,
+            )?;
+            return Ok(crate::cache::rebuild_graph(&entry.output_builder, results));
+        }
         let body = body(&entry, &leaves.objects, &captured)?;
         let results = super::region::map(body, &mapped, &in_axes, out_axes, self.axis_size)
             .map_err(TransformError::from)?;

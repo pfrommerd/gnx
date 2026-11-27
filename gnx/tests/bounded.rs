@@ -38,7 +38,7 @@ fn signature(s: u32) -> ArrayInfo {
             },
         ]
         .into_iter()
-        .collect(),
+        .collect::<Shape>(),
         DType::I32,
     )
 }
@@ -124,6 +124,80 @@ macro_rules! exercise {
         (exec, again)
     }};
 }
+// One compiled attention program for multiple K/V lengths. Equal logits at
+// the floating-point floor must still average just the visible prefix.
+macro_rules! prefix_attention {
+    ($device:expr) => {{
+        let d = $device;
+        let signature = ArrayInfo::new(Shape::fixed([1, 4, 1, 1]), DType::F32)
+            .with_bounded_axis(1, Symbol::new(3), 4)
+            .unwrap();
+        let (program, _) = jit(|k: Array, v: Array| {
+            let q = gnx::lax::broadcast_in_dim(&Array::scalar(1f32), [1, 2, 2, 1], &[]);
+            [false, true]
+                .into_iter()
+                .map(|causal| gnx::nn::scaled_dot_product_attention(&q, &k, &v, 1., causal, None))
+                .collect::<Vec<_>>()
+        })
+        .lower((
+            Array::placeholder(signature.clone()),
+            Array::placeholder(signature),
+        ))
+        .unwrap();
+        let exec = block_on(d.compile(&program)).unwrap();
+        for n in [4usize, 2, 0, 3, 1] {
+            let input = |key: bool| {
+                let bytes = (0..4)
+                    .flat_map(|i| {
+                        if i < n {
+                            if key { f32::MIN } else { i as f32 + 1. }.to_le_bytes()
+                        } else {
+                            f32::NAN.to_le_bytes()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let storage = DataHandle::new(
+                    HostBuffer::copy_from_slice(
+                        ArrayInfo::new(Shape::fixed([1, 4, 1, 1]), DType::F32),
+                        &bytes,
+                    )
+                    .unwrap(),
+                );
+                Value::new(
+                    BoundedBuffer::new(
+                        d.import(&storage, COPY.transfers).unwrap(),
+                        Shape::fixed([1, n, 1, 1]),
+                    )
+                    .unwrap(),
+                )
+            };
+            let outputs = exec.run(&[input(true), input(false)], COPY).unwrap();
+            let mean = |n| if n == 0 { 0. } else { (n as f32 + 1.) / 2. };
+            for (out, visible) in outputs.iter().zip([[n, n], [n.saturating_sub(1), n]]) {
+                let data = d.download(out.downcast::<DataHandle>().unwrap()).unwrap();
+                for (bytes, len) in data
+                    .bytes()
+                    .chunks_exact(4)
+                    .zip(visible.into_iter().flat_map(|n| [n, n]))
+                {
+                    assert!(
+                        (f32::from_le_bytes(bytes.try_into().unwrap()) - mean(len)).abs() < 1e-5
+                    );
+                }
+            }
+        }
+    }};
+}
+#[test]
+fn torch_bounded_attention() {
+    prefix_attention!(gnx_torch::TorchDevice::cpu(Cache::in_memory()).unwrap());
+}
+#[cfg(feature = "qwen-example")]
+#[test]
+fn xla_bounded_attention() {
+    prefix_attention!(gnx_xla::XlaDevice::cpu(Cache::in_memory()).unwrap());
+}
+
 #[cfg(feature = "qwen-example")]
 #[test]
 fn xla_bounded() {

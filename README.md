@@ -78,26 +78,15 @@ and range selectors and require the replacement to match the window shape and dt
 Convolution and normalization use channels-last inputs. `nn::activations`
 contains the standalone activation functions.
 
-`gnx-models` provides `Qwen3LM` (dense or MoE) and `KimiK2LM` (MLA and shared
-and routed experts). `Qwen3Config::default()` describes Qwen3-0.6B;
-`Qwen3Config::moe_30b_a3b()` and `KimiK2Config::default()` describe Qwen3-30B-A3B
-and Kimi-K2-Base. Constructors initialize lazy floating-point parameters.
-
-```rust
-use gnx::{array::DType, lax, nn::Rngs, random::Algorithm};
-use gnx_models::{DecoderCache, Qwen3Config, Qwen3LM};
-
-let config = Qwen3Config { vocab: 128, hidden: 32, layers: 2, heads: 4,
-    kv_heads: 2, head_dim: 8, intermediate: 64, ..Default::default() };
-let model = Qwen3LM::init(&config, DType::F32, &Rngs::key(42, Algorithm::ThreeFry2x32));
-let mut cache = DecoderCache::default();
-let prompt = lax::iota([1, 3], 1, DType::I32);
-let logits = model.forward_at(&prompt, 0, Some(&mut cache), None); // [1, 3, 128]
-```
-
-Use `forward(&ids)` for a full causal pass. For decoding, reuse the cache and
-pass the absolute position of the next token. The optional boolean padding mask
-covers the full key history (`[batch, key_time]`, `true` keeps a token).
+The [Qwen example](gnx/examples/qwen/model.rs) builds a decoder from these layers.
+For decoding, reuse the cache and call
+`cache.step()` after each single-token forward, or `cache.advance(chunk_len)` after
+a chunk. Keep the total length within the cache capacity. The optional boolean
+padding mask is `[capacity]` per sequence (`true` keeps a token). Cache occupancy
+is handled separately: `cache.write_kv(&keys, &k, &v)` returns a logical prefix,
+and `prefix.attend(&q, scale, causal, padding)` normalizes only over that prefix.
+For batches,
+`map` cache initialization and `forward_cached` over sequences; each lane has its own cursor.
 
 ## TorchScript backend (CPU and CUDA)
 

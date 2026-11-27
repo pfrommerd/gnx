@@ -1,11 +1,10 @@
-use crate::tensor::*;
 use gnx::{
     Array, Graph, Shape,
     array::{ArrayRef, DType},
     lax, nn,
     nn::activations::{sigmoid, silu},
+    nn::{CacheKey, KVCache},
     np,
-    ops::bounded::BoundedAxis,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -74,6 +73,7 @@ struct Block {
 
 #[derive(Clone, Graph)]
 struct FullAttention {
+    kv: (CacheKey, CacheKey),
     q: nn::Linear,
     k: nn::Linear,
     v: nn::Linear,
@@ -89,6 +89,7 @@ struct FullAttention {
 
 #[derive(Clone, Graph)]
 struct DeltaAttention {
+    recurrent_state: (CacheKey, CacheKey),
     qkv: nn::Linear,
     z: nn::Linear,
     a: nn::Linear,
@@ -120,12 +121,16 @@ fn delta_rule(
     decay: Array,
     state: Array,
 ) -> (Array, Array) {
-    let s = dims(&state);
-    let (h, d, f) = (s[0], s[1], s[2]);
+    let [h, d, f]: [usize; 3] = state
+        .fixed_dims()
+        .unwrap()
+        .try_into()
+        .expect("delta state is [heads, key_dim, value_dim]");
+    let head_dot = gnx::map!(|x: Array, matrix: Array| np::dot(&x, &matrix));
     let state = state * decay.reshape([h, 1, 1]);
-    let delta = (v - dot(&k, &state, 1, 1, 1)) * beta.reshape([h, 1]);
+    let delta = (v - head_dot(k.clone(), state.clone())) * beta.reshape([h, 1]);
     let next = state + k.reshape([h, d, 1]) * delta.reshape([h, 1, f]);
-    (dot(&q, &next, 1, 1, 1), next)
+    (head_dot(q, next.clone()), next)
 }
 
 impl Config {
@@ -159,8 +164,8 @@ impl Config {
             let a = w
                 .get(&name)
                 .ok_or_else(|| format!("missing weight {name}"))?;
-            if dims(a) != s {
-                return Err(format!("{name}: expected {s:?}, got {:?}", dims(a)));
+            if !a.fixed_dims().is_ok_and(|dims| dims == s) {
+                return Err(format!("{name}: expected {s:?}, got {:?}", a.shape()));
             }
             Ok(())
         };
@@ -208,10 +213,15 @@ impl Config {
 }
 
 impl FullAttention {
+    fn init_cache(&self, cache: &mut KVCache) {
+        for key in [&self.kv.0, &self.kv.1] {
+            cache.init_time(key.clone(), &[self.kv_heads, self.head_dim], DType::F32);
+        }
+    }
     fn rope(&self, x: &Array, pos: &Array) -> Array {
         let d = self.head_dim;
         let r = self.rotary_dim;
-        let heads = dims(x)[0];
+        let heads = x.fixed_dims().expect("fixed attention head count")[0];
         let prefix = x.at((.., ..r)).reshape([1, 1, heads, r]);
         let rotated = self
             .rotary
@@ -223,13 +233,7 @@ impl FullAttention {
             np::concatenate(&[&rotated, &x.at((.., r..))], 1)
         }
     }
-    fn forward(
-        &self,
-        x: &Array,
-        cache: &(ArrayRef, ArrayRef),
-        pos: &Array,
-        time: &BoundedAxis,
-    ) -> Array {
+    fn forward_cached(&self, x: &Array, cache: &KVCache, pos: &Array) -> Array {
         let (h, k, d) = (self.heads, self.kv_heads, self.head_dim);
         let qg = project(&self.q, x).reshape([h, 2 * d]);
         let gate = sigmoid(&qg.at((.., d..)));
@@ -238,27 +242,16 @@ impl FullAttention {
             &self.k_norm.forward(project(&self.k, x).reshape([k, d])),
             pos,
         );
-        let append = |slot: &ArrayRef, v: Array| {
-            let v = v.reshape([k, 1, d]);
-            let zero = Array::scalar(0_i32);
-            let updated = lax::dynamic_update_slice(&slot.get(), &v, &[&zero, pos, &zero]);
-            slot.set(updated.clone());
-            updated
-        };
-        let key = append(&cache.0, key);
-        let value = append(&cache.1, project(&self.v, x));
-        let value = time.prefix(&value, 1).padded(0.);
-        let capacity = dims(&key)[1];
-        let kv = |a: &Array| lax::transpose(a, &[1, 0, 2]).reshape([1, capacity, k, d]);
-        let keep = lax::broadcast_in_dim(&Array::scalar(true), [1, capacity], &[]);
-        let mask = time.prefix(&keep, 1).padded(0.);
-        let attended = nn::scaled_dot_product_attention(
-            &q.reshape([1, 1, h, d]),
-            &kv(&key),
-            &kv(&value),
+        let prefix = cache.write_kv(
+            &self.kv,
+            &key.reshape([1, k, d]),
+            &project(&self.v, x).reshape([1, k, d]),
+        );
+        let attended = prefix.attend(
+            &q.reshape([1, h, d]),
             (d as f64).sqrt().recip(),
             false,
-            Some(&mask),
+            None,
         );
         let y = attended.reshape([h, d]) * gate;
         project(&self.out, &y.reshape([h * d]))
@@ -266,8 +259,24 @@ impl FullAttention {
 }
 
 impl DeltaAttention {
-    #[gnx::jit]
-    fn forward(&self, x: &Array, slots: &(ArrayRef, ArrayRef)) -> Array {
+    fn init_cache(&self, cache: &mut KVCache) {
+        let channels = 2 * self.key_heads * self.key_dim + self.value_heads * self.value_dim;
+        cache.init_state(
+            self.recurrent_state.0.clone(),
+            &[channels, self.kernel_size - 1],
+            DType::F32,
+        );
+        cache.init_state(
+            self.recurrent_state.1.clone(),
+            &[self.value_heads, self.key_dim, self.value_dim],
+            DType::F32,
+        );
+    }
+    fn forward_cached(&self, x: &Array, cache: &KVCache) -> Array {
+        let slots = (
+            cache.slot(&self.recurrent_state.0),
+            cache.slot(&self.recurrent_state.1),
+        );
         let (kh, h, d, f, t) = (
             self.key_heads,
             self.value_heads,
@@ -291,7 +300,7 @@ impl DeltaAttention {
         let k = heads(kd);
         let v = qkv.at(2 * kd..c).reshape([h, f]);
         let a = project(&self.a, x) + self.dt_bias.value();
-        let softplus = lax::max(&a, &np::zeros(dims(&a), a.dtype()))
+        let softplus = lax::max(&a, &np::zeros(a.shape(), a.dtype()))
             + np::log1p(&np::exp(&np::negative(&np::abs(&a))));
         let rate = np::exp(&self.a_log.value());
         let decay = np::exp(&np::negative(&(rate * softplus)));
@@ -303,32 +312,22 @@ impl DeltaAttention {
     }
 }
 
-impl Config {
-    pub fn state_shapes(&self, capacity: usize) -> impl Iterator<Item = Vec<usize>> + '_ {
-        self.layer_types.iter().flat_map(move |ty| {
-            if ty == "full_attention" {
-                let kv = vec![self.num_key_value_heads, capacity, self.head_dim];
-                [kv.clone(), kv]
-            } else {
-                let (h, d, f) = (
-                    self.linear_num_value_heads,
-                    self.linear_key_head_dim,
-                    self.linear_value_head_dim,
-                );
-                [
-                    vec![
-                        2 * self.linear_num_key_heads * d + h * f,
-                        self.linear_conv_kernel_dim - 1,
-                    ],
-                    vec![h, d, f],
-                ]
-            }
-        })
-    }
-}
-
 impl Model {
-    pub fn from_weights(config: Config, weights: Weights) -> Result<Self, String> {
+    pub fn init_cache(&self, cache: &mut KVCache) {
+        for block in &self.blocks {
+            if let Some(a) = &block.attention {
+                a.init_cache(cache);
+            }
+            if let Some(a) = &block.recurrent {
+                a.init_cache(cache);
+            }
+        }
+    }
+    pub fn from_weights(
+        config: Config,
+        weights: Weights,
+        mut cache_key: CacheKey,
+    ) -> Result<Self, String> {
         config.validate(&weights)?;
         let embedding = nn::Embedding {
             weight: nn::Param::new(weights[&format!("{ROOT}.embed_tokens.weight")].clone()),
@@ -349,11 +348,14 @@ impl Model {
             .iter()
             .enumerate()
             .map(|(i, kind)| {
+                let (layer_key, rest) = cache_key.split();
+                cache_key = rest;
                 let weight = |key: &str| weights[&format!("{ROOT}.layers.{i}.{key}")].clone();
                 let linear = |key: &str| nn::Linear::new(weight(&format!("{key}.weight")), None);
                 let (attention, recurrent) = if kind == "full_attention" {
                     (
                         Some(FullAttention {
+                            kv: layer_key.split(),
                             q: linear("self_attn.q_proj"),
                             k: linear("self_attn.k_proj"),
                             v: linear("self_attn.v_proj"),
@@ -372,10 +374,11 @@ impl Model {
                     )
                 } else {
                     let kernel = weight("linear_attn.conv1d.weight").astype(DType::F32);
-                    let channels = dims(&kernel)[0];
+                    let channels = kernel.fixed_dims().expect("validated convolution kernel")[0];
                     (
                         None,
                         Some(DeltaAttention {
+                            recurrent_state: layer_key.split(),
                             qkv: linear("linear_attn.in_proj_qkv"),
                             z: linear("linear_attn.in_proj_z"),
                             a: linear("linear_attn.in_proj_a"),
@@ -427,18 +430,14 @@ impl Model {
         })
     }
     #[gnx::jit]
-    pub fn logits(&self, id: &Array, state: &DecodeState) -> Array {
-        let (cursor, capacity, layers) = state;
-        let pos = cursor.get();
-        let length = &pos + 1;
-        let time = BoundedAxis::new(*capacity, &length);
+    pub fn forward_cached(&self, id: &Array, cache: &KVCache) -> Array {
+        let pos = cache.position();
         let mut x = self.embedding.forward(id).astype(DType::F32);
-        assert_eq!(self.blocks.len(), layers.len());
-        for (block, slots) in self.blocks.iter().zip(layers) {
+        for block in &self.blocks {
             let y = block.input_norm.forward(x.clone());
             let y = match (&block.attention, &block.recurrent) {
-                (Some(a), None) => a.forward(&y, slots, &pos, &time),
-                (None, Some(a)) => a.forward(&y, slots),
+                (Some(a), None) => a.forward_cached(&y, cache, &pos),
+                (None, Some(a)) => a.forward_cached(&y, cache),
                 _ => unreachable!("block has exactly one attention layer"),
             };
             x = x + y;
@@ -447,30 +446,29 @@ impl Model {
                 .forward_with(&block.post_norm.forward(x.clone()), project);
             x = x + y;
         }
-        let logits = project(&self.head, &self.norm.forward(x));
-        cursor.set(length);
-        logits
+        project(&self.head, &self.norm.forward(x))
     }
     /// One traced computation for prompt and decode tokens, including state writes.
     #[gnx::jit]
-    pub fn step(&self, id: &Array, state: &DecodeState) -> Array {
-        lax::top_k(&self.logits(id, state), 1).1
+    pub fn step(&self, id: &Array, cache: &KVCache) -> Array {
+        let logits = self.forward_cached(id, cache);
+        cache.step();
+        lax::top_k(&logits, 1).1.reshape(())
     }
 
     /// Prefill supplies the first prediction. Feed each non-delimiter token back
     /// through the same step and collect it in a capacity-sized device buffer.
     #[gnx::jit]
-    pub fn decode(&self, first: &Array, state: &DecodeState, end: &Array) -> (Array, Array, Array) {
-        let (cursor, capacity, _) = state;
-        let capacity = *capacity;
+    pub fn decode(&self, first: &Array, end: &Array, cache: &KVCache) -> (Array, Array, Array) {
+        let capacity = cache.capacity();
         let limit = lax::scalar(capacity, DType::I32);
         let count = ArrayRef::new(Array::scalar(0_i32));
         let tokens = ArrayRef::new(np::zeros([capacity], DType::I32));
         let last = gnx::transforms::cf::while_loop(
-            &first.reshape([]),
+            first,
             |id| {
                 let pending = lax::ne(id, end);
-                let room = lax::lt(&cursor.get(), &limit);
+                let room = lax::lt(&cache.position(), &limit);
                 lax::bitwise_and(&pending, &room)
             },
             |id| {
@@ -481,13 +479,10 @@ impl Model {
                     &[&n],
                 ));
                 count.set(n + 1);
-                self.step(id, state).reshape([])
+                self.step(id, cache)
             },
         )
         .expect("decoder while loop has a scalar token carry");
         (tokens.get(), count.get(), last)
     }
 }
-
-/// Cursor, time bound, and two persistent slots per model layer.
-pub type DecodeState = (ArrayRef, usize, Vec<(ArrayRef, ArrayRef)>);

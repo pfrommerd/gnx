@@ -1,15 +1,15 @@
 //! Greedy text completion with Qwen3.5-0.8B or Qwen3.8-27B on GNX.
 mod model;
-mod tensor;
 
 use clap::{Parser, ValueEnum};
 use futures_executor::block_on;
 use gnx::{
     Array, Eval, ExecOpts, Shape,
-    array::{ArrayInfo, ArrayRef, DType},
+    array::{ArrayInfo, DType},
     buffer::{DataHandle, HostBuffer, TransferPolicy},
+    nn::{CacheKey, KVCache},
 };
-use model::{Config, DecodeState, Model, Weights};
+use model::{Config, Model, Weights};
 use safetensors::SafeTensors;
 use serde::Deserialize;
 use std::{
@@ -191,7 +191,7 @@ fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()>
 }
 
 fn load_model(config: Config, weights: Weights, device: &impl QwenDevice) -> Result<Model> {
-    let model = Model::from_weights(config, weights)?;
+    let model = Model::from_weights(config, weights, CacheKey::root())?;
     // Materialize checkpoint layout and scale conversions before tracing the first token.
     block_on(device.eval(
         &model,
@@ -210,20 +210,16 @@ fn index(i: i32) -> io::Result<Array> {
         )?,
     )))
 }
-fn new_state<D: QwenDevice>(model: &Config, capacity: usize, device: &D) -> Result<DecodeState> {
-    let mut slots = model.state_shapes(capacity).map(|s| {
-        let host = HostBuffer::try_fill(ArrayInfo::new(Shape::fixed(s), DType::F32), |_| {
-            Ok::<_, io::Error>(())
-        })?;
-        Ok::<_, io::Error>(ArrayRef::new(Array::from_data(
-            device.upload(&DataHandle::new(host))?,
-        )))
-    });
-    let mut layers = Vec::new();
-    while let Some(a) = slots.next() {
-        layers.push((a?, slots.next().expect("two slots per layer")?));
-    }
-    Ok((ArrayRef::new(index(0)?), capacity, layers))
+fn start_session<D: QwenDevice>(model: &Model, capacity: usize, device: &D) -> Result<KVCache> {
+    let mut cache = KVCache::new(capacity);
+    model.init_cache(&mut cache);
+    block_on(device.eval(
+        &cache,
+        ExecOpts {
+            transfers: TransferPolicy::AllowCopy,
+        },
+    ))?;
+    Ok(cache)
 }
 
 #[cfg(test)]
@@ -309,11 +305,11 @@ impl<D: QwenDevice> Decoder<D> {
             transfers: TransferPolicy::AllowCopy,
         };
         let started = std::time::Instant::now();
-        let state = new_state(&model.config, self.capacity, device)?;
+        let cache = start_session(model, self.capacity, device)?;
         let mut first = None;
         for &id in ids {
-            let prediction = model.step(&index(id as i32)?, &state);
-            block_on(device.eval(&(&prediction, &state), opts))?;
+            let prediction = model.step(&index(id as i32)?, &cache);
+            block_on(device.eval(&(&prediction, &cache), opts))?;
             first = Some(prediction);
         }
         let first = first.expect("nonempty prompt");
@@ -322,8 +318,8 @@ impl<D: QwenDevice> Decoder<D> {
             eprintln!("First token: {:.3} s", started.elapsed().as_secs_f64());
         }
         let decode_started = std::time::Instant::now();
-        let result = model.decode(&first, &state, &index(*end as i32)?);
-        drop(state);
+        let result = model.decode(&first, &index(*end as i32)?, &cache);
+        drop(cache);
         block_on(device.eval(&result, opts))?;
         let read = |x: &Array| device.readback(x.data().expect("decode evaluated"));
         let (tokens, count, last) = result;
