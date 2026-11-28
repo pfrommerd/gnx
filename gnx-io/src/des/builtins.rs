@@ -79,6 +79,32 @@ scalar!(
 float!(f32, deserialize_f32);
 float!(f64, deserialize_f64);
 
+scalar!(
+    (),
+    deserialize_unit,
+    fn visit_unit<E: Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+);
+
+impl<'de: 'a, 'a> Deserialize<'de> for &'a str {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Borrowed;
+        impl Expecting for Borrowed {
+            fn expected(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a borrowed string")
+            }
+        }
+        impl<'de> DataVisitor<'de> for Borrowed {
+            type Value = &'de str;
+            fn visit_borrowed_str<E: Error>(self, s: &'de str) -> Result<Self::Value, E> {
+                Ok(s)
+            }
+        }
+        d.deserialize_str(Borrowed)
+    }
+}
+
 impl<'de> Deserialize<'de> for gnx_base::DType {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         String::deserialize(deserializer)?
@@ -88,6 +114,10 @@ impl<'de> Deserialize<'de> for gnx_base::DType {
 }
 
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Option<T> {
+    fn missing_field<E: Error>(_: &str) -> Result<Self, E> {
+        Ok(None)
+    }
+
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct OptionVisitor<T>(PhantomData<T>);
         impl<T> Expecting for OptionVisitor<T> {
@@ -97,6 +127,12 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Option<T> {
         }
         impl<'de, T: Deserialize<'de>> DataVisitor<'de> for OptionVisitor<T> {
             type Value = Option<T>;
+            fn visit_flattened_option<D: Deserializer<'de>>(
+                self,
+                d: D,
+            ) -> Result<Self::Value, D::Error> {
+                Ok(T::deserialize(d).ok())
+            }
             fn visit_none<E: Error>(self) -> Result<Self::Value, E> {
                 Ok(None)
             }
@@ -108,6 +144,51 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Option<T> {
     }
 }
 
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Box<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        T::deserialize(d).map(Box::new)
+    }
+}
+impl<'de, T: ?Sized> Deserialize<'de> for PhantomData<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        <()>::deserialize(d).map(|_| PhantomData)
+    }
+}
+impl<'de, T: ?Sized + ToOwned> Deserialize<'de> for std::borrow::Cow<'_, T>
+where
+    T::Owned: Deserialize<'de>,
+{
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        T::Owned::deserialize(d).map(std::borrow::Cow::Owned)
+    }
+}
+impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for [T; N] {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct ArrayVisitor<T, const N: usize>(PhantomData<T>);
+        impl<T, const N: usize> Expecting for ArrayVisitor<T, N> {
+            fn expected(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "an array of length {N}")
+            }
+        }
+        impl<'de, T: Deserialize<'de>, const N: usize> DataVisitor<'de> for ArrayVisitor<T, N> {
+            type Value = [T; N];
+            fn visit_seq<A: SeqAccess<'de>>(self, mut a: A) -> Result<Self::Value, A::Error> {
+                let mut v = Vec::new();
+                for _ in 0..N {
+                    v.push(
+                        a.next_element()?
+                            .ok_or_else(|| Error::custom("array too short"))?,
+                    );
+                }
+                if a.next_element::<super::IgnoredAny>()?.is_some() {
+                    return Err(Error::custom("array too long"));
+                }
+                Ok(v.try_into().unwrap_or_else(|_| unreachable!()))
+            }
+        }
+        d.deserialize_tuple(N, ArrayVisitor(PhantomData))
+    }
+}
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for Vec<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // let mut seq = deserializer.deserialize_seq(visitor);
@@ -177,3 +258,46 @@ impl<'de> Deserialize<'de> for String {
         deserializer.deserialize_str(StringVisitor)
     }
 }
+
+// Generate all prefix arities, including the one-element tuple (distinct from a newtype).
+macro_rules! tuples {
+    (@impl $(($T:ident, $i:tt)),+) => {
+        impl<'de, $($T: Deserialize<'de>),+> Deserialize<'de> for ($($T,)+) {
+            fn deserialize<__D: Deserializer<'de>>(d: __D) -> Result<Self, __D::Error> {
+                struct TupleVisitor<T>(PhantomData<T>);
+                impl<T> Expecting for TupleVisitor<T> {
+                    fn expected(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        f.write_str("a tuple")
+                    }
+                }
+                impl<'de, $($T: Deserialize<'de>),+> DataVisitor<'de> for TupleVisitor<($($T,)+)> {
+                    type Value = ($($T,)+);
+                    fn visit_seq<__A: SeqAccess<'de>>(
+                        self,
+                        mut seq: __A,
+                    ) -> Result<Self::Value, __A::Error> {
+                        let value = ($(
+                            seq.next_element::<$T>()?.ok_or_else(|| {
+                                Error::custom(concat!("missing tuple element ", stringify!($i)))
+                            })?,
+                        )+);
+                        if seq.next_element::<super::IgnoredAny>()?.is_some() {
+                            return Err(Error::custom("too many tuple elements"));
+                        }
+                        Ok(value)
+                    }
+                }
+                d.deserialize_tuple([$(stringify!($T)),+].len(), TupleVisitor(PhantomData))
+            }
+        }
+    };
+    (@prefix [$($done:tt),*] $next:tt $(, $rest:tt)*) => {
+        tuples!(@impl $($done,)* $next);
+        tuples!(@prefix [$($done,)* $next] $($rest),*);
+    };
+    (@prefix [$($done:tt),*]) => {};
+}
+tuples!(@prefix []
+    (A, 0), (B, 1), (C, 2), (D, 3), (E, 4), (F, 5), (G, 6), (H, 7),
+    (I, 8), (J, 9), (K, 10), (L, 11), (M, 12), (N, 13), (O, 14), (P, 15)
+);

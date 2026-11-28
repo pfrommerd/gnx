@@ -198,48 +198,36 @@ pub trait JsonSource<'src>: TextSource<'src> {
         // Use a stack to avoid recursion.
         let mut stack = Vec::new();
         stack.push(value_type);
-        while let Some(value_type) = stack.last().map(|x| *x) {
-            match value_type {
-                ValueType::Object => {
-                    // Continue consuming the object until we hit the end,
-                    // or a nested value.
-                    loop {
-                        if !self.is_object_end()? {
-                            self.skip_object_key()?;
-                            match consume_item(self)? {
-                                Some(nested) => {
-                                    stack.push(nested);
-                                    break;
-                                }
-                                None => self.consume_delim_whitespace()?,
-                            }
-                        } else {
-                            self.consume_object_end()?;
-                            if !stack.is_empty() {
-                                // consume a delimiter and whitespace
-                                // after this object if there is any
-                                self.consume_delim_whitespace()?;
-                            }
-                        }
-                    }
+        let mut first = true;
+        while let Some(kind) = stack.last() {
+            self.consume_whitespace()?;
+            let end = if matches!(kind, ValueType::Object) {
+                '}'
+            } else {
+                ']'
+            };
+            if self.peek()? == Some(end) {
+                self.next()?;
+                stack.pop();
+                first = false;
+                continue;
+            }
+            if !first {
+                match self.next()? {
+                    Some(',') => self.consume_whitespace()?,
+                    Some(c) => return Err(JsonError::Unexpected(c)),
+                    None => return Err(JsonError::UnexpectedEOF),
                 }
-                ValueType::Array => loop {
-                    if !self.is_array_end()? {
-                        match consume_item(self)? {
-                            Some(nested) => {
-                                stack.push(nested);
-                                break;
-                            }
-                            None => self.consume_delim_whitespace()?,
-                        }
-                    } else {
-                        self.consume_array_end()?;
-                        if !stack.is_empty() {
-                            self.consume_delim_whitespace()?;
-                        }
-                    }
-                },
-                _ => panic!("Unexpected value type: {:?}", value_type),
+            }
+            if end == '}' {
+                self.skip_string()?;
+                self.consume_colon_sep()?;
+            }
+            if let Some(nested) = consume_item(self)? {
+                stack.push(nested);
+                first = true;
+            } else {
+                first = false;
             }
         }
         Ok(())

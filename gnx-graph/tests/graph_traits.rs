@@ -22,7 +22,7 @@ fn hash_graph<G, L, F>(graph: &G, filter: F) -> Vec<u8>
 where
     G: GraphHash,
     L: Leaf,
-    F: gnx_graph::Filter<L>,
+    F: gnx_graph::Filter<Leaf = L>,
 {
     let mut hasher = HashBytes::default();
     graph.graph_hash::<_, L, _>(&mut hasher, filter, &mut GraphHashContext::new());

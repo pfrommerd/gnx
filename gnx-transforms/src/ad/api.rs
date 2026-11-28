@@ -8,26 +8,23 @@ use std::sync::Arc;
 use gnx_base::Array;
 use gnx_base::ops::{eye_op, reshape_op};
 use gnx_expr::{Kind, ObjectTracer, Trace, VarInfo};
-use gnx_graph::{All, Filter};
+use gnx_graph::{All, Filter, Filtered};
 use gnx_graph::{Graph, GraphEq, GraphHash, Leaf, OwnedGraph};
-use std::marker::PhantomData;
 
 use super::region;
 use crate::cache::{TraceEntry, TracerBuilder, rebuild_graph};
 use crate::error::ApplyError;
 use crate::filters::Arguments;
 
-struct Wrt<L, F> {
+struct Wrt<F> {
     filter: F,
     positional: Option<Arguments>,
-    leaf: PhantomData<fn() -> L>,
 }
-impl<L, F> Wrt<L, F> {
+impl<F> Wrt<F> {
     fn new(filter: F) -> Self {
         Self {
             filter,
             positional: None,
-            leaf: PhantomData,
         }
     }
 }
@@ -56,9 +53,9 @@ struct Prepared<I: Graph, O: Graph> {
 }
 
 impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
-    fn new<L: Leaf, W: Filter<L>, A, E>(
+    fn new<W: Filter, A, E>(
         inputs: Inputs,
-        wrt: &Wrt<L, W>,
+        wrt: &Wrt<W>,
         input: &A,
         trace: impl FnOnce(TracerBuilder<I>, Vec<(Kind, VarInfo)>) -> Result<Arc<TraceEntry<O>>, E>,
     ) -> Result<Self, ApplyError<E>>
@@ -215,9 +212,9 @@ impl<I: Graph, O: Graph<Owned = O>> Prepared<I, O> {
 
 macro_rules! builder_methods {
     ($ty:ident) => {
-        impl<I: Graph, F: Function<I>, L: Leaf, W: Filter<L>> $ty<I, F, L, W> {
+        impl<I: Graph, F: Function<I>, W: Filter> $ty<I, F, W> {
             /// Differentiate the tracer leaves matched by a graph filter.
-            pub fn wrt<T: Leaf, S: Filter<T>>(self, filter: S) -> $ty<I, F, T, S::Owned> {
+            pub fn wrt<S: Filter>(self, filter: S) -> $ty<I, F, S::Owned> {
                 $ty {
                     jit: self.jit,
                     wrt: Wrt::new(filter.owned()),
@@ -225,12 +222,12 @@ macro_rules! builder_methods {
             }
 
             /// Differentiate one complete top-level positional argument (zero-based).
-            pub fn wrt_arg(self, index: usize) -> $ty<I, F, (), Arguments> {
+            pub fn wrt_arg(self, index: usize) -> $ty<I, F, Arguments> {
                 self.wrt_args([index])
             }
 
             /// Differentiate the specified top-level arguments; duplicates are ignored.
-            pub fn wrt_args(self, indices: impl AsRef<[usize]>) -> $ty<I, F, (), Arguments> {
+            pub fn wrt_args(self, indices: impl AsRef<[usize]>) -> $ty<I, F, Arguments> {
                 let args = Arguments::new(indices.as_ref().to_vec());
                 let mut result = self.wrt(&args);
                 result.wrt.positional = Some(args);
@@ -249,7 +246,7 @@ macro_rules! builder_methods {
 /// Implement the four call traits for a wrapper from one `apply` method.
 macro_rules! call_traits {
     ($ty:ident, $input:ty, $owned:ty, $output:ty, $name:literal) => {
-        impl<I: Graph, F: Function<I>, L: Leaf, W: Filter<L>> Function<$input> for $ty<I, F, L, W>
+        impl<I: Graph, F: Function<I>, W: Filter> Function<$input> for $ty<I, F, W>
         where
             $input: Graph,
             $output: Graph,
@@ -257,7 +254,7 @@ macro_rules! call_traits {
             type Output = $output;
         }
 
-        impl<I, F, L: Leaf, W: Filter<L>> Callable<$input> for $ty<I, F, L, W>
+        impl<I, F, W: Filter> Callable<$input> for $ty<I, F, W>
         where
             I: Graph,
             I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -275,7 +272,7 @@ macro_rules! call_traits {
             }
         }
 
-        impl<I, F, L: Leaf, W: Filter<L>> Jitable<$input> for $ty<I, F, L, W>
+        impl<I, F, W: Filter> Jitable<$input> for $ty<I, F, W>
         where
             I: Graph,
             I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -292,7 +289,7 @@ macro_rules! call_traits {
             }
         }
 
-        impl<I, F, L: Leaf, W: Filter<L>> TryCallable<$input> for $ty<I, F, L, W>
+        impl<I, F, W: Filter> TryCallable<$input> for $ty<I, F, W>
         where
             I: Graph,
             I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -307,7 +304,7 @@ macro_rules! call_traits {
             }
         }
 
-        impl<I, F, L: Leaf, W: Filter<L>> TryJitable<$input> for $ty<I, F, L, W>
+        impl<I, F, W: Filter> TryJitable<$input> for $ty<I, F, W>
         where
             I: Graph,
             I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -327,9 +324,9 @@ macro_rules! call_traits {
 // ----- jvp --------------------------------------------------------------------
 
 /// Forward mode; see [`jvp`].
-pub struct Jvp<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
+pub struct Jvp<I: Graph, F: Function<I>, W: Filter = All> {
     jit: Jit<I, F>,
-    wrt: Wrt<L, W>,
+    wrt: Wrt<W>,
 }
 
 /// Forward-mode differentiation (JAX's `jvp`). Call with `(primals, tangents)`,
@@ -343,7 +340,7 @@ pub fn jvp<I: Graph, F: Function<I>>(func: F) -> Jvp<I, F> {
 }
 builder_methods!(Jvp);
 
-impl<I, F, L: Leaf, W: Filter<L>> Jvp<I, F, L, W>
+impl<I, F, W: Filter> Jvp<I, F, W>
 where
     I: Graph,
     F: Function<I>,
@@ -380,9 +377,9 @@ call_traits!(
 // ----- vjp --------------------------------------------------------------------
 
 /// Reverse mode; see [`vjp`].
-pub struct Vjp<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
+pub struct Vjp<I: Graph, F: Function<I>, W: Filter = All> {
     jit: Jit<I, F>,
-    wrt: Wrt<L, W>,
+    wrt: Wrt<W>,
 }
 
 /// Reverse-mode differentiation (JAX's `vjp`). Call with `(primals,
@@ -398,7 +395,7 @@ pub fn vjp<I: Graph, F: Function<I>>(func: F) -> Vjp<I, F> {
 }
 builder_methods!(Vjp);
 
-impl<I, F, L: Leaf, W: Filter<L>> Vjp<I, F, L, W>
+impl<I, F, W: Filter> Vjp<I, F, W>
 where
     I: Graph,
     F: Function<I>,
@@ -443,7 +440,7 @@ call_traits!(
     "vjp"
 );
 
-impl<I, F, L: Leaf, W: Filter<L>> Vjp<I, F, L, W>
+impl<I, F, W: Filter> Vjp<I, F, W>
 where
     I: Graph,
     I::Owned: GraphHash + GraphEq<Builder<ObjectTracer> = TracerBuilder<I>>,
@@ -466,14 +463,15 @@ where
 // ----- grad / value_and_grad --------------------------------------------------
 
 /// The gradient of a scalar function; see [`grad`].
-pub struct Grad<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
+pub struct Grad<I: Graph, F: Function<I>, W: Filter = All> {
     jit: Jit<I, F>,
-    wrt: Wrt<L, W>,
+    wrt: Wrt<W>,
 }
 
 /// The gradient of a function returning one floating-point scalar (JAX's
-/// `grad`). The result has the arguments' structure, with zeros for leaves
-/// that aren't differentiated.
+/// `grad`). The result is a [`Filtered`] graph: traversal selects the `wrt`
+/// subtrees, while `.graph` retains the full argument structure with zeros for
+/// leaves that aren't differentiated.
 ///
 /// For an `ArrayRef`, the independent variable is the cell's contents at entry.
 /// The loss may read argument and captured cells, but may not write them.
@@ -489,7 +487,7 @@ pub fn grad<I: Graph, F: Function<I>>(func: F) -> Grad<I, F> {
 }
 builder_methods!(Grad);
 
-impl<I, F, L: Leaf, W: Filter<L>> Grad<I, F, L, W>
+impl<I, F, W: Filter> Grad<I, F, W>
 where
     I: Graph,
     F: Function<I>,
@@ -502,22 +500,25 @@ where
             TracerBuilder<I>,
             Vec<(Kind, VarInfo)>,
         ) -> Result<Arc<TraceEntry<F::Output>>, E>,
-    ) -> Result<I::Owned, ApplyError<E>>
+    ) -> Result<Filtered<I::Owned, W::Owned>, ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
         let prepared =
             Prepared::<I, F::Output>::new(Inputs::ReadOnlyCells, &self.wrt, &primals, trace)?;
         let (_, input_cts) = prepared.grad()?;
-        Ok(prepared.leaves.rebuild(input_cts))
+        Ok(Filtered::new(
+            prepared.leaves.rebuild(input_cts),
+            self.wrt.filter.owned(),
+        ))
     }
 }
-call_traits!(Grad, I, <I as Graph>::Owned, <I as Graph>::Owned, "grad");
+call_traits!(Grad, I, <I as Graph>::Owned, Filtered<I::Owned, W::Owned>, "grad");
 
 /// The value and gradient of a scalar function; see [`value_and_grad`].
-pub struct ValueAndGrad<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
+pub struct ValueAndGrad<I: Graph, F: Function<I>, W: Filter = All> {
     jit: Jit<I, F>,
-    wrt: Wrt<L, W>,
+    wrt: Wrt<W>,
 }
 
 /// Like [`grad`], also returning the function's result.
@@ -529,7 +530,7 @@ pub fn value_and_grad<I: Graph, F: Function<I>>(func: F) -> ValueAndGrad<I, F> {
 }
 builder_methods!(ValueAndGrad);
 
-impl<I, F, L: Leaf, W: Filter<L>> ValueAndGrad<I, F, L, W>
+impl<I, F, W: Filter> ValueAndGrad<I, F, W>
 where
     I: Graph,
     F: Function<I>,
@@ -542,7 +543,7 @@ where
             TracerBuilder<I>,
             Vec<(Kind, VarInfo)>,
         ) -> Result<Arc<TraceEntry<F::Output>>, E>,
-    ) -> Result<(F::Output, I::Owned), ApplyError<E>>
+    ) -> Result<(F::Output, Filtered<I::Owned, W::Owned>), ApplyError<E>>
     where
         A: Graph<Builder<ObjectTracer> = TracerBuilder<I>>,
     {
@@ -551,7 +552,7 @@ where
         let (outputs, input_cts) = prepared.grad()?;
         Ok((
             prepared.rebuild_output(outputs),
-            prepared.leaves.rebuild(input_cts),
+            Filtered::new(prepared.leaves.rebuild(input_cts), self.wrt.filter.owned()),
         ))
     }
 }
@@ -559,16 +560,16 @@ call_traits!(
     ValueAndGrad,
     I,
     <I as Graph>::Owned,
-    (F::Output, <I as Graph>::Owned),
+    (F::Output, Filtered<I::Owned, W::Owned>),
     "value_and_grad"
 );
 
 // ----- hessian ----------------------------------------------------------------
 
 /// The Hessian of a scalar function; see [`hessian`].
-pub struct Hessian<I: Graph, F: Function<I>, L: Leaf = (), W: Filter<L> = All> {
+pub struct Hessian<I: Graph, F: Function<I>, W: Filter = All> {
     jit: Jit<I, F>,
-    wrt: Wrt<L, W>,
+    wrt: Wrt<W>,
 }
 
 /// The Hessian of a function returning one floating-point scalar, with respect
@@ -585,7 +586,7 @@ pub fn hessian<I: Graph, F: Function<I>>(func: F) -> Hessian<I, F> {
 }
 builder_methods!(Hessian);
 
-impl<I, F, L: Leaf, W: Filter<L>> Hessian<I, F, L, W>
+impl<I, F, W: Filter> Hessian<I, F, W>
 where
     I: Graph,
     F: Function<I>,

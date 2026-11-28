@@ -162,7 +162,7 @@ fn map_rejects_specs_that_do_not_match_the_arguments() {
 fn array_arithmetic_differentiates_through_broadcasts() {
     let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let f = |x: Array, y: Array| sum(&((&x % &y) / &y - x));
-    let (dx, dy) = grad(f).invoke((floats(&[2], &[5., -3.]), scalar(2.)));
+    let (dx, dy) = grad(f).invoke((floats(&[2], &[5., -3.]), scalar(2.))).graph;
     eval(&device, &(dx.clone(), dy.clone()));
     close(&values(&device, &dx), &[-0.5, -0.5]);
     close(&values(&device, &dy), &[-0.5]);
@@ -186,7 +186,8 @@ fn numpy_and_lax_agree_on_bias_values_and_gradients() {
         };
         let y = scores(&x, &bias);
         let (_, db) = grad(move |x: Array, b: Array| np::sum(&scores(&x, &b), np::ALL))
-            .invoke((x.clone(), bias.clone()));
+            .invoke((x.clone(), bias.clone()))
+            .graph;
         assert_eq!(y.shape(), Shape::fixed([2]));
         eval(&device, &(y.clone(), db.clone()));
         close(&values(&device, &y), &[t, t]);
@@ -204,19 +205,19 @@ fn read_only_cell_gradients_follow_identity_and_snapshot_on_each_call() {
     let b = ArrayRef::new(scalar(5.));
     let df = value_and_grad(|a: ArrayRef, b: ArrayRef| a.get() * b.get()).wrt_arg(0);
     let result = df.invoke((a.clone(), b));
-    eval(&device, &result);
+    eval(&device, &(result.0.clone(), result.1.graph.clone()));
     close(&values(&device, &result.0), &[15.]);
-    close(&values(&device, &result.1.0.get()), &[5.]);
-    close(&values(&device, &result.1.1.get()), &[0.]);
+    close(&values(&device, &result.1.graph.0.get()), &[5.]);
+    close(&values(&device, &result.1.graph.1.get()), &[0.]);
 
     // Same cached trace; different entry value and different alias pattern.
     a.set(scalar(4.));
     let tied = df.invoke((a.clone(), a.clone()));
     eval(&device, &tied);
     close(&values(&device, &tied.0), &[16.]);
-    close(&values(&device, &tied.1.0.get()), &[8.]);
-    tied.1.0.set(scalar(17.));
-    close(&values(&device, &tied.1.1.get()), &[17.]);
+    close(&values(&device, &tied.1.graph.0.get()), &[8.]);
+    tied.1.graph.0.set(scalar(17.));
+    close(&values(&device, &tied.1.graph.1.get()), &[17.]);
     close(&values(&device, &a.get()), &[4.]);
 
     // A captured handle aliases the explicit input. Returning a read
@@ -224,15 +225,22 @@ fn read_only_cell_gradients_follow_identity_and_snapshot_on_each_call() {
     let captured = a.clone();
     let (dx,) = grad(|x: ArrayRef| x.get() * captured.get())
         .wrt(Of::<ArrayRef>::filter())
-        .invoke((a.clone(),));
+        .invoke((a.clone(),))
+        .graph;
     eval(&device, &dx);
     close(&values(&device, &dx.get()), &[8.]);
-    let square_grad = jit(|x: ArrayRef| grad(|z: ArrayRef| z.get() * z.get()).invoke((x,)).0.get());
+    let square_grad = jit(|x: ArrayRef| {
+        grad(|z: ArrayRef| z.get() * z.get())
+            .invoke((x,))
+            .graph
+            .0
+            .get()
+    });
     let dx = square_grad.invoke((a.clone(),));
     eval(&device, &dx);
     close(&values(&device, &dx), &[8.]);
 
-    let (dx,) = grad(|x: ArrayRef| x.get()).invoke((a,));
+    let (dx,) = grad(|x: ArrayRef| x.get()).invoke((a,)).graph;
     eval(&device, &dx);
     close(&values(&device, &dx.get()), &[1.]);
 }
@@ -247,7 +255,9 @@ fn indexed_reads_updates_and_gradients() {
     assert_eq!(y.shape(), Shape::fixed([2, 1, 2]));
     eval(&device, &y);
     close(&values(&device, &y), &[1., 1., 4., 4.]);
-    let (dx,) = grad(|x: Array| np::sum(&x.at((.., &indices)), np::ALL)).invoke((x.clone(),));
+    let (dx,) = grad(|x: Array| np::sum(&x.at((.., &indices)), np::ALL))
+        .invoke((x.clone(),))
+        .graph;
     eval(&device, &dx);
     close(&values(&device, &dx), &[2., 0., 0., 2., 0., 0.]);
     assert!(x.try_at((.., 3)).is_err());
@@ -275,11 +285,9 @@ fn cell_grad_keeps_value_arguments_positional_and_rejects_writes() {
     let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
     let x = scalar(2.);
     let cell = ArrayRef::new(scalar(3.));
-    let result = grad(|x: Array, y: Array, c: ArrayRef| x + y * c.get()).invoke((
-        x.clone(),
-        x,
-        cell.clone(),
-    ));
+    let result = grad(|x: Array, y: Array, c: ArrayRef| x + y * c.get())
+        .invoke((x.clone(), x, cell.clone()))
+        .graph;
     eval(&device, &result);
     close(&values(&device, &result.0), &[1.]);
     close(&values(&device, &result.1), &[3.]);
@@ -329,17 +337,120 @@ fn affine_model_differentiates_only_params() {
     let x = floats(&[2, 3], &[1., 0., 1., 0., 2., 1.]);
     let loss = value_and_grad(|m: Model, x: Array| np::sum(&m.head.forward(x), np::ALL) * m.scale)
         .wrt(Of::<Param>::filter());
-    let result = loss.invoke((model, x));
-    eval(&device, &result);
-    let (loss, (dm, dx)) = result;
+    let (loss, grads) = loss.invoke((model, x));
+    eval(&device, &(loss.clone(), grads.graph.clone()));
+    let (dm, dx) = grads.graph;
     close(&values(&device, &loss), &[40.]);
     close(
         &values(&device, &dm.head.weight.value()),
         &[2., 4., 4., 2., 4., 4.],
     );
-    close(&values(&device, &dm.head.bias().unwrap().value()), &[4., 4.]);
+    close(
+        &values(&device, &dm.head.bias().unwrap().value()),
+        &[4., 4.],
+    );
     close(&values(&device, &dm.scale), &[0.]);
     close(&values(&device, &dx), &[0.; 6]);
+}
+
+#[test]
+fn momentum_state_threads_through_jit_on_plain_arrays() {
+    use gnx::nn::optim::{GradientTransform, chain, sgd, trace};
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
+    let tx = chain(trace(0.5), sgd(0.25));
+    let step = jit(move |p: Array, g: Array, state: (Vec<Array>, ())| {
+        let (delta, state) = tx.update(g, &state, &p).unwrap();
+        (p + delta, state)
+    });
+    let p = scalar(2.);
+    let state = chain(trace(0.5), sgd(0.25)).init(&p).unwrap();
+    let (p, state) = step.invoke((p, scalar(4.), state));
+    let (p, _) = step.invoke((p, scalar(0.), state));
+    eval(&device, &p);
+    close(&values(&device, &p), &[0.5]);
+}
+
+#[test]
+fn adamw_updates_tied_parameters_once_and_skips_buffers() {
+    use gnx::{
+        graph::{Of, View},
+        nn::{Param, optim},
+    };
+    #[derive(Clone, Graph)]
+    struct Pair {
+        a: Param,
+        b: Param,
+        buffer: Array,
+    }
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
+    let a = Param::new(scalar(2.));
+    let model = Pair {
+        a: a.clone(),
+        b: a,
+        buffer: scalar(17.),
+    };
+    let f = grad(|m: Pair, x: Array| (m.a.value() + m.b.value()) * x + m.buffer)
+        .wrt(Of::<Param>::filter());
+    let args = (model.clone(), scalar(1.));
+    let initial = View::new(&args, Of::<Param>::filter());
+    let mut opt = optim::Optimizer::new(&initial, optim::adamw(0.1, 0.5)).unwrap();
+    // Updates can borrow a different parameter view with the same cell layout.
+    let params = View::new(&args, Of::<gnx::array::ArrayRef>::filter());
+    opt.update(&params, f.invoke(args.clone())).unwrap();
+    let first = model.a.value();
+    opt.update(&params, f.invoke((model.clone(), scalar(-1.))))
+        .unwrap();
+    let second = model.b.value();
+    eval(
+        &device,
+        &(first.clone(), second.clone(), model.buffer.clone()),
+    );
+    close(&values(&device, &first), &[1.8]);
+    close(&values(&device, &second), &[1.7152632]);
+    close(&values(&device, &model.buffer), &[17.]);
+    assert_eq!(opt.state().0.first.len(), 1);
+
+    // A different alias topology must fail before writing or advancing state.
+    let bad = Pair {
+        a: Param::new(scalar(1.)),
+        b: Param::new(scalar(1.)),
+        buffer: scalar(0.),
+    };
+    assert!(opt.update(&params, f.invoke((bad, scalar(1.)))).is_err());
+    let step = opt.state().0.step.astype(DType::F32);
+    eval(&device, &step);
+    close(&values(&device, &step), &[2.]);
+}
+
+#[test]
+fn sparse_updates_match_paths_and_leave_omitted_cells_and_moments_alone() {
+    use gnx::{array::ArrayRef, nn::optim};
+    let device = XlaDevice::cpu(gnx_base::cache::Cache::in_memory()).unwrap();
+    let cell = |x| ArrayRef::new(scalar(x));
+    let (a, b) = (cell(2.), cell(4.));
+    let params = [Some(a.clone()), Some(b.clone()), None].to_vec();
+    let mut opt = optim::Optimizer::new(&params, optim::adamw(0.1, 0.5)).unwrap();
+    opt.update(&params, vec![None, Some(cell(1.)), None])
+        .unwrap();
+    opt.update(&params, vec![Some(cell(0.)), None, None])
+        .unwrap();
+    // A valid first path must not be written if another path is missing.
+    assert!(
+        opt.update(&params, vec![Some(cell(1.)), None, Some(cell(1.))])
+            .is_err()
+    );
+    let moments = &opt.state().0;
+    let vals = vec![
+        a.get(),
+        b.get(),
+        moments.first[0].clone(),
+        moments.first[1].clone(),
+        moments.step.astype(DType::F32),
+    ];
+    eval(&device, &vals);
+    for (v, expected) in vals.iter().zip([1.9, 3.7, 0., 0.1, 2.]) {
+        close(&values(&device, v), &[expected]);
+    }
 }
 
 #[test]
@@ -354,9 +465,9 @@ fn grad_and_value_and_grad_follow_wrt() {
     let both = grad(f);
     let only_x = grad(f).wrt_arg(0);
     let (x, y) = (floats(&[2], &[1., 2.]), floats(&[2], &[3., 4.]));
-    let (dx, dy) = both.invoke((x.clone(), y.clone()));
-    let (dx_only, dy_zero) = only_x.invoke((x.clone(), y.clone()));
-    let (dx_zero, dy_only) = grad(f).wrt_arg(1).invoke((x.clone(), y.clone()));
+    let (dx, dy) = both.invoke((x.clone(), y.clone())).graph;
+    let (dx_only, dy_zero) = only_x.invoke((x.clone(), y.clone())).graph;
+    let (dx_zero, dy_only) = grad(f).wrt_arg(1).invoke((x.clone(), y.clone())).graph;
     eval(&device, &(dx_zero.clone(), dy_only.clone()));
     close(&values(&device, &dx_zero), &[0., 0.]);
     close(&values(&device, &dy_only), &[1., 4.]);
@@ -365,12 +476,13 @@ fn grad_and_value_and_grad_follow_wrt() {
     let _ = both.invoke((x.clone(), y.clone()));
     assert_eq!(traces.load(Ordering::Relaxed), before);
 
-    let (value, (gx, _)) = value_and_grad(f).invoke((x.clone(), y.clone()));
+    let (value, grads) = value_and_grad(f).invoke((x.clone(), y.clone()));
+    let (gx, _) = grads.graph;
     let macro_grad = gnx_transforms::grad!(
         |x: Array, y: Array| sum(&mul(&mul(&x, &x), &y)),
         wrt_arg = 1
     );
-    let (_, dy_macro) = macro_grad(x, y);
+    let (_, dy_macro) = macro_grad(x, y).graph;
 
     eval(
         &device,
@@ -424,16 +536,18 @@ fn transformations_compose() {
     let cube = |x: Array| mul(&mul(&x, &x), &x);
     // d²/dx² x³ = 6x, as grad of grad.
     let second = grad(grad(cube));
-    let (d2,) = second.invoke((scalar(2.),));
+    let (d2,) = second.invoke((scalar(2.),)).graph;
     // Hessian of sum(x³) is diag(6x).
     let h = hessian(|x: Array| sum(&cube(x))).invoke((floats(&[2], &[1., 2.]),));
     assert_eq!(h.shape(), Shape::fixed([2, 2]));
     // Per-example gradients of w * x with respect to the shared w.
     let per_example = map(grad(|w: Array, x: Array| mul(&w, &x)).wrt_arg(0)).in_axes(dag!(*, 0));
-    let (dw, _) = per_example.invoke((scalar(3.), floats(&[4], &[1., 2., 3., 4.])));
+    let (dw, _) = per_example
+        .invoke((scalar(3.), floats(&[4], &[1., 2., 3., 4.])))
+        .graph;
     // jit of grad.
     let jitted = jit(grad(cube));
-    let (d1,) = jitted.invoke((scalar(2.),));
+    let (d1,) = jitted.invoke((scalar(2.),)).graph;
 
     eval(&device, &(d2.clone(), h.clone(), dw.clone(), d1.clone()));
     close(&values(&device, &d2), &[12.]);

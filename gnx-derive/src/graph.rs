@@ -56,7 +56,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 type Owned = Self;
                 type Builder<L: g::Leaf> = g::NodeBuilder<#builder<L>>;
 
-                fn builder<L: g::Leaf, F: g::Filter<L>, E: g::Error>(
+                fn builder<L: g::Leaf, F: g::Filter<Leaf = L>, E: g::Error>(
                     &self, filter: F, ctx: &mut g::GraphContext,
                 ) -> Result<Self::Builder<L>, E> {
                     if filter.matches_ref(self).is_ok() { return Ok(g::NodeBuilder::Leaf); }
@@ -64,7 +64,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                         #(#names: self.#names.builder(filter.child(#keys), ctx)?,)*
                     }))
                 }
-                fn replace<'a, L: g::Leaf, F: g::Filter<L>, S: g::GraphSource<L::Ref<'a>, L>>(
+                fn replace<'a, L: g::Leaf, F: g::Filter<Leaf = L>, S: g::GraphSource<L::Ref<'a>, L>>(
                     &'a self, filter: F, source: S, ctx: &mut g::GraphContext,
                 ) -> Result<Self, S::Error> {
                     if let Ok(value) = filter.matches_ref(self) {
@@ -75,7 +75,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                         #(#names: self.#names.replace(filter.child(#keys), children.expect_child(#keys)?, ctx)?,)*
                     })
                 }
-                fn visit<'a, L: g::Leaf, F: g::Filter<L>, V: g::GraphVisitor<'a, Self, L, F::Annotation<'a>>>(
+                fn visit<'a, L: g::Leaf, F: g::Filter<Leaf = L>, V: g::GraphVisitor<'a, Self, L, F::Annotation<'a>>>(
                     &'a self, filter: F, visitor: V,
                 ) -> V::Output {
                     match filter.matches_ref(self) {
@@ -83,31 +83,31 @@ pub fn derive(input: TokenStream) -> TokenStream {
                         Err(node) => visitor.visit_node(g::View::new(node, filter)),
                     }
                 }
-                fn visit_into<L: g::Leaf, F: g::Filter<L>, C: g::GraphConsumer<Self, L>>(
+                fn visit_into<L: g::Leaf, F: g::Filter<Leaf = L>, C: g::GraphConsumer<Self, L>>(
                     self, filter: F, consumer: C,
                 ) -> C::Output {
                     match filter.matches_value(self) {
                         Ok(value) => consumer.consume_leaf(value),
-                        Err(node) => consumer.consume_node(g::Bound::new(node, filter)),
+                        Err(node) => consumer.consume_node(g::Filtered::new(node, filter)),
                     }
                 }
             }
             impl g::Node for #name {
-                fn visit_children<'a, L: g::Leaf, F: g::Filter<L>, V: g::ChildrenVisitor<'a, Self, L, F::Annotation<'a>>>(
+                fn visit_children<'a, L: g::Leaf, F: g::Filter<Leaf = L>, V: g::ChildrenVisitor<'a, Self, L, F::Annotation<'a>>>(
                     &'a self, filter: F, mut visitor: V,
                 ) -> V::Output {
                     #(visitor.visit_child(#keys, g::View::new(&self.#names, filter.child(#keys)));)*
                     visitor.finish()
                 }
-                fn visit_into_children<L: g::Leaf, F: g::Filter<L>, C: g::ChildrenConsumer<Self, L>>(
+                fn visit_into_children<L: g::Leaf, F: g::Filter<Leaf = L>, C: g::ChildrenConsumer<Self, L>>(
                     self, filter: F, mut consumer: C,
                 ) -> C::Output {
-                    #(consumer.consume_child(#keys.to_value(), g::Bound::new(self.#names, filter.child(#keys)));)*
+                    #(consumer.consume_child(#keys.to_value(), g::Filtered::new(self.#names, filter.child(#keys)));)*
                     consumer.finish()
                 }
             }
             impl g::GraphHash for #name {
-                fn graph_hash<H: g::anyhash::HasherWrite, L: g::Leaf, F: g::Filter<L>>(
+                fn graph_hash<H: g::anyhash::HasherWrite, L: g::Leaf, F: g::Filter<Leaf = L>>(
                     &self, h: &mut H, filter: F, ctx: &mut g::GraphHashContext,
                 ) {
                     g::anyhash::Hash::hash(&::core::any::type_name::<Self>(), h);
@@ -132,7 +132,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 }
             }
             impl g::GraphPartialEq for #name {
-                fn graph_partial_eq<L: g::Leaf, F: g::Filter<L>>(
+                fn graph_partial_eq<L: g::Leaf, F: g::Filter<Leaf = L>>(
                     &self, other: &Self, filter: F, ctx: &mut g::GraphEqContext,
                 ) -> bool {
                     match (filter.matches_ref(self), filter.matches_ref(other)) {

@@ -11,7 +11,7 @@ macro_rules! impl_rc {
             type Owned = $W<T::Owned>;
             type Builder<L: Leaf> = $W<T::Builder<L>>;
 
-            fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+            fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
                 &'g self, filter: F, source: S, ctx: &mut GraphContext,
             ) -> Result<Self::Owned, S::Error> {
                 let id = GraphId::from($W::as_ptr(self) as u64);
@@ -20,7 +20,7 @@ macro_rules! impl_rc {
                        .map($W::new)
                 })
             }
-            fn builder<L: Leaf, F: Filter<L>, E: Error>(
+            fn builder<L: Leaf, F: Filter<Leaf = L>, E: Error>(
                 &self, filter: F, ctx: &mut GraphContext
             ) -> Result<Self::Builder<L>, E> {
                 let id = GraphId::from($W::as_ptr(self) as u64);
@@ -30,13 +30,13 @@ macro_rules! impl_rc {
                 })
             }
 
-            fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+            fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
                 &'g self, filter: F, visitor: V
             ) -> V::Output {
                 let id = GraphId::from($W::as_ptr(self) as u64);
                 visitor.visit_shared(id, View::new(self.as_ref(), filter))
             }
-            fn visit_into<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+            fn visit_into<L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
                 self, filter: F, consumer: C
             ) -> C::Output {
                 let id = GraphId::from($W::as_ptr(&self) as u64);
@@ -68,7 +68,7 @@ impl<T: Graph> Graph for &T {
     type Owned = Arc<T::Owned>;
     type Builder<L: Leaf> = Arc<T::Builder<L>>;
 
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+    fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self,
         filter: F,
         source: S,
@@ -80,7 +80,7 @@ impl<T: Graph> Graph for &T {
         })
     }
 
-    fn builder<L: Leaf, F: Filter<L>, E: Error>(
+    fn builder<L: Leaf, F: Filter<Leaf = L>, E: Error>(
         &self,
         filter: F,
         ctx: &mut GraphContext,
@@ -89,7 +89,7 @@ impl<T: Graph> Graph for &T {
         ctx.create(id, |ctx| Ok(Arc::new(T::builder(self, filter, ctx)?)))
     }
 
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+    fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
@@ -98,7 +98,7 @@ impl<T: Graph> Graph for &T {
         visitor.visit_shared(id, View::new(*self, filter))
     }
 
-    fn visit_into<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+    fn visit_into<L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
         self,
         filter: F,
         consumer: C,

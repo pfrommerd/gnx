@@ -14,7 +14,7 @@ impl Graph for Array {
     type Owned = Self;
     type Builder<L: Leaf> = LeafBuilder<Self>;
 
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+    fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self,
         filter: F,
         source: S,
@@ -28,7 +28,7 @@ impl Graph for Array {
             Err(_) => Ok(self.clone()),
         }
     }
-    fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
+    fn builder<'g, L: Leaf, F: Filter<Leaf = L>, E: Error>(
         &'g self,
         filter: F,
         _ctx: &mut GraphContext,
@@ -39,7 +39,7 @@ impl Graph for Array {
             Err(_) => Ok(LeafBuilder::Static(self.clone())),
         }
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+    fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
@@ -50,7 +50,7 @@ impl Graph for Array {
             Err(_) => visitor.visit_static::<Self>(self),
         }
     }
-    fn visit_into<'g, L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+    fn visit_into<'g, L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
         self,
         filter: F,
         consumer: C,
@@ -138,7 +138,7 @@ impl Graph for ArrayRef {
     type Owned = Self;
     type Builder<L: Leaf> = LeafBuilder<Self>;
 
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+    fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self,
         filter: F,
         source: S,
@@ -152,7 +152,7 @@ impl Graph for ArrayRef {
             Err(_) => Ok(self.clone()),
         }
     }
-    fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
+    fn builder<'g, L: Leaf, F: Filter<Leaf = L>, E: Error>(
         &'g self,
         filter: F,
         _ctx: &mut GraphContext,
@@ -163,7 +163,7 @@ impl Graph for ArrayRef {
             Err(_) => Ok(LeafBuilder::Static(self.clone())),
         }
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+    fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
@@ -174,7 +174,7 @@ impl Graph for ArrayRef {
             Err(_) => visitor.visit_static::<Self>(self),
         }
     }
-    fn visit_into<'g, L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+    fn visit_into<'g, L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
         self,
         filter: F,
         consumer: C,

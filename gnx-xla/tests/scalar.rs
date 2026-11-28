@@ -122,7 +122,9 @@ fn weak_literals_and_casts_under_transforms() {
     let a = lax::iota([3], 0, DType::F32);
     let y = map(|x: Array| x.astype(DType::F64)).invoke((a.clone(),));
     assert_eq!(read(&d, y), [0_f64, 1., 2.].map(f64::to_ne_bytes).concat());
-    let (dx,) = grad(|x: Array| np::sum(&(x.astype(DType::F64) * 3.0), np::ALL)).invoke((a,));
+    let (dx,) = grad(|x: Array| np::sum(&(x.astype(DType::F64) * 3.0), np::ALL))
+        .invoke((a,))
+        .graph;
     assert_eq!(dx.dtype(), DType::F32);
     assert_eq!(read(&d, dx), [3_f32; 3].map(f32::to_ne_bytes).concat());
 }

@@ -8,6 +8,7 @@ members = [
     "gnx-expr",
     "gnx-graph",
     "gnx-io",
+    "gnx-io-derive",
     "gnx-torch",
     "gnx-xla",
     "gnx-xla-sys",

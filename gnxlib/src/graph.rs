@@ -118,7 +118,7 @@ impl Graph for PyGraph {
     type Owned = Self;
     type Builder<L: Leaf> = PyBuilder;
 
-    fn builder<L: Leaf, F: Filter<L>, E: Error>(
+    fn builder<L: Leaf, F: Filter<Leaf = L>, E: Error>(
             &self, filter: F, mut ctx: &mut GraphContext
     ) -> Result<Self::Builder<L>, E> {
         use PyGraph::*;
@@ -147,7 +147,7 @@ impl Graph for PyGraph {
         })
     }
 
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+    fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self, filter: F, source: S, ctx: &mut GraphContext
     ) -> Result<Self::Owned, S::Error> {
         use PyGraph::*;
@@ -189,7 +189,7 @@ impl Graph for PyGraph {
         })
     }
 
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+    fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
@@ -206,7 +206,7 @@ impl Graph for PyGraph {
             },
         }
     }
-    fn visit_into<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+    fn visit_into<L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
         self,
         filter: F,
         consumer: C,
@@ -219,14 +219,14 @@ impl Graph for PyGraph {
                     Err(s) => consumer.consume_static::<PyLeaf>(s),
                 },
                 PyGraph::Tracer(tracer) => tracer.visit_into(filter, GenericConsumer::<PyGraph, L, C>::from(consumer)),
-                _ => consumer.consume_node(gnx::graph::Bound::new(graph, filter)),
+                _ => consumer.consume_node(gnx::graph::Filtered::new(graph, filter)),
             },
         }
     }
 }
 
 impl GraphHash for PyGraph {
-    fn graph_hash<H: HasherWrite, L: Leaf, F: Filter<L>>(
+    fn graph_hash<H: HasherWrite, L: Leaf, F: Filter<Leaf = L>>(
         &self,
         hasher: &mut H,
         filter: F,
@@ -279,7 +279,7 @@ impl GraphHash for PyGraph {
 }
 
 impl GraphPartialEq for PyGraph {
-    fn graph_partial_eq<L: Leaf, F: Filter<L>>(
+    fn graph_partial_eq<L: Leaf, F: Filter<Leaf = L>>(
         &self,
         other: &Self,
         filter: F,
@@ -371,7 +371,7 @@ impl Node for PyGraph {
     fn visit_children<'g, L, F, V>(&'g self, filter: F, mut visitor: V) -> V::Output
     where
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
         V: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>,
     {
         match self {
@@ -394,7 +394,7 @@ impl Node for PyGraph {
     fn visit_into_children<L, F, C>(self, filter: F, mut consumer: C) -> C::Output
     where
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
         C: ChildrenConsumer<Self, L>,
     {
         match self {
@@ -402,7 +402,7 @@ impl Node for PyGraph {
                 children.into_iter().enumerate().for_each(|(i, child)| {
                     consumer.consume_child(
                         Key::from(i),
-                        gnx::graph::Bound::new(child, filter.child(KeyRef::from(i))),
+                        gnx::graph::Filtered::new(child, filter.child(KeyRef::from(i))),
                     );
                 });
             }
@@ -410,7 +410,7 @@ impl Node for PyGraph {
                 children.into_iter().for_each(|(key, child)| {
                     consumer.consume_child(
                         key.as_ref().to_value(),
-                        gnx::graph::Bound::new(child, filter.child(key.as_ref())),
+                        gnx::graph::Filtered::new(child, filter.child(key.as_ref())),
                     );
                 });
             }

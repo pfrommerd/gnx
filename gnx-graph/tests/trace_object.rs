@@ -5,8 +5,8 @@ use gnx_expr::{
 };
 use gnx_graph::util::GraphExt;
 use gnx_graph::{
-    Bound, Builder, Filter, Graph, GraphConsumer, GraphContext, GraphId, GraphSource, Leaf, Node,
-    Nothing, NullSource, Of, SourceError, TypedGraph, View,
+    Builder, Filter, Filtered, Graph, GraphConsumer, GraphContext, GraphId, GraphSource, Leaf,
+    Node, Nothing, NullSource, Of, SourceError, TypedGraph, View,
 };
 
 fn info() -> VarInfo {
@@ -55,10 +55,14 @@ impl<G: Graph, L: Leaf> GraphConsumer<G, L> for TakeLeaf {
     fn consume_static<S: Leaf>(self, _: S) -> Self::Output {
         None
     }
-    fn consume_node<N: Node, F: Filter<L>>(self, _: Bound<N, F>) -> Self::Output {
+    fn consume_node<N: Node, F: Filter<Leaf = L>>(self, _: Filtered<N, F>) -> Self::Output {
         panic!("expected leaf")
     }
-    fn consume_shared<S: Graph, F: Filter<L>>(self, _: GraphId, _: View<'_, S, F>) -> Self::Output {
+    fn consume_shared<S: Graph, F: Filter<Leaf = L>>(
+        self,
+        _: GraphId,
+        _: View<'_, S, F>,
+    ) -> Self::Output {
         panic!("expected unshared leaf")
     }
 }

@@ -14,7 +14,8 @@ pub fn on_axis<F>(axis: usize, filter: F) -> OnAxis<F> {
     OnAxis(axis, filter)
 }
 
-impl<L: Leaf, F: Filter<L>> Filter<L> for OnAxis<F> {
+impl<L: Leaf, F: Filter<Leaf = L>> Filter for OnAxis<F> {
+    type Leaf = L;
     type Annotation<'g> = usize;
     type Owned = OnAxis<F::Owned>;
     type ChildFilter<'s>
@@ -38,34 +39,32 @@ impl<L: Leaf, F: Filter<L>> Filter<L> for OnAxis<F> {
     }
 }
 
-/// Type witness: a filter may implement `Filter<L>` for more than one `L`.
+/// An axis filter binding and its optional structural validation.
 #[doc(hidden)]
 pub trait FilterType {
-    type Leaf: Leaf;
-    type Filter: Filter<Self::Leaf>;
+    type Filter: Filter;
     fn validate<G: Graph>(_: &Self::Filter, _: &G, _: &[Vec<Key>], _: &str) -> TransformResult<()> {
         Ok(())
     }
 }
 #[doc(hidden)]
-pub trait AxisType: FilterType<Filter: for<'g> Filter<Self::Leaf, Annotation<'g> = usize>> {}
-impl<B: FilterType> AxisType for B where B::Filter: for<'g> Filter<B::Leaf, Annotation<'g> = usize> {}
+pub trait AxisType: FilterType<Filter: for<'g> Filter<Annotation<'g> = usize>> {}
+impl<B: FilterType> AxisType for B where B::Filter: for<'g> Filter<Annotation<'g> = usize> {}
 
-/// Select the leaf type explicitly for a filter that implements `Filter` more than once.
-pub struct ByFilter<L, F = ()>(PhantomData<fn() -> (L, F)>);
-impl<L: Leaf, F: Filter<L>> FilterType for ByFilter<L, F> {
-    type Leaf = L;
+/// Use an annotated graph filter directly as an axis specification.
+pub struct ByFilter<F = ()>(PhantomData<fn() -> F>);
+impl<F: Filter> FilterType for ByFilter<F> {
     type Filter = F;
 }
-pub type DefaultAxes = ByFilter<(), OnAxis<All>>;
+pub type DefaultAxes = ByFilter<OnAxis<All>>;
 
 /// Convert an axis number, positional axis DAG, or annotated filter into a graph filter.
 pub trait IntoAxisFilter<K> {
     type Binding: AxisType;
     fn into_axis_filter(self) -> <Self::Binding as FilterType>::Filter;
 }
-impl<L: Leaf, F: for<'g> Filter<L, Annotation<'g> = usize>> IntoAxisFilter<ByFilter<L>> for F {
-    type Binding = ByFilter<L, F::Owned>;
+impl<F: for<'g> Filter<Annotation<'g> = usize>> IntoAxisFilter<ByFilter> for F {
+    type Binding = ByFilter<F::Owned>;
     fn into_axis_filter(self) -> F::Owned {
         self.owned()
     }
@@ -82,7 +81,8 @@ impl IntoAxisFilter<Positional> for usize {
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct Gate<T>(Option<T>);
-impl<T: Copy + 'static> Filter<()> for Gate<T> {
+impl<T: Copy + 'static> Filter for Gate<T> {
+    type Leaf = ();
     type Owned = Self;
     type ChildFilter<'s> = Self;
     type Annotation<'g> = T;
@@ -105,7 +105,6 @@ impl<T: Copy + 'static> Filter<()> for Gate<T> {
 /// Preserve strict shape checking for positional DAGs, including explicit empty leaves.
 pub struct PositionalDag<T>(PhantomData<T>);
 impl<T: Copy + 'static> FilterType for PositionalDag<T> {
-    type Leaf = ();
     type Filter = Dag<Gate<T>>;
     fn validate<G: Graph>(
         f: &Self::Filter,
@@ -132,7 +131,8 @@ impl Arguments {
         Self(Some(indices.into()))
     }
 }
-impl Filter<()> for Arguments {
+impl Filter for Arguments {
+    type Leaf = ();
     type Owned = Self;
     type ChildFilter<'s> = Gate<()>;
     type Annotation<'g> = ();

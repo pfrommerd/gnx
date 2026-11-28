@@ -44,7 +44,8 @@ fn typed_dag_converts_payloads_but_not_keys_or_shared_bindings() {
 /// Return the borrowed matched string together with its index within the selected subtree.
 #[derive(Clone)]
 struct Indexed(isize, std::rc::Rc<std::cell::Cell<usize>>);
-impl Filter<String> for Indexed {
+impl Filter for Indexed {
+    type Leaf = String;
     type Annotation<'g> = (isize, &'g str);
     type Owned = Self;
     type ChildFilter<'s> = Self;
@@ -90,7 +91,7 @@ fn child_annotations_borrow_original_leaves_and_preserve_sharing() {
     struct Annotate;
     impl<'g> gnx_graph::GraphVisitor<'g, String, String, (isize, &'g str)> for Annotate {
         type Output = (isize, &'g str);
-        fn visit_leaf<F: Filter<String, Annotation<'g> = Self::Output>>(
+        fn visit_leaf<F: Filter<Leaf = String, Annotation<'g> = Self::Output>>(
             self,
             value: &'g String,
             filter: F,
@@ -100,13 +101,16 @@ fn child_annotations_borrow_original_leaves_and_preserve_sharing() {
         fn visit_static<S: Leaf>(self, _: S::Ref<'g>) -> Self::Output {
             unreachable!()
         }
-        fn visit_node<N: gnx_graph::Node, F: Filter<String, Annotation<'g> = Self::Output>>(
+        fn visit_node<
+            N: gnx_graph::Node,
+            F: Filter<Leaf = String, Annotation<'g> = Self::Output>,
+        >(
             self,
             _: gnx_graph::View<'g, N, F>,
         ) -> Self::Output {
             unreachable!()
         }
-        fn visit_shared<S: Graph, F: Filter<String, Annotation<'g> = Self::Output>>(
+        fn visit_shared<S: Graph, F: Filter<Leaf = String, Annotation<'g> = Self::Output>>(
             self,
             _: gnx_graph::GraphId,
             _: gnx_graph::View<'g, S, F>,

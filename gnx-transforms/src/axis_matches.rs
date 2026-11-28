@@ -4,13 +4,13 @@ use gnx_graph::{
 };
 use std::{any::TypeId, collections::HashSet, marker::PhantomData};
 
-pub(crate) fn axes<L: Leaf, F: for<'a> Filter<L, Annotation<'a> = usize>>(
+pub(crate) fn axes<L: Leaf, F: for<'a> Filter<Leaf = L, Annotation<'a> = usize>>(
     graph: &impl Graph,
     filter: &F,
 ) -> Vec<(Vec<Key>, usize)> {
     collect::<Axes, _, _>(graph, filter)
 }
-pub(crate) fn locations<L: Leaf, F: Filter<L>>(
+pub(crate) fn locations<L: Leaf, F: Filter<Leaf = L>>(
     graph: &impl Graph,
     filter: &F,
 ) -> Vec<(Vec<Key>, ())> {
@@ -19,22 +19,22 @@ pub(crate) fn locations<L: Leaf, F: Filter<L>>(
 
 trait Record<'g, L: Leaf, A> {
     type Item;
-    fn matched<F: Filter<L, Annotation<'g> = A>>(leaf: L::Ref<'g>, filter: F) -> Self::Item;
+    fn matched<F: Filter<Leaf = L, Annotation<'g> = A>>(leaf: L::Ref<'g>, filter: F) -> Self::Item;
 }
 struct Axes;
 impl<'g, L: Leaf> Record<'g, L, usize> for Axes {
     type Item = usize;
-    fn matched<F: Filter<L, Annotation<'g> = usize>>(leaf: L::Ref<'g>, filter: F) -> usize {
+    fn matched<F: Filter<Leaf = L, Annotation<'g> = usize>>(leaf: L::Ref<'g>, filter: F) -> usize {
         filter.annotate(leaf)
     }
 }
 struct Locations;
 impl<'g, L: Leaf, A> Record<'g, L, A> for Locations {
     type Item = ();
-    fn matched<F: Filter<L, Annotation<'g> = A>>(_: L::Ref<'g>, _: F) {}
+    fn matched<F: Filter<Leaf = L, Annotation<'g> = A>>(_: L::Ref<'g>, _: F) {}
 }
 
-fn collect<'g, R, L: Leaf, F: Filter<L>>(
+fn collect<'g, R, L: Leaf, F: Filter<Leaf = L>>(
     graph: &'g impl Graph,
     filter: &F,
 ) -> Vec<(Vec<Key>, R::Item)>
@@ -60,15 +60,15 @@ impl<'g, G: Graph, L: Leaf, A, R: Record<'g, L, A>> GraphVisitor<'g, G, L, A>
     for &mut Matches<R, R::Item>
 {
     type Output = ();
-    fn visit_leaf<F: Filter<L, Annotation<'g> = A>>(self, value: L::Ref<'g>, filter: F) {
+    fn visit_leaf<F: Filter<Leaf = L, Annotation<'g> = A>>(self, value: L::Ref<'g>, filter: F) {
         self.items
             .push((self.path.clone(), R::matched(value, filter)));
     }
     fn visit_static<S: Leaf>(self, _: S::Ref<'g>) {}
-    fn visit_node<N: Node, F: Filter<L, Annotation<'g> = A>>(self, node: View<'g, N, F>) {
+    fn visit_node<N: Node, F: Filter<Leaf = L, Annotation<'g> = A>>(self, node: View<'g, N, F>) {
         node.visit_children(self);
     }
-    fn visit_shared<S: Graph, F: Filter<L, Annotation<'g> = A>>(
+    fn visit_shared<S: Graph, F: Filter<Leaf = L, Annotation<'g> = A>>(
         self,
         id: GraphId,
         shared: View<'g, S, F>,
@@ -82,7 +82,7 @@ impl<'g, N: Node, L: Leaf, A, R: Record<'g, L, A>> ChildrenVisitor<'g, N, L, A>
     for &mut Matches<R, R::Item>
 {
     type Output = ();
-    fn visit_child<C: Graph, F: Filter<L, Annotation<'g> = A>>(
+    fn visit_child<C: Graph, F: Filter<Leaf = L, Annotation<'g> = A>>(
         &mut self,
         key: KeyRef<'g>,
         child: View<'g, C, F>,

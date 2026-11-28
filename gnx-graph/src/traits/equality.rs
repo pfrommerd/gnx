@@ -47,12 +47,12 @@ pub trait GraphPartialEq<Rhs: Graph = Self>: Graph {
     fn graph_partial_eq<L, F>(&self, other: &Rhs, filter: F, ctx: &mut GraphEqContext) -> bool
     where
         L: Leaf,
-        F: Filter<L>;
+        F: Filter<Leaf = L>;
 
     fn graph_eq_filtered<L, F>(&self, other: &Rhs, filter: F) -> bool
     where
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
     {
         self.graph_partial_eq(other, filter, &mut GraphEqContext::new())
     }
@@ -70,7 +70,7 @@ pub trait GraphEq: GraphPartialEq<Self> {
     fn graph_eq<L, F>(&self, other: &Self, filter: F, ctx: &mut GraphEqContext) -> bool
     where
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
     {
         self.graph_partial_eq(other, filter, ctx)
     }
@@ -124,7 +124,7 @@ macro_rules! impl_leaf_eq {
                 ) -> bool
                 where
                     L: Leaf,
-                    F: Filter<L>,
+                    F: Filter<Leaf = L>,
                 {
                     self == other
                         || (filter.matches_ref(self).is_ok() && filter.matches_ref(other).is_ok())
@@ -146,7 +146,7 @@ impl GraphPartialEq for f32 {
     fn graph_partial_eq<L, F>(&self, other: &Self, filter: F, _ctx: &mut GraphEqContext) -> bool
     where
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
     {
         self.to_bits() == other.to_bits()
             || (filter.matches_ref(self).is_ok() && filter.matches_ref(other).is_ok())
@@ -161,7 +161,7 @@ impl GraphPartialEq for f64 {
     fn graph_partial_eq<L, F>(&self, other: &Self, filter: F, _ctx: &mut GraphEqContext) -> bool
     where
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
     {
         OrderedFloat::from(*self) == OrderedFloat::from(*other)
             || (filter.matches_ref(self).is_ok() && filter.matches_ref(other).is_ok())
@@ -180,7 +180,7 @@ where
     fn graph_partial_eq<L, F>(&self, other: &Vec<U>, filter: F, ctx: &mut GraphEqContext) -> bool
     where
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
     {
         if filter.matches_ref(self).is_ok() && filter.matches_ref(other).is_ok() {
             return true;
@@ -217,7 +217,7 @@ impl<T: GraphEq> GraphEq for Vec<T> {
 }
 
 impl<T: GraphPartialEq<U>, U: Graph> GraphPartialEq<Option<U>> for Option<T> {
-    fn graph_partial_eq<L: Leaf, F: Filter<L>>(
+    fn graph_partial_eq<L: Leaf, F: Filter<Leaf = L>>(
         &self,
         other: &Option<U>,
         filter: F,
@@ -259,7 +259,7 @@ macro_rules! impl_shared_eq {
             ) -> bool
             where
                 L: Leaf,
-                F: Filter<L>,
+                F: Filter<Leaf = L>,
             {
                 let left = GraphId::from($W::as_ptr(self) as u64);
                 let right = GraphId::from($W::as_ptr(other) as u64);
@@ -303,7 +303,7 @@ where
     fn graph_partial_eq<L, F>(&self, other: &&U, filter: F, ctx: &mut GraphEqContext) -> bool
     where
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
     {
         let left = GraphId::from(*self as *const T as u64);
         let right = GraphId::from(*other as *const U as u64);
@@ -340,7 +340,7 @@ macro_rules! impl_tuple_eq {
             ) -> bool
             where
                 L: Leaf,
-                F: Filter<L>,
+                F: Filter<Leaf = L>,
             {
                 if filter.matches_ref(self).is_ok() && filter.matches_ref(other).is_ok() {
                     return true;

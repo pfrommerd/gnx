@@ -437,7 +437,7 @@ pub fn grad(py: Python<'_>, f: Py<PyAny>, argnums: &Bound<'_, PyAny>) -> PyResul
     Ok(transformed("grad", function, move |input| {
         let input = ArgnumsFunction::split(&argnums, input)?;
         let cotangents = builder.try_invoke(input).map_err(apply_error)?;
-        Ok(selected_cotangents(cotangents, single))
+        Ok(selected_cotangents(cotangents.graph, single))
     }))
 }
 
@@ -460,7 +460,7 @@ pub fn value_and_grad(
         let (value, cotangents) = builder.try_invoke(input).map_err(apply_error)?;
         Ok(PyGraph::Tuple(vec![
             value,
-            selected_cotangents(cotangents, single),
+            selected_cotangents(cotangents.graph, single),
         ]))
     }))
 }

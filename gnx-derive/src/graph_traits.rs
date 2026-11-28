@@ -198,7 +198,7 @@ pub fn derive_graph_hash(input: ProcTokenStream) -> ProcTokenStream {
             where
                 H: #g::anyhash::HasherWrite,
                 L: #g::Leaf,
-                F: #g::Filter<L>,
+                F: #g::Filter<Leaf = L>,
             {
                 if filter.matches_ref(self).is_ok() {
                     #g::anyhash::Hash::hash(&#g::HashMarker::Excluded, hasher);
@@ -337,7 +337,7 @@ pub fn derive_graph_partial_eq(input: ProcTokenStream) -> ProcTokenStream {
             ) -> bool
             where
                 L: #g::Leaf,
-                F: #g::Filter<L>,
+                F: #g::Filter<Leaf = L>,
             {
                 if filter.matches_ref(self).is_ok() && filter.matches_ref(other).is_ok() {
                     true

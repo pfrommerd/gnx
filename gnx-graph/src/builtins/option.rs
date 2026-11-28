@@ -5,7 +5,7 @@ impl<T: Graph> Graph for Option<T> {
     type Owned = Option<T::Owned>;
     type Builder<L: Leaf> = Option<T::Builder<L>>;
 
-    fn builder<L: Leaf, F: Filter<L>, E: Error>(
+    fn builder<L: Leaf, F: Filter<Leaf = L>, E: Error>(
         &self,
         filter: F,
         ctx: &mut GraphContext,
@@ -14,7 +14,7 @@ impl<T: Graph> Graph for Option<T> {
             .map(|value| value.builder(filter, ctx))
             .transpose()
     }
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+    fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self,
         filter: F,
         source: S,
@@ -28,7 +28,7 @@ impl<T: Graph> Graph for Option<T> {
             }
         }
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+    fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
@@ -38,7 +38,7 @@ impl<T: Graph> Graph for Option<T> {
             None => visitor.visit_static::<()>(&()),
         }
     }
-    fn visit_into<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+    fn visit_into<L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
         self,
         filter: F,
         consumer: C,

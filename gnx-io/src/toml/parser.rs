@@ -1612,7 +1612,11 @@ impl<'src> VariantAccess<'src> for TomlVariantAccess<'_> {
     type Error = TomlError;
 
     fn unit_variant(self) -> Result<()> {
-        Ok(())
+        if self.value.is_some() {
+            Err(TomlError::Expected("a unit variant without a payload"))
+        } else {
+            Ok(())
+        }
     }
 
     fn newtype_variant_seed<T: DeserializeSeed<'src>>(self, seed: T) -> Result<T::Value> {

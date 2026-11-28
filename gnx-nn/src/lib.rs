@@ -13,6 +13,7 @@ mod init;
 pub mod linear;
 pub mod mlp;
 pub mod norm;
+pub mod optim;
 pub mod rngs;
 mod tensor;
 pub use attention::*;

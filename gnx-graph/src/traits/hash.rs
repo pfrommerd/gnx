@@ -80,7 +80,7 @@ pub trait GraphHash: Graph {
     where
         H: HasherWrite,
         L: Leaf,
-        F: Filter<L>;
+        F: Filter<Leaf = L>;
 
     fn hash_builder<H, L>(builder: &Self::Builder<L>, hasher: &mut H, ctx: &mut GraphHashContext)
     where
@@ -96,7 +96,7 @@ macro_rules! impl_leaf_hash {
                 where
                     H: HasherWrite,
                     L: Leaf,
-                    F: Filter<L>,
+                    F: Filter<Leaf = L>,
                 {
                     match filter.matches_ref(self) {
                         Ok(_) => Excluded::<Self>(PhantomData).hash(hasher),
@@ -140,7 +140,7 @@ impl GraphHash for f32 {
     where
         H: HasherWrite,
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
     {
         match filter.matches_ref(self) {
             Ok(_) => Excluded::<Self>(PhantomData).hash(hasher),
@@ -171,7 +171,7 @@ impl GraphHash for f64 {
     where
         H: HasherWrite,
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
     {
         match filter.matches_ref(self) {
             Ok(_) => Excluded::<Self>(PhantomData).hash(hasher),
@@ -202,7 +202,7 @@ impl<T: GraphHash> GraphHash for Vec<T> {
     where
         H: HasherWrite,
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
     {
         match filter.matches_ref(self) {
             Ok(_) => Excluded::<Self>(PhantomData).hash(hasher),
@@ -248,7 +248,7 @@ impl<T: GraphHash> GraphHash for Vec<T> {
 }
 
 impl<T: GraphHash> GraphHash for Option<T> {
-    fn graph_hash<H: HasherWrite, L: Leaf, F: Filter<L>>(
+    fn graph_hash<H: HasherWrite, L: Leaf, F: Filter<Leaf = L>>(
         &self,
         hasher: &mut H,
         filter: F,
@@ -282,7 +282,7 @@ macro_rules! impl_shared_hash {
             ) where
                 __Hasher: HasherWrite,
                 __Leaf: Leaf,
-                __Filter: Filter<__Leaf>,
+                __Filter: Filter<Leaf = __Leaf>,
             {
                 let id = GraphId::from($W::as_ptr(self) as u64);
                 match ctx.shared_index(id) {
@@ -331,7 +331,7 @@ impl<T: GraphHash> GraphHash for &T {
     where
         H: HasherWrite,
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
     {
         let id = GraphId::from(*self as *const T as u64);
         match ctx.shared_index(id) {
@@ -380,7 +380,7 @@ macro_rules! impl_tuple_hash {
             where
                 __Hasher: HasherWrite,
                 __Leaf: Leaf,
-                __Filter: Filter<__Leaf>,
+                __Filter: Filter<Leaf = __Leaf>,
             {
                 match filter.matches_ref(self) {
                     Ok(_) => Excluded::<Self>(PhantomData).hash(hasher),

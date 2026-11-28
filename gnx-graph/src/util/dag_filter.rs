@@ -40,7 +40,7 @@ fn step<'a, F: Clone>(
     }
 }
 
-fn match_ref<'g, L: Leaf, F: Filter<L>, G: Graph>(
+fn match_ref<'g, L: Leaf, F: Filter<Leaf = L>, G: Graph>(
     f: &F,
     path: &[Key],
     g: &'g G,
@@ -50,7 +50,7 @@ fn match_ref<'g, L: Leaf, F: Filter<L>, G: Graph>(
         Some((k, p)) => match_ref(&f.child(k.as_ref()), p, g),
     }
 }
-fn annotation<'g, L: Leaf, F: Filter<L>>(
+fn annotation<'g, L: Leaf, F: Filter<Leaf = L>>(
     f: &F,
     path: &[Key],
     leaf: L::Ref<'g>,
@@ -60,14 +60,15 @@ fn annotation<'g, L: Leaf, F: Filter<L>>(
         Some((k, p)) => annotation(&f.child(k.as_ref()), p, leaf),
     }
 }
-fn match_value<L: Leaf, F: Filter<L>, G: Graph>(f: &F, path: &[Key], g: G) -> Result<L, G> {
+fn match_value<L: Leaf, F: Filter<Leaf = L>, G: Graph>(f: &F, path: &[Key], g: G) -> Result<L, G> {
     match path.split_first() {
         None => f.matches_value(g),
         Some((k, p)) => match_value(&f.child(k.as_ref()), p, g),
     }
 }
 
-impl<L: Leaf, F: Filter<L>> Filter<L> for DagFilterCursor<'_, F> {
+impl<L: Leaf, F: Filter<Leaf = L>> Filter for DagFilterCursor<'_, F> {
+    type Leaf = L;
     type Owned = DagFilterCursor<'static, F::Owned>;
     type Annotation<'g> = F::Annotation<'g>;
     type ChildFilter<'s>
@@ -106,7 +107,8 @@ impl<L: Leaf, F: Filter<L>> Filter<L> for DagFilterCursor<'_, F> {
     }
 }
 
-impl<L: Leaf, F: Filter<L>> Filter<L> for Dag<F> {
+impl<L: Leaf, F: Filter<Leaf = L>> Filter for Dag<F> {
+    type Leaf = L;
     type Annotation<'g> = F::Annotation<'g>;
     type Owned = Dag<F::Owned>;
     type ChildFilter<'s>

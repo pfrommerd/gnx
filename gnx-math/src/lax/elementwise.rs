@@ -27,6 +27,7 @@ unary!(exp, try_exp, exp, inexact);
 unary!(log1p, try_log1p, log1p, inexact);
 unary!(cos, try_cos, cos, inexact);
 unary!(sin, try_sin, sin, inexact);
+unary!(sqrt, try_sqrt, sqrt, inexact);
 unary!(rsqrt, try_rsqrt, rsqrt, inexact);
 unary!(logistic, try_logistic, logistic, inexact);
 unary!(neg, try_neg, neg, |t| t != Bool);

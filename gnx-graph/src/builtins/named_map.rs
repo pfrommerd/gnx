@@ -15,7 +15,7 @@ pub struct NamedMapBuilder<K, B>(Vec<(K, B)>);
 impl<K: Name, V: Graph> Graph for HashMap<K, V> {
     type Owned = HashMap<K, V::Owned>;
     type Builder<L: Leaf> = NodeBuilder<NamedMapBuilder<K, V::Builder<L>>>;
-    fn builder<L: Leaf, F: Filter<L>, E: Error>(
+    fn builder<L: Leaf, F: Filter<Leaf = L>, E: Error>(
         &self,
         filter: F,
         ctx: &mut GraphContext,
@@ -35,7 +35,7 @@ impl<K: Name, V: Graph> Graph for HashMap<K, V> {
                 .collect::<Result<_, E>>()?,
         )))
     }
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+    fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self,
         filter: F,
         source: S,
@@ -59,7 +59,7 @@ impl<K: Name, V: Graph> Graph for HashMap<K, V> {
             })
             .collect()
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, Vv: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+    fn visit<'g, L: Leaf, F: Filter<Leaf = L>, Vv: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         v: Vv,
@@ -69,14 +69,14 @@ impl<K: Name, V: Graph> Graph for HashMap<K, V> {
             Err(x) => v.visit_node(View::new(x, filter)),
         }
     }
-    fn visit_into<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+    fn visit_into<L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
         self,
         filter: F,
         c: C,
     ) -> C::Output {
         match filter.matches_value(self) {
             Ok(l) => c.consume_leaf(l),
-            Err(x) => c.consume_node(Bound::new(x, filter)),
+            Err(x) => c.consume_node(Filtered::new(x, filter)),
         }
     }
 }
@@ -84,7 +84,7 @@ impl<K: Name, V: Graph> Node for HashMap<K, V> {
     fn visit_children<
         'g,
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
         C: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>,
     >(
         &'g self,
@@ -97,7 +97,7 @@ impl<K: Name, V: Graph> Node for HashMap<K, V> {
         }
         c.finish()
     }
-    fn visit_into_children<L: Leaf, F: Filter<L>, C: ChildrenConsumer<Self, L>>(
+    fn visit_into_children<L: Leaf, F: Filter<Leaf = L>, C: ChildrenConsumer<Self, L>>(
         self,
         f: F,
         mut c: C,
@@ -106,7 +106,7 @@ impl<K: Name, V: Graph> Node for HashMap<K, V> {
         entries.sort_unstable_by(|a, b| a.0.borrow().cmp(b.0.borrow()));
         for (k, v) in entries {
             let key = KeyRef::from(k.borrow());
-            c.consume_child(key.to_value(), Bound::new(v, f.child(key)));
+            c.consume_child(key.to_value(), Filtered::new(v, f.child(key)));
         }
         c.finish()
     }
@@ -129,7 +129,7 @@ impl<K: Name, L: Leaf, B: Builder<L>> Builder<L> for NamedMapBuilder<K, B> {
     }
 }
 impl<K: Name, V: GraphHash> GraphHash for HashMap<K, V> {
-    fn graph_hash<H: HasherWrite, L: Leaf, F: Filter<L>>(
+    fn graph_hash<H: HasherWrite, L: Leaf, F: Filter<Leaf = L>>(
         &self,
         h: &mut H,
         f: F,
@@ -156,7 +156,7 @@ impl<K: Name, V: GraphHash> GraphHash for HashMap<K, V> {
     }
 }
 impl<K: Name, V: GraphEq> GraphPartialEq for HashMap<K, V> {
-    fn graph_partial_eq<L: Leaf, F: Filter<L>>(
+    fn graph_partial_eq<L: Leaf, F: Filter<Leaf = L>>(
         &self,
         o: &Self,
         f: F,

@@ -37,7 +37,7 @@ pub trait Graph: Clone {
 
     // Replace nodes in this graph according to the given filter and source.
     // This is more efficient than creating a builder() and then calling build().
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+    fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self, replace: F, source: S, ctx: &mut GraphContext
     ) -> Result<Self::Owned, S::Error>;
 
@@ -50,15 +50,15 @@ pub trait Graph: Clone {
     // and can be used to construct the owned graph from a source.
     type Builder<L: Leaf>: Builder<L, Graph = Self::Owned> + 'static;
 
-    fn builder<L: Leaf, F: Filter<L>, E: Error>(
+    fn builder<L: Leaf, F: Filter<Leaf = L>, E: Error>(
         &self, replace: F, ctx: &mut GraphContext
     ) -> Result<Self::Builder<L>, E>;
 
     // Visitor functions for visiting the graph and its children.
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+    fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self, filter: F, visitor: V
     ) -> V::Output;
-    fn visit_into<'g, L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+    fn visit_into<'g, L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
         self, filter: F, consumer: C
     ) -> C::Output;
 
@@ -68,12 +68,12 @@ pub trait Node: Graph {
     fn visit_children<'g, L, F, V>(&'g self, filter: F, visitor: V) -> V::Output
     where
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
         V: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>;
     fn visit_into_children<L, F, C>(self, filter: F, consumer: C) -> C::Output
     where
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
         C: ChildrenConsumer<Self, L>;
 }
 

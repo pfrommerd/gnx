@@ -26,7 +26,7 @@ pub(crate) fn axes<B: AxisType>(
     B::validate(filter, graph, paths, name)?;
     Ok(project(crate::axis_matches::axes(graph, filter), paths))
 }
-pub(crate) fn wrt<L: Leaf, F: Filter<L>>(
+pub(crate) fn wrt<L: Leaf, F: Filter<Leaf = L>>(
     filter: &F,
     graph: &impl Graph,
     paths: &[Vec<Key>],

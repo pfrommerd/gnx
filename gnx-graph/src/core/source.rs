@@ -118,7 +118,7 @@ impl<'g, G: ?Sized, F> AsSource<'g, G, F> {
     }
 }
 
-impl<'g, A, L: Leaf, G: Graph, F: Filter<L>> GraphSource<A, L> for AsSource<'g, G, F> {
+impl<'g, A, L: Leaf, G: Graph, F: Filter<Leaf = L>> GraphSource<A, L> for AsSource<'g, G, F> {
     type Error = SourceError;
     type ChildrenSource = GenericChildren<'g, L>;
     fn leaf(self, _: A) -> Result<L, Self::Error> {
@@ -168,14 +168,14 @@ struct ToChildren;
 impl<'g, A, G: Graph, L: Leaf> GraphVisitor<'g, G, L,A> for ToLeaf {
     type Output = Result<L, SourceError>;
 
-    fn visit_leaf<F: Filter<L, Annotation<'g>=A>>(self, value: L::Ref<'_>, _: F)
+    fn visit_leaf<F: Filter<Leaf = L, Annotation<'g>=A>>(self, value: L::Ref<'_>, _: F)
         -> Self::Output { Ok(L::clone_ref(value)) }
     fn visit_static<S: Leaf>(self, _: S::Ref<'_>)
         -> Self::Output { Err(SourceError::expected_leaf()) }
-    fn visit_shared<S: Graph, F: Filter<L, Annotation<'g>=A>>(
+    fn visit_shared<S: Graph, F: Filter<Leaf = L, Annotation<'g>=A>>(
         self, _id: GraphId, shared: View<'g, S, F>,
     ) -> Self::Output { shared.visit(self) }
-    fn visit_node<N: Node, F: Filter<L, Annotation<'g>=A>>(self, _: View<'g, N, F>) -> Self::Output {
+    fn visit_node<N: Node, F: Filter<Leaf = L, Annotation<'g>=A>>(self, _: View<'g, N, F>) -> Self::Output {
         Err(SourceError::expected_leaf())
     }
 }
@@ -184,14 +184,14 @@ impl<'g, A, G: Graph, L: Leaf> GraphVisitor<'g, G, L,A> for ToLeaf {
 impl<'g, A, G: Graph, L: Leaf> GraphVisitor<'g, G, L,A> for IsStaticLeaf {
     type Output = bool;
 
-    fn visit_leaf<F: Filter<L, Annotation<'g>=A>>(self, _: L::Ref<'_>, _: F)
+    fn visit_leaf<F: Filter<Leaf = L, Annotation<'g>=A>>(self, _: L::Ref<'_>, _: F)
         -> Self::Output { false }
     fn visit_static<S: Leaf>(self, _: S::Ref<'_>)
         -> Self::Output { true }
-    fn visit_shared<S: Graph, F: Filter<L, Annotation<'g>=A>>(
+    fn visit_shared<S: Graph, F: Filter<Leaf = L, Annotation<'g>=A>>(
         self, _id: GraphId, shared: View<'g, S, F>,
     ) -> Self::Output { shared.visit(self) }
-    fn visit_node<N: Node, F: Filter<L, Annotation<'g>=A>>(self, _: View<'g, N, F>)
+    fn visit_node<N: Node, F: Filter<Leaf = L, Annotation<'g>=A>>(self, _: View<'g, N, F>)
     -> Self::Output { false }
 }
 
@@ -199,14 +199,14 @@ impl<'g, A, G: Graph, L: Leaf> GraphVisitor<'g, G, L,A> for IsStaticLeaf {
 impl<'g, A, G: Graph, L: Leaf> GraphVisitor<'g, G, L,A> for ToChildren {
     type Output = Result<GenericChildren<'g, L>, SourceError>;
 
-    fn visit_leaf<F: Filter<L, Annotation<'g>=A>>(self, _value: L::Ref<'_>, _: F)
+    fn visit_leaf<F: Filter<Leaf = L, Annotation<'g>=A>>(self, _value: L::Ref<'_>, _: F)
         -> Self::Output { Err(SourceError::expected_node()) }
     fn visit_static<S: Leaf>(self, _value: S::Ref<'_>)
         -> Self::Output { Err(SourceError::expected_node()) }
-    fn visit_shared<S: Graph, F: Filter<L, Annotation<'g>=A>>(
+    fn visit_shared<S: Graph, F: Filter<Leaf = L, Annotation<'g>=A>>(
         self, _id: GraphId, shared: View<'g, S, F>,
     ) -> Self::Output { shared.visit(self) }
-    fn visit_node<N: Node, F: Filter<L, Annotation<'g>=A>>(self, node: View<'g, N, F>) -> Self::Output {
+    fn visit_node<N: Node, F: Filter<Leaf = L, Annotation<'g>=A>>(self, node: View<'g, N, F>) -> Self::Output {
         Ok(node.visit_children(CollectChildren::default()))
     }
 }
@@ -220,7 +220,7 @@ impl<'g, L> Default for CollectChildren<'g, L> {
 #[rustfmt::skip]
 impl<'g, A, N: Node, L: Leaf> ChildrenVisitor<'g, N, L,A> for CollectChildren<'g, L> {
     type Output = GenericChildren<'g, L>;
-    fn visit_child<C: Graph, F: Filter<L, Annotation<'g>=A>>(
+    fn visit_child<C: Graph, F: Filter<Leaf = L, Annotation<'g>=A>>(
         &mut self,
         key: KeyRef<'_>,
         child: View<'g, C, F>,
@@ -242,7 +242,7 @@ pub trait _AnySource<'g, L> {
     fn empty_leaf_any(&self) -> Result<(), SourceError>;
     fn node_any(&self) -> Result<GenericChildren<'g, L>, SourceError>;
 }
-impl<'g, L: Leaf, G: Graph, F: Filter<L>> _AnySource<'g, L> for AsSource<'g, G, F> {
+impl<'g, L: Leaf, G: Graph, F: Filter<Leaf = L>> _AnySource<'g, L> for AsSource<'g, G, F> {
     fn leaf_any(&self) -> Result<L, SourceError> {
         self.0.visit(&self.1, ToLeaf)
     }

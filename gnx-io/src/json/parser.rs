@@ -311,9 +311,11 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
     ) -> Result<V::Value> {
         struct JsonEnumAccess<'a, S> {
             parser: &'a mut JsonParser<S>,
+            wrapped: bool,
         }
         struct JsonVariantAccess<'a, S> {
             parser: &'a mut JsonParser<S>,
+            wrapped: bool,
         }
         impl<'a, 'src, S: TextSource<'src>> EnumAccess<'src> for JsonEnumAccess<'a, S> {
             type Error = JsonError;
@@ -325,8 +327,12 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
             ) -> Result<(VS::Value, Self::Variant)> {
                 // Parse the variant type information:
                 let enum_info = seed.deserialize(&mut *self.parser)?;
+                if self.wrapped {
+                    self.parser.source.consume_colon_sep()?;
+                }
                 let variant_access = JsonVariantAccess {
                     parser: &mut *self.parser,
+                    wrapped: self.wrapped,
                 };
                 Ok((enum_info, variant_access))
             }
@@ -335,9 +341,15 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
             type Error = JsonError;
 
             fn unit_variant(self) -> Result<()> {
+                if self.wrapped {
+                    self.parser.source.consume_null()?;
+                }
                 Ok(())
             }
             fn newtype_variant_seed<T: DeserializeSeed<'src>>(self, seed: T) -> Result<T::Value> {
+                if !self.wrapped {
+                    return Err(JsonError::Other("expected an enum payload".into()));
+                }
                 seed.deserialize(&mut *self.parser)
             }
             fn tuple_variant<V: DataVisitor<'src>>(
@@ -345,6 +357,9 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
                 _len: usize,
                 visitor: V,
             ) -> Result<V::Value> {
+                if !self.wrapped {
+                    return Err(JsonError::Other("expected a tuple variant".into()));
+                }
                 self.parser.deserialize_seq(visitor)
             }
             fn struct_variant<V: DataVisitor<'src>>(
@@ -352,10 +367,30 @@ impl<'src, S: TextSource<'src>> Deserializer<'src> for &mut JsonParser<S> {
                 fields: &[&str],
                 visitor: V,
             ) -> Result<V::Value> {
+                if !self.wrapped {
+                    return Err(JsonError::Other("expected a struct variant".into()));
+                }
                 self.parser.deserialize_struct("", fields, visitor)
             }
         }
-        visitor.visit_enum(JsonEnumAccess { parser: self })
+        self.source.consume_whitespace()?;
+        let wrapped = match self.source.peek_type()? {
+            ValueType::Object => {
+                self.source.consume_object_start()?;
+                true
+            }
+            ValueType::String => false,
+            _ => return Err(JsonError::Other("expected an enum variant".into())),
+        };
+        let value = visitor.visit_enum(JsonEnumAccess {
+            parser: self,
+            wrapped,
+        })?;
+        if wrapped {
+            self.source.consume_whitespace()?;
+            self.source.consume_object_end()?;
+        }
+        Ok(value)
     }
 
     fn deserialize_ignored_any<V: DataVisitor<'src>>(self, visitor: V) -> Result<V::Value> {

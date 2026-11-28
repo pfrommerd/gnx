@@ -4,7 +4,16 @@ use std::marker::PhantomData;
 use gnx_base::Array;
 use gnx_graph::{Error, GraphContext, GraphId};
 
+#[doc(hidden)]
+pub mod borrow;
 mod builtins;
+mod key;
+#[doc(hidden)]
+pub use key::KeySeed;
+#[doc(hidden)]
+pub mod content;
+#[doc(hidden)]
+pub mod flat_input;
 
 pub trait Expecting {
     fn expected(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result;
@@ -20,6 +29,33 @@ impl<'a, E: Expecting> Display for Expected<'a, E> {
 
 pub trait Deserialize<'de>: Sized {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error>;
+
+    #[doc(hidden)]
+    fn missing_field<E: Error>(name: &str) -> Result<Self, E> {
+        Err(E::custom(format!("missing field: {name}")))
+    }
+}
+
+/// A value consumed without retaining any of its contents.
+pub struct IgnoredAny;
+
+impl Expecting for IgnoredAny {
+    fn expected(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("an ignored value")
+    }
+}
+
+impl DataVisitor<'_> for IgnoredAny {
+    type Value = Self;
+    fn visit_unit<E: Error>(self) -> Result<Self, E> {
+        Ok(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for IgnoredAny {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_ignored_any(Self)
+    }
 }
 
 pub trait DeserializeSeed<'de>: Sized {
@@ -135,6 +171,11 @@ pub trait Deserializer<'de>: Sized {
 #[rustfmt::skip]
 pub trait DataVisitor<'de> : Sized + Expecting {
     type Value;
+
+    #[doc(hidden)]
+    fn visit_flattened_option<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        self.visit_some(d)
+    }
 
     fn visit_shared<D: Deserializer<'de>>(self, id: GraphId, inner: D, ctx: &mut GraphContext) -> Result<Self::Value, D::Error> {
         let _ = (id, ctx);
@@ -291,7 +332,7 @@ pub trait MapAccess<'de>: Sized {
 
 pub trait EnumAccess<'de>: Sized {
     type Error: Error;
-    type Variant: VariantAccess<'de>;
+    type Variant: VariantAccess<'de, Error = Self::Error>;
     fn variant_seed<V: DeserializeSeed<'de>>(
         self,
         seed: V,

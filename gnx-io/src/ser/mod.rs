@@ -3,7 +3,10 @@ use gnx_graph::{Error, GraphId};
 
 use std::fmt::Display;
 
+mod buffer;
 mod builtins;
+#[doc(hidden)]
+pub mod flat;
 
 pub trait Serialize {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error>;

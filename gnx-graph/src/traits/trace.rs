@@ -11,7 +11,7 @@ use crate::*;
 macro_rules! impl_trace_traits {
     ($ty:ty, $identity:path) => {
         impl GraphPartialEq for $ty {
-            fn graph_partial_eq<L: Leaf, F: Filter<L>>(
+            fn graph_partial_eq<L: Leaf, F: Filter<Leaf = L>>(
                 &self,
                 other: &Self,
                 filter: F,
@@ -39,7 +39,7 @@ macro_rules! impl_trace_traits {
         }
 
         impl GraphHash for $ty {
-            fn graph_hash<H: HasherWrite, L: Leaf, F: Filter<L>>(
+            fn graph_hash<H: HasherWrite, L: Leaf, F: Filter<Leaf = L>>(
                 &self,
                 hasher: &mut H,
                 filter: F,
@@ -77,16 +77,19 @@ macro_rules! impl_trace_traits {
 struct IsSelected;
 impl<'g, A, G: Graph, L: Leaf> GraphVisitor<'g, G, L, A> for IsSelected {
     type Output = bool;
-    fn visit_leaf<F: Filter<L, Annotation<'g> = A>>(self, _: L::Ref<'g>, _: F) -> bool {
+    fn visit_leaf<F: Filter<Leaf = L, Annotation<'g> = A>>(self, _: L::Ref<'g>, _: F) -> bool {
         true
     }
     fn visit_static<S: Leaf>(self, _: S::Ref<'g>) -> bool {
         false
     }
-    fn visit_node<N: Node, F: Filter<L, Annotation<'g> = A>>(self, _: View<'g, N, F>) -> bool {
+    fn visit_node<N: Node, F: Filter<Leaf = L, Annotation<'g> = A>>(
+        self,
+        _: View<'g, N, F>,
+    ) -> bool {
         unreachable!("expected a leaf")
     }
-    fn visit_shared<S: Graph, F: Filter<L, Annotation<'g> = A>>(
+    fn visit_shared<S: Graph, F: Filter<Leaf = L, Annotation<'g> = A>>(
         self,
         _: GraphId,
         _: View<'g, S, F>,

@@ -37,7 +37,7 @@ fn leaf_graph_impl(ty: &TokenStream2, generics: &Generics) -> TokenStream2 {
             type Owned = Self;
             type Builder<L: #g::Leaf> = #g::LeafBuilder<Self>;
 
-            fn replace<'g, L: #g::Leaf, F: #g::Filter<L>, S: #g::GraphSource<L::Ref<'g>, L>>(
+            fn replace<'g, L: #g::Leaf, F: #g::Filter<Leaf = L>, S: #g::GraphSource<L::Ref<'g>, L>>(
                 &'g self, filter: F, source: S, _ctx: &mut #g::GraphContext,
             ) -> Result<Self::Owned, S::Error> {
                 match filter.matches_ref(self) {
@@ -48,7 +48,7 @@ fn leaf_graph_impl(ty: &TokenStream2, generics: &Generics) -> TokenStream2 {
                     Err(_) => Ok(self.clone())
                 }
             }
-            fn builder<'g, L: #g::Leaf, F: #g::Filter<L>, E: #g::Error>(
+            fn builder<'g, L: #g::Leaf, F: #g::Filter<Leaf = L>, E: #g::Error>(
                 &'g self, filter: F, _ctx: &mut #g::GraphContext
             ) -> Result<Self::Builder<L>, E> {
                 match filter.matches_ref(self) {
@@ -57,7 +57,7 @@ fn leaf_graph_impl(ty: &TokenStream2, generics: &Generics) -> TokenStream2 {
                 }
             }
 
-            fn visit<'g, L: #g::Leaf, F: #g::Filter<L>, V: #g::GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+            fn visit<'g, L: #g::Leaf, F: #g::Filter<Leaf = L>, V: #g::GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
                 &'g self, filter: F, visitor: V
             ) -> V::Output {
                 match filter.matches_ref(self) {
@@ -65,7 +65,7 @@ fn leaf_graph_impl(ty: &TokenStream2, generics: &Generics) -> TokenStream2 {
                     Err(s) => visitor.visit_static::<Self>(<Self as #g::Leaf>::as_ref(s))
                 }
             }
-            fn visit_into<L: #g::Leaf, F: #g::Filter<L>, C: #g::GraphConsumer<Self, L>>(
+            fn visit_into<L: #g::Leaf, F: #g::Filter<Leaf = L>, C: #g::GraphConsumer<Self, L>>(
                 self, filter: F, consumer: C
             ) -> C::Output {
                 match filter.matches_value(self) {

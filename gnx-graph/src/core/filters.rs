@@ -1,31 +1,39 @@
 use crate::{Graph, KeyRef, Leaf};
 use std::marker::PhantomData;
 
-pub trait Filter<L: Leaf>: Clone {
+/// Select graph locations and optionally annotate each match. Borrowing, owning,
+/// or descending a filter preserves the type of leaf it selects.
+pub trait Filter: Clone {
+    /// The value exposed to a visitor at a match (for example, `()` for [`All`]).
+    type Leaf: Leaf;
     type Annotation<'g>;
-    type Owned: for<'g> Filter<L, Annotation<'g> = Self::Annotation<'g>> + 'static;
+    type Owned: for<'g> Filter<Leaf = Self::Leaf, Annotation<'g> = Self::Annotation<'g>> + 'static;
 
     fn owned(&self) -> Self::Owned;
 
-    fn matches_ref<'g, G: Graph>(&self, graph: &'g G) -> Result<L::Ref<'g>, &'g G>;
-    fn matches_value<G: Graph>(&self, graph: G) -> Result<L, G>;
+    fn matches_ref<'g, G: Graph>(
+        &self,
+        graph: &'g G,
+    ) -> Result<<Self::Leaf as Leaf>::Ref<'g>, &'g G>;
+    fn matches_value<G: Graph>(&self, graph: G) -> Result<Self::Leaf, G>;
 
-    fn annotate<'g>(&self, graph: L::Ref<'g>) -> Self::Annotation<'g>;
+    fn annotate<'g>(&self, graph: <Self::Leaf as Leaf>::Ref<'g>) -> Self::Annotation<'g>;
 
     // Construct a filter for a given child key
-    type ChildFilter<'s>: for<'g> Filter<L, Annotation<'g> = Self::Annotation<'g>>
+    type ChildFilter<'s>: for<'g> Filter<Leaf = Self::Leaf, Annotation<'g> = Self::Annotation<'g>>
     where
         Self: 's;
 
     fn child<'s>(&'s self, key: KeyRef<'s>) -> Self::ChildFilter<'s>;
 
     // helpers
-    fn inv(self) -> Invert<L, Self> {
-        Invert(self, PhantomData)
+    fn inv(self) -> Invert<Self> {
+        Invert(self)
     }
 }
 
-impl<L: Leaf, F: Filter<L>> Filter<L> for &F {
+impl<L: Leaf, F: Filter<Leaf = L>> Filter for &F {
+    type Leaf = L;
     type Owned = F::Owned;
     type Annotation<'g> = F::Annotation<'g>;
     fn owned(&self) -> Self::Owned {
@@ -64,7 +72,8 @@ impl<L: Leaf> Of<L> {
     }
 }
 
-impl<L: Leaf> Filter<L> for Of<L> {
+impl<L: Leaf> Filter for Of<L> {
+    type Leaf = L;
     type Owned = Self;
     type Annotation<'g> = ();
     fn owned(&self) -> Self::Owned {
@@ -101,7 +110,8 @@ impl<L: Leaf> Nothing<L> {
 }
 
 #[rustfmt::skip]
-impl<L: Leaf> Filter<L> for Nothing<L> {
+impl<L: Leaf> Filter for Nothing<L> {
+    type Leaf = L;
     type Owned = Self;
     type Annotation<'g> = ();
 
@@ -130,7 +140,8 @@ impl<L: Leaf> Filter<L> for Nothing<L> {
 #[derive(Clone)]
 pub struct All;
 
-impl Filter<()> for All {
+impl Filter for All {
+    type Leaf = ();
     type Owned = Self;
     type Annotation<'g> = ();
     fn owned(&self) -> Self::Owned {
@@ -158,14 +169,15 @@ impl Filter<()> for All {
 }
 
 #[derive(Clone)]
-pub struct Invert<L: Leaf, F: Filter<L>>(F, PhantomData<L>);
+pub struct Invert<F: Filter>(F);
 
-impl<L: Leaf, F: Filter<L>> Filter<()> for Invert<L, F> {
-    type Owned = Invert<L, F::Owned>;
+impl<F: Filter> Filter for Invert<F> {
+    type Leaf = ();
+    type Owned = Invert<F::Owned>;
     type Annotation<'g> = ();
 
     fn owned(&self) -> Self::Owned {
-        Invert(self.0.owned(), PhantomData)
+        Invert(self.0.owned())
     }
     fn annotate<'g>(&self, _: <() as Leaf>::Ref<'g>) -> Self::Annotation<'g> {
         ()
@@ -185,11 +197,11 @@ impl<L: Leaf, F: Filter<L>> Filter<()> for Invert<L, F> {
     }
 
     type ChildFilter<'s>
-        = Invert<L, F::ChildFilter<'s>>
+        = Invert<F::ChildFilter<'s>>
     where
         Self: 's;
     fn child<'s>(&'s self, key: KeyRef<'s>) -> Self::ChildFilter<'s> {
-        Invert(self.0.child(key), PhantomData)
+        Invert(self.0.child(key))
     }
 }
 

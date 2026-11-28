@@ -21,7 +21,8 @@ fn shape(a: &Array) -> Vec<usize> {
 struct Weights(usize);
 #[derive(Clone)]
 struct WeightPairs;
-impl Filter<Weights> for WeightPairs {
+impl Filter for WeightPairs {
+    type Leaf = Weights;
     type Owned = Self;
     type ChildFilter<'s> = Self;
     type Annotation<'g> = usize;
@@ -209,9 +210,19 @@ fn wrt_indices_select_top_level_arguments_only() {
         Tracer::<Array>::placeholder(VarInfo::new(ArrayInfo::new(Shape::fixed([]), DType::I32)))
             .into();
     let args = (array(&[]), integer, array(&[]));
-    let (dx, dy, dz) = gnx_transforms::grad(f)
+    let grads = gnx_transforms::grad(f)
         .wrt_args([0, 2])
         .invoke(args.clone());
+    let visible =
+        gnx_graph::util::GraphExt::collect_leaves_with_paths(&grads, Of::<Array>::filter());
+    assert_eq!(
+        visible
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect::<Vec<_>>(),
+        [vec![gnx_graph::Key::from(0)], vec![gnx_graph::Key::from(2)]]
+    );
+    let (dx, dy, dz) = grads.graph;
     assert_eq!(
         (shape(&dx), shape(&dy), shape(&dz)),
         (vec![], vec![], vec![])

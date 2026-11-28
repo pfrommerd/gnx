@@ -66,7 +66,7 @@ impl Graph for PyLeaf {
     type Owned = Self;
     type Builder<L: Leaf> = LeafBuilder<Self>;
 
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+    fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self, filter: F, source: S, _ctx: &mut GraphContext,
     ) -> Result<Self::Owned, S::Error> {
         match filter.matches_ref(self) {
@@ -76,7 +76,7 @@ impl Graph for PyLeaf {
             Err(_) => Ok(self.clone())
         }
     }
-    fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
+    fn builder<'g, L: Leaf, F: Filter<Leaf = L>, E: Error>(
         &'g self, filter: F, _: &mut GraphContext
     ) -> Result<Self::Builder<L>, E> {
         match filter.matches_ref(self) {
@@ -84,7 +84,7 @@ impl Graph for PyLeaf {
             Err(_) => Ok(LeafBuilder::Static(self.clone())),
         }
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+    fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self, filter: F, visitor: V
     ) -> V::Output {
         match filter.matches_ref(self) {
@@ -92,7 +92,7 @@ impl Graph for PyLeaf {
             Err(s) => visitor.visit_static::<Self>(s.as_ref())
         }
     }
-    fn visit_into<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+    fn visit_into<L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
         self, filter: F, consumer: C
     ) -> C::Output {
         match filter.matches_value(self) {

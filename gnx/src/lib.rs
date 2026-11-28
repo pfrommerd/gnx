@@ -22,10 +22,11 @@ pub use gnx_graph as graph;
 ///     |m: &Model, x: Array| np::sum(&m.head.forward(x), np::ALL),
 ///     wrt = Of::<nn::Param>::filter(),
 /// );
-/// let (value, (grads, _)) = loss(&model, x);
-/// // Apply an update outside the loss. The gradient cells are independent.
-/// let bias = model.head.bias().unwrap();
-/// bias.set(bias.value() - grads.head.bias().unwrap().value() * 0.01);
+/// let args = (&model, x.clone());
+/// let params = gnx::graph::View::new(&args, Of::<nn::Param>::filter());
+/// let mut opt = nn::optim::Optimizer::new(&params, nn::optim::sgd(0.01)).unwrap();
+/// let (value, grads) = loss(&model, x);
+/// opt.update(&params, grads).unwrap();
 /// ```
 pub use gnx_nn as nn;
 

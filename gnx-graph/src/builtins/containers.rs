@@ -6,7 +6,7 @@ impl<T: Graph> Graph for Vec<T> {
     type Owned = Vec<T::Owned>;
     type Builder<L: Leaf> = NodeBuilder<Vec<T::Builder<L>>>;
 
-    fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
+    fn builder<'g, L: Leaf, F: Filter<Leaf = L>, E: Error>(
         &'g self,
         filter: F,
         mut ctx: &mut GraphContext,
@@ -25,7 +25,7 @@ impl<T: Graph> Graph for Vec<T> {
             )),
         }
     }
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+    fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self,
         filter: F,
         source: S,
@@ -50,7 +50,7 @@ impl<T: Graph> Graph for Vec<T> {
         }
     }
 
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+    fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
@@ -60,14 +60,14 @@ impl<T: Graph> Graph for Vec<T> {
             Err(graph) => visitor.visit_node(View::new(graph, filter)),
         }
     }
-    fn visit_into<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+    fn visit_into<L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
         self,
         filter: F,
         consumer: C,
     ) -> C::Output {
         match filter.matches_value(self) {
             Ok(leaf) => consumer.consume_leaf(leaf),
-            Err(graph) => consumer.consume_node(Bound::new(graph, filter)),
+            Err(graph) => consumer.consume_node(Filtered::new(graph, filter)),
         }
     }
 }
@@ -76,7 +76,7 @@ impl<T: Graph> Node for Vec<T> {
     fn visit_children<
         'g,
         L: Leaf,
-        F: Filter<L>,
+        F: Filter<Leaf = L>,
         V: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>,
     >(
         &'g self,
@@ -89,13 +89,16 @@ impl<T: Graph> Node for Vec<T> {
         });
         visitor.finish()
     }
-    fn visit_into_children<L: Leaf, F: Filter<L>, C: ChildrenConsumer<Self, L>>(
+    fn visit_into_children<L: Leaf, F: Filter<Leaf = L>, C: ChildrenConsumer<Self, L>>(
         self,
         filter: F,
         mut consumer: C,
     ) -> C::Output {
         self.into_iter().enumerate().for_each(|(i, x)| {
-            consumer.consume_child(Key::from(i), Bound::new(x, filter.child(KeyRef::from(i))));
+            consumer.consume_child(
+                Key::from(i),
+                Filtered::new(x, filter.child(KeyRef::from(i))),
+            );
         });
         consumer.finish()
     }
@@ -149,7 +152,7 @@ macro_rules! impl_tuple_graph {
 
                 type Builder<L: Leaf> = NodeBuilder<($($T::Builder<L>,)*)>;
 
-                fn builder<'g, L: Leaf, F: Filter<L>, E: Error>(
+                fn builder<'g, L: Leaf, F: Filter<Leaf = L>, E: Error>(
                     &'g self,
                     filter: F,
                     mut ctx: &mut GraphContext,
@@ -165,7 +168,7 @@ macro_rules! impl_tuple_graph {
                         })),
                     }
                 }
-                fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+                fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
                     &'g self,
                     filter: F,
                     source: S,
@@ -187,7 +190,7 @@ macro_rules! impl_tuple_graph {
                     }
                 }
 
-                fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+                fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
                     &'g self, filter: F, visitor: V
                 ) -> V::Output {
                     match filter.matches_ref(self) {
@@ -195,19 +198,19 @@ macro_rules! impl_tuple_graph {
                         Err(graph) => visitor.visit_node(View::new(graph, filter))
                     }
                 }
-                fn visit_into<L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+                fn visit_into<L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
                     self, filter: F, consumer: C
                 ) -> C::Output {
                     match filter.matches_value(self) {
                         Ok(leaf) => consumer.consume_leaf(leaf),
-                        Err(graph) => consumer.consume_node(Bound::new(graph, filter))
+                        Err(graph) => consumer.consume_node(Filtered::new(graph, filter))
                     }
                 }
             }
 
             impl<$($T: Graph,)*> Node for ($($T,)*) {
                 #[allow(unused_variables, unused_mut)]
-                fn visit_children<'g, L: Leaf, F: Filter<L>, V: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>>(
+                fn visit_children<'g, L: Leaf, F: Filter<Leaf = L>, V: ChildrenVisitor<'g, Self, L, F::Annotation<'g>>>(
                     &'g self, filter: F, mut visitor: V
                 ) -> V::Output {
                     let ($([<$T:lower>],)*) = self;
@@ -217,12 +220,12 @@ macro_rules! impl_tuple_graph {
                     visitor.finish()
                 }
                 #[allow(unused_variables, unused_mut)]
-                fn visit_into_children<L: Leaf, F: Filter<L>, C: ChildrenConsumer<Self, L>>(
+                fn visit_into_children<L: Leaf, F: Filter<Leaf = L>, C: ChildrenConsumer<Self, L>>(
                     self, filter: F, mut consumer: C
                 ) -> C::Output {
                     let ($([<$T:lower>],)*) = self;
                     $(
-                      consumer.consume_child(Key::Index($idx), Bound::new([<$T:lower>], filter.child(KeyRef::Index($idx))));
+                      consumer.consume_child(Key::Index($idx), Filtered::new([<$T:lower>], filter.child(KeyRef::Index($idx))));
                     )*
                     consumer.finish()
                 }

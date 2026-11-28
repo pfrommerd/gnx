@@ -89,7 +89,10 @@ impl Leaf for ObjectTracer {
     }
 }
 
-fn matches<'a, L: Leaf, F: Filter<L>>(object: &'a ObjectTracer, filter: &F) -> Option<L::Ref<'a>> {
+fn matches<'a, L: Leaf, F: Filter<Leaf = L>>(
+    object: &'a ObjectTracer,
+    filter: &F,
+) -> Option<L::Ref<'a>> {
     // Prefer matching the whole object, then expose its handle as an alternate
     // view. Never visit both and never descend into the trace DAG or a cell.
     filter.matches_ref(object).ok().or_else(|| match object {
@@ -102,7 +105,7 @@ impl Graph for ObjectTracer {
     type Owned = Self;
     type Builder<L: Leaf> = LeafBuilder<Self>;
 
-    fn replace<'g, L: Leaf, F: Filter<L>, S: GraphSource<L::Ref<'g>, L>>(
+    fn replace<'g, L: Leaf, F: Filter<Leaf = L>, S: GraphSource<L::Ref<'g>, L>>(
         &'g self,
         filter: F,
         source: S,
@@ -117,7 +120,7 @@ impl Graph for ObjectTracer {
             None => Ok(self.clone()),
         }
     }
-    fn builder<L: Leaf, F: Filter<L>, E: Error>(
+    fn builder<L: Leaf, F: Filter<Leaf = L>, E: Error>(
         &self,
         filter: F,
         _ctx: &mut GraphContext,
@@ -128,7 +131,7 @@ impl Graph for ObjectTracer {
             LeafBuilder::Static(self.clone())
         })
     }
-    fn visit<'g, L: Leaf, F: Filter<L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
+    fn visit<'g, L: Leaf, F: Filter<Leaf = L>, V: GraphVisitor<'g, Self, L, F::Annotation<'g>>>(
         &'g self,
         filter: F,
         visitor: V,
@@ -138,7 +141,7 @@ impl Graph for ObjectTracer {
             None => visitor.visit_static::<Self>(self.as_ref()),
         }
     }
-    fn visit_into<'g, L: Leaf, F: Filter<L>, C: GraphConsumer<Self, L>>(
+    fn visit_into<'g, L: Leaf, F: Filter<Leaf = L>, C: GraphConsumer<Self, L>>(
         self,
         filter: F,
         consumer: C,
