@@ -6,6 +6,7 @@ use gnx::{
     half::{bf16, f16},
     lax, map, np,
 };
+use gnx_base::Device as _;
 use gnx_math::{ExecOpts, TransferPolicy};
 use gnx_xla::XlaDevice;
 fn device() -> XlaDevice {
@@ -19,7 +20,10 @@ fn read(d: &XlaDevice, x: Array) -> Vec<u8> {
         },
     ))
     .unwrap();
-    d.download(x.data().unwrap()).unwrap().bytes().to_vec()
+    block_on(d.download(x.data().unwrap()))
+        .unwrap()
+        .bytes()
+        .to_vec()
 }
 #[test]
 fn scalar_types_and_bits() {

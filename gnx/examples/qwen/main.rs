@@ -1,10 +1,12 @@
 //! Greedy text completion with Qwen3.5-0.8B or Qwen3.8-27B on GNX.
+#[path = "../common/logging.rs"]
+mod logging;
 mod model;
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use futures_executor::block_on;
 use gnx::{
-    Array, Eval, ExecOpts, Shape,
+    Array, Device, DeviceHandle, Eval, ExecOpts, Shape,
     array::{ArrayInfo, DType},
     buffer::{DataHandle, HostBuffer, TransferPolicy},
     nn::{CacheKey, KVCache},
@@ -55,43 +57,14 @@ fn weights(dir: &Path) -> Result<Weights> {
     }
     Ok(weights)
 }
-#[derive(Clone, Copy, ValueEnum)]
-enum Backend {
-    Xla,
-    Torch,
-}
-
-trait QwenDevice: Eval {
-    fn upload(&self, data: &DataHandle) -> io::Result<DataHandle>;
-    fn readback(&self, data: &DataHandle) -> io::Result<HostBuffer>;
-}
-macro_rules! qwen_device {
-    ($device:ty) => {
-        impl QwenDevice for $device {
-            fn upload(&self, data: &DataHandle) -> io::Result<DataHandle> {
-                self.import(data, TransferPolicy::AllowCopy)
-            }
-            fn readback(&self, data: &DataHandle) -> io::Result<HostBuffer> {
-                self.download(data)
-            }
-        }
-    };
-}
-#[cfg(feature = "qwen-example")]
-qwen_device!(gnx_xla::XlaDevice);
-#[cfg(feature = "qwen-torch")]
-qwen_device!(gnx_torch::TorchDevice);
 
 /// Generate text or chat with a local Qwen checkpoint.
 #[derive(Parser)]
 #[command(name = "qwen")]
 struct Args {
-    /// Execution backend (defaults to XLA if built, otherwise Torch).
-    #[arg(long, value_enum, default_value = if cfg!(feature="qwen-example") {"xla"} else {"torch"})]
-    backend: Backend,
-    /// Run on a CUDA-visible GPU (default ordinal: 0). Omit to use the CPU.
-    #[arg(long, num_args = 0..=1, default_missing_value = "0", value_name = "ORDINAL")]
-    cuda: Option<usize>,
+    /// Device: default (XLA CUDA 0, then CPU), xla/cpu, torch/cpu, or <backend>/cuda:N.
+    #[arg(long, default_value = "default")]
+    device: String,
     /// Directory containing the checkpoint, config.json and tokenizer.json.
     #[arg(long, value_name = "DIR", default_value = "Qwen3.5-0.8B")]
     model_dir: PathBuf,
@@ -114,39 +87,16 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
-    match args.backend {
-        #[cfg(feature = "qwen-example")]
-        Backend::Xla => {
-            let device = match args.cuda {
-                Some(n) => gnx_xla::XlaDevice::cuda(n, gnx::cache::Cache::in_memory())?,
-                None => gnx_xla::XlaDevice::cpu(gnx::cache::Cache::in_memory())?,
-            };
-            let upload = args.cuda.is_some();
-            run(args, device, upload)
-        }
-        #[cfg(not(feature = "qwen-example"))]
-        Backend::Xla => Err("XLA backend not built; enable --features qwen-example".into()),
-        #[cfg(feature = "qwen-torch")]
-        Backend::Torch => {
-            let device = match args.cuda {
-                Some(n) => gnx_torch::TorchDevice::cuda(n, gnx::cache::Cache::in_memory())?,
-                None => gnx_torch::TorchDevice::cpu(gnx::cache::Cache::in_memory())?,
-            };
-            run(args, device, true)
-        }
-        #[cfg(not(feature = "qwen-torch"))]
-        Backend::Torch => Err("Torch backend not built; enable --features qwen-torch".into()),
-    }
-}
-
-fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()> {
     let Args {
+        device,
         model_dir: dir,
         prompt,
         chat,
-        ..
-    } = args;
+        context_length,
+        timings,
+    } = Args::parse();
+    let _logging = logging::init(&device, "error")?;
+    let device: DeviceHandle = device.parse()?;
     let config_path = dir.join("config.json");
     let config = fs::read(&config_path).map_err(|e| {
         format!(
@@ -155,7 +105,7 @@ fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()>
         )
     })?;
     let Checkpoint { text_config: model } = serde_json::from_slice(&config)?;
-    let capacity = args.context_length.min(model.max_position_embeddings);
+    let capacity = context_length.min(model.max_position_embeddings);
     if capacity == 0 || capacity > i32::MAX as usize || model.vocab_size > i32::MAX as usize {
         return Err("context and vocabulary must fit the decoder's i32 indices".into());
     }
@@ -167,15 +117,15 @@ fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()>
         .filter(|&id| (id as usize) < model.vocab_size)
         .ok_or("tokenizer must define a valid <|im_end|> token")?;
     let mut w = weights(&dir)?;
-    if import_weights {
-        // Upload each weight once; subsequent token steps reuse its device buffer.
-        for array in w.values_mut() {
-            *array = Array::from_data(device.upload(array.data().unwrap())?);
-        }
+    // Upload once (XLA CPU can borrow the aligned host storage).
+    for array in w.values_mut() {
+        *array = Array::from_data(block_on(
+            device.upload(array.data().unwrap(), TransferPolicy::AllowCopy),
+        )?);
     }
     let session = Decoder {
         capacity,
-        timings: args.timings,
+        timings,
         model: load_model(model, w, &device)?,
         device,
         tokenizer,
@@ -190,7 +140,7 @@ fn run<D: QwenDevice>(args: Args, device: D, import_weights: bool) -> Result<()>
     Ok(())
 }
 
-fn load_model(config: Config, weights: Weights, device: &impl QwenDevice) -> Result<Model> {
+fn load_model(config: Config, weights: Weights, device: &impl Device) -> Result<Model> {
     let model = Model::from_weights(config, weights, CacheKey::root())?;
     // Materialize checkpoint layout and scale conversions before tracing the first token.
     block_on(device.eval(
@@ -210,7 +160,7 @@ fn index(i: i32) -> io::Result<Array> {
         )?,
     )))
 }
-fn start_session<D: QwenDevice>(model: &Model, capacity: usize, device: &D) -> Result<KVCache> {
+fn start_session<D: Device>(model: &Model, capacity: usize, device: &D) -> Result<KVCache> {
     let mut cache = KVCache::new(capacity);
     model.init_cache(&mut cache);
     block_on(device.eval(
@@ -225,7 +175,7 @@ fn start_session<D: QwenDevice>(model: &Model, capacity: usize, device: &D) -> R
 #[cfg(test)]
 mod tests;
 
-struct Decoder<D: QwenDevice> {
+struct Decoder<D: Device> {
     capacity: usize,
     timings: bool,
     model: Model,
@@ -238,7 +188,7 @@ struct Decoder<D: QwenDevice> {
 #[error("context exhausted ({0} tokens) before <|im_end|>")]
 struct ContextExhausted(usize);
 
-impl<D: QwenDevice> Decoder<D> {
+impl<D: Device> Decoder<D> {
     fn chat(&self) -> Result<()> {
         let mut history = String::new();
         eprintln!("Enter a message. /reset clears the conversation; /quit or Ctrl-D exits.");
@@ -314,14 +264,14 @@ impl<D: QwenDevice> Decoder<D> {
         }
         let first = first.expect("nonempty prompt");
         if self.timings {
-            device.readback(first.data().expect("prefill evaluated"))?;
+            block_on(device.download(first.data().expect("prefill evaluated")))?;
             eprintln!("First token: {:.3} s", started.elapsed().as_secs_f64());
         }
         let decode_started = std::time::Instant::now();
         let result = model.decode(&first, &index(*end as i32)?, &cache);
         drop(cache);
         block_on(device.eval(&result, opts))?;
-        let read = |x: &Array| device.readback(x.data().expect("decode evaluated"));
+        let read = |x: &Array| block_on(device.download(x.data().expect("decode evaluated")));
         let (tokens, count, last) = result;
         if u32::from_le_bytes(read(&last)?.bytes().try_into()?) != *end {
             return Err(ContextExhausted(self.capacity).into());

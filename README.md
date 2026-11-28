@@ -131,7 +131,8 @@ Compile once with `let program = TorchDevice::cpu(cache)?.compile(&expr).await?`
 call `program.run(&args, opts)?` with captures followed by explicit inputs.
 Use `ExecOpts { transfers: TransferPolicy::AllowCopy }` for host inputs; tensors
 already imported on the device can be reused with the default zero-copy policy.
-`device.download(&handle)?` reads a result back into a packed `HostBuffer`.
+With `gnx::Device` in scope, `device.download(&handle).await?` reads a result
+back into a packed `HostBuffer` on either backend.
 
 Use `TorchDevice::cuda(0, cache)?` for the first CUDA-visible GPU. This requires a
 compatible NVIDIA driver and the CUDA-enabled runtime selected by `--features cuda`.
@@ -158,7 +159,11 @@ Rust `log` target `xla`. Install your application's logger before that point
 to capture startup records. With no logger, ordinary records are discarded.
 The bridge suppresses Abseil's process-wide stderr copy; fatal errors still
 terminate. Earlier startup messages and plugins writing directly to stderr
-can bypass the bridge.
+can bypass the bridge. On Linux, `qwen` and `sphere_train` also relay the CUDA
+plugin's native `I… file:line]` (and warning/error/fatal) stderr records to the
+`xla` target when using `default` or `xla/cuda:N`. Use `RUST_LOG=xla=info`
+to show informational records, or `RUST_LOG=xla=warn` to omit them. Other
+stderr diagnostics pass through unchanged.
 
 With a C++17 compiler, `curl`, and `tar` on PATH, run:
 
@@ -170,7 +175,7 @@ On GNU/Linux and macOS (x86_64 or aarch64), `gnx-xla-sys` downloads the matching
 [`xla_extension` v0.11.0](https://github.com/elixir-nx/xla/releases/tag/v0.11.0)
 CPU archive with `curl`, verifies its pinned SHA-256 before extracting it with
 `tar`, and caches it in Cargo's build output. On GNU/Linux x86_64 and aarch64,
-`qwen-example` enables the managed CUDA 13 bundle. This additionally downloads
+`examples` enables the managed CUDA 13 bundle. This additionally downloads
 a SHA-256-pinned PJRT plugin, NVIDIA runtime libraries (including `libcudart`,
 cuBLAS and cuDNN), and GPU compiler tools. Allow several GB for the first build.
 No Python installation, system CUDA toolkit, or `LD_LIBRARY_PATH` setup is needed.
@@ -180,7 +185,7 @@ libraries, including cuDNN 9.13. You can keep `TorchDevice::cuda(0, cache)?` and
 To test convolutions with both initialization orders, run:
 
 ```sh
-cargo test --release --locked -p gnx --features qwen-example --test cuda_coexist -- --ignored
+cargo test --release --locked -p gnx --features examples --test cuda_coexist -- --ignored
 ```
 
 For XLA alone, use `XLA_EXTENSION_VARIANT=cuda12` for CUDA 12, or `cpu` to
@@ -188,7 +193,7 @@ skip XLA's GPU downloads. These overrides do not select Torch's runtime.
 macOS builds are CPU-only.
 
 The plugin and driver are opened only when a GPU client is requested. The same
-managed binary runs on CPU with no NVIDIA driver installed; explicit `--cuda`
+managed binary runs on CPU with no NVIDIA driver installed; explicit `--device xla/cuda:0`
 requires a compatible host driver and an addressable GPU. To test CUDA, run:
 
 ```sh
@@ -202,16 +207,16 @@ device-buffer reuse, and readback. On a host **without** the NVIDIA driver, use
 explicit CUDA error path. For arrays initially stored on the host:
 
 ```rust
-use gnx::{Eval, ExecOpts, buffer::TransferPolicy, cache::Cache};
+use gnx::{Device, Eval, ExecOpts, buffer::TransferPolicy, cache::Cache};
 use gnx_xla::XlaDevice;
 
 let gpu = XlaDevice::cuda(0, Cache::in_memory())?;
 gpu.eval(&result, ExecOpts { transfers: TransferPolicy::AllowCopy }).await?;
-let host = gpu.download(result.data().unwrap())?;
+let host = gpu.download(result.data().unwrap()).await?;
 ```
 
 `ExecOpts::default()` requires zero-copy inputs. To upload a persistent weight
-once, use `gpu.import(&data, TransferPolicy::AllowCopy)`; subsequent evaluations
+once, use `gpu.upload(&data, TransferPolicy::AllowCopy).await?`; subsequent evaluations
 on that GPU can reuse the returned handle under the default policy.
 
 For an offline build or a custom runtime, set `XLA_EXTENSION_DIR` to the
@@ -246,46 +251,63 @@ extra input copy and takes no `allow_copy` flag. In Rust, use
 `HostBuffer::copy_from_slice` to create an aligned snapshot. Results already
 owned by the same XLA client can also be reused without copying.
 
+## Sphere encoder training in Rust
+
+```sh
+cargo run --locked --release -p gnx --features examples --example sphere_train
+```
+
+This example trains an encoder and decoder on three 16×16 RGB images:
+vertical stripes, horizontal stripes, and a checkerboard. The batch is generated
+in memory and reused as both input and reconstruction target. Each 4×4 patch
+is encoded as an eight-channel vector on the sphere. The progress bar shows
+reconstruction MSE, with an info log every 100 completed iterations. The final
+bar shows the post-update MSE, with the loss sparkline on the next line.
+Pass `-- --steps 100 --learning-rate 0.001` to tune Adam.
+
+Both examples accept `--device default|xla/cpu|xla/cuda:N|torch/cpu|torch/cuda:N`.
+Omitting `--device` tries XLA CUDA device 0 and falls back to XLA CPU. An explicit
+selector must succeed. `--features examples` enables both `xla-cuda` and `torch-cuda`.
+In Rust, use `"xla/cpu".parse::<gnx::DeviceHandle>()?` or
+`gnx::DeviceHandle::open("default", cache)?` to use your own compilation cache.
+
 ## Qwen text generation in Rust
 
-`qwen-example` builds both XLA and Torch with their CUDA features enabled.
-XLA is the default backend; execution is on CPU unless `--cuda` is passed.
 Run the example on a local
 [Qwen3.5-0.8B](https://huggingface.co/Qwen/Qwen3.5-0.8B) checkpoint:
 
 ```sh
 hf download Qwen/Qwen3.5-0.8B --local-dir Qwen3.5-0.8B \
   --include 'config.json' 'tokenizer.json' '*.safetensors'
-cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
+cargo run --locked --release -p gnx --features examples --example qwen -- \
   --model-dir Qwen3.5-0.8B --prompt $'<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n'
 ```
 
 To chat interactively with the same checkpoint:
 
 ```sh
-cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
+cargo run --locked --release -p gnx --features examples --example qwen -- \
   --model-dir Qwen3.5-0.8B --chat
 ```
 
-On an NVIDIA host, pass `--cuda`:
+To require an XLA GPU on an NVIDIA host:
 
 ```sh
-cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
-  --model-dir Qwen3.5-0.8B --cuda --chat
+cargo run --locked --release -p gnx --features examples --example qwen -- \
+  --model-dir Qwen3.5-0.8B --device xla/cuda:0 --chat
 ```
 
-`--cuda` selects ordinal 0; `--cuda 1` selects the second visible GPU. Weights
+`--device xla/cuda:1` selects the second visible GPU. Weights
 and layer caches stay on that device, so it must have enough VRAM for both.
 
 Select Torch from the **same binary**, with no additional feature or environment setup:
 
 ```sh
-cargo run --locked --release -p gnx --features qwen-example --example qwen -- \
-  --backend torch --cuda --model-dir Qwen3.5-0.8B --chat
+cargo run --locked --release -p gnx --features examples --example qwen -- \
+  --device torch/cuda:0 --model-dir Qwen3.5-0.8B --chat
 ```
 
-Omit `--cuda` to run on CPU with either backend. For a smaller Torch-only CPU
-build, `--features qwen-torch` omits XLA and downloads the CPU LibTorch archive.
+Pass `--device xla/cpu` or `--device torch/cpu` to require CPU execution.
 
 Enter one message per line. Chat prints each completed reply, excluding
 `<|im_end|>`. `/reset` clears history; `/quit` or Ctrl-D exits. Chat loads the
@@ -311,7 +333,7 @@ token and subsequent decode throughput separately.
 
 With `--timings`, first-token time includes prefill but excludes checkpoint
 loading. The first decode also compiles the loop. To measure warm decode, run
-`--cuda --chat --timings`, send a message, `/reset`, then repeat the message.
+`--device xla/cuda:0 --chat --timings`, send a message, `/reset`, then repeat the message.
 
 ## Compilation cache
 

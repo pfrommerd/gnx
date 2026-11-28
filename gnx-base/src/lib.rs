@@ -6,6 +6,8 @@ pub use half;
 pub mod array;
 pub mod buffer;
 pub mod cache;
+pub mod device;
+pub use device::{Device, ExecOpts};
 pub mod indexing;
 pub mod ops;
 pub mod pass;

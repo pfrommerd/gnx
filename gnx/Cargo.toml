@@ -22,12 +22,33 @@ safetensors = { version = "0.6", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }
+gnx-models = { path = "../gnx-models", optional = true }
+env_logger = { version = "0.11", optional = true }
+indicatif = { version = "0.18", optional = true }
+indicatif-log-bridge = { version = "0.2", optional = true }
+log = { version = "0.4", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+console = { version = "0.16", optional = true }
+regex = { version = "1", optional = true }
+rustix = { version = "1", features = ["stdio"], optional = true }
 
 [features]
-qwen-common = ["dep:clap", "dep:futures-executor", "dep:safetensors", "dep:serde", "dep:serde_json", "dep:tokenizers"]
-qwen-example = ["qwen-torch", "dep:gnx-xla", "gnx-xla/cuda", "gnx-torch/cuda"]
-qwen-torch = ["qwen-common", "dep:gnx-torch"]
+xla = ["dep:gnx-xla"]
+torch = ["dep:gnx-torch"]
+xla-cuda = ["xla", "gnx-xla/cuda"]
+torch-cuda = ["torch", "gnx-torch/cuda"]
+examples = [
+    "xla-cuda", "torch-cuda", "dep:clap", "dep:console", "dep:env_logger",
+    "dep:futures-executor", "dep:gnx-models", "dep:indicatif", "dep:indicatif-log-bridge",
+    "dep:log", "dep:regex", "dep:rustix", "dep:safetensors", "dep:serde", "dep:serde_json",
+    "dep:tokenizers",
+]
 
 [[example]]
 name = "qwen"
-required-features = ["qwen-common"]
+required-features = ["examples"]
+
+[[example]]
+name = "sphere_train"
+required-features = ["examples"]

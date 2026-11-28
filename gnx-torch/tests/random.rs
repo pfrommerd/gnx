@@ -2,6 +2,7 @@ use gnx::{
     Array, Callable, Eval, jit,
     random::{self, Algorithm::*},
 };
+use gnx_base::Device as _;
 use gnx_math::{DType, ExecOpts, TransferPolicy};
 use gnx_torch::TorchDevice;
 
@@ -16,8 +17,16 @@ fn torch_key_vectors_and_high_unsigned_words() {
             },
         ))
         .unwrap();
-        device.download(x.data().unwrap()).unwrap().bytes().to_vec()
+        futures_executor::block_on(device.download(x.data().unwrap()))
+            .unwrap()
+            .bytes()
+            .to_vec()
     };
+    // The U32 training counters must wrap at 2^32 on Torch's I32 storage.
+    assert_eq!(
+        read(Array::scalar(u32::MAX) + Array::scalar(1_u32)),
+        0_u32.to_ne_bytes()
+    );
     assert_eq!(read(Array::scalar(i64::MAX)), i64::MAX.to_ne_bytes());
     assert_eq!(
         read(Array::scalar((1_u32 << 31) + 1)),

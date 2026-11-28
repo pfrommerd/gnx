@@ -172,7 +172,8 @@ fn emit_results(body: Expr<'_>, inputs: &[Tensor]) -> io::Result<Vec<Tensor>> {
                 && !(op.get().dialect() == "array"
                     && matches!(
                         op.get().name(),
-                        "zeros"
+                        // Int32 addition preserves the same low 32 bits for U32 counters.
+                        "add" | "zeros"
                             | "ones"
                             | "constant"
                             | "reshape"

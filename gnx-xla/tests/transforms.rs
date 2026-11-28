@@ -3,6 +3,7 @@
 
 use futures_executor::block_on;
 use gnx::Eval;
+use gnx_base::Device as _;
 use gnx_base::pass::Builder;
 use gnx_expr::{
     Capture, Eqn, ObjectTracer, Op, Operation, Trace, TraceContext, Value, VarInfo,
@@ -90,19 +91,20 @@ fn eval(device: &XlaDevice, traces: &[Trace]) -> Vec<Vec<f32>> {
     traces
         .iter()
         .map(|trace| {
-            device
-                .download(
+            block_on(
+                device.download(
                     trace
                         .try_concrete()
                         .unwrap()
                         .downcast::<DataHandle>()
                         .unwrap(),
-                )
-                .unwrap()
-                .bytes()
-                .chunks_exact(4)
-                .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
-                .collect()
+                ),
+            )
+            .unwrap()
+            .bytes()
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+            .collect()
         })
         .collect()
 }

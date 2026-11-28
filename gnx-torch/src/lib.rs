@@ -7,6 +7,7 @@ use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gnx_base::cache::Cache;
+use gnx_base::device::run_blocking;
 use gnx_base::pass::{
     CheckSupported, Dce, Pass, PassError, Pipeline, PipelineError, RuntimePipeline,
 };
@@ -244,7 +245,7 @@ impl TorchDevice {
         self.retain(self.copy_from_host(data, policy)?, data.info())
     }
 
-    pub fn download(&self, data: &DataHandle) -> io::Result<HostBuffer> {
+    pub fn download_blocking(&self, data: &DataHandle) -> io::Result<HostBuffer> {
         let Some(t) = self.resolve(data)? else {
             return data.to_host();
         };
@@ -367,6 +368,16 @@ impl TorchExecutable {
 
 impl Device for TorchDevice {
     type Outputs = Vec<Value>;
+    async fn upload(&self, data: &DataHandle, policy: TransferPolicy) -> io::Result<DataHandle> {
+        let (device, data) = (self.clone(), data.clone());
+        run_blocking("gnx-torch", move || device.import(&data, policy)).await
+    }
+
+    async fn download(&self, data: &DataHandle) -> io::Result<HostBuffer> {
+        let (device, data) = (self.clone(), data.clone());
+        run_blocking("gnx-torch", move || device.download_blocking(&data)).await
+    }
+
     fn execute(
         &self,
         expr: Arc<RootExpr>,
@@ -375,19 +386,9 @@ impl Device for TorchDevice {
     ) -> impl Future<Output = io::Result<Vec<Value>>> + Send {
         let args: Vec<_> = args.into_iter().collect();
         let device = self.clone();
-        async move {
-            let (tx, rx) = futures_channel::oneshot::channel();
-            std::thread::Builder::new()
-                .name("gnx-torch".into())
-                .spawn(move || {
-                    let _ = tx.send(
-                        futures_executor::block_on(device.compile_joint(&expr))
-                            .and_then(|program| program.run(&args, opts)),
-                    );
-                })?;
-            rx.await
-                .map_err(|_| io::Error::other("Torch execution worker stopped"))?
-        }
+        run_blocking("gnx-torch", move || {
+            futures_executor::block_on(device.compile_joint(&expr))?.run(&args, opts)
+        })
     }
 }
 

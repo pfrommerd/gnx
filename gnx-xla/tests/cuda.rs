@@ -1,4 +1,5 @@
 //! Opt-in tests for CUDA PJRT and the GNX device on a real GPU.
+use gnx_base::Device as _;
 use xla::{ElementType, PjRtClient, XlaBuilder};
 
 #[test]
@@ -24,7 +25,7 @@ fn cuda_device_transfers_evaluates_and_reuses_buffers() -> Result<(), Box<dyn st
         &bytes,
     )?);
     assert_eq!(
-        gpu.import(&host, TransferPolicy::RequireZeroCopy)
+        block_on(gpu.upload(&host, TransferPolicy::RequireZeroCopy))
             .unwrap_err()
             .kind(),
         std::io::ErrorKind::Unsupported
@@ -45,7 +46,7 @@ fn cuda_device_transfers_evaluates_and_reuses_buffers() -> Result<(), Box<dyn st
         matches!(&data.shards()[0].location, MemoryLocation::Device { device, .. } if device == &gpu.id())
     );
     assert_eq!(
-        gpu.download(data)?.bytes(),
+        block_on(gpu.download(data))?.bytes(),
         [8i32, 18, 98].map(i32::to_le_bytes).concat()
     );
     Ok(())

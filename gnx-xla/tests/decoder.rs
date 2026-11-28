@@ -1,5 +1,6 @@
 use futures_executor::block_on;
 use gnx::{Array, Callable, Eval, jit, lax, nn::*, random::Algorithm};
+use gnx_base::Device as _;
 use gnx_math::{DType::F32, ExecOpts, TransferPolicy};
 use gnx_xla::XlaDevice;
 fn device() -> XlaDevice {
@@ -17,7 +18,7 @@ fn read(d: &XlaDevice, x: Array) -> Vec<f32> {
         },
     ))
     .unwrap();
-    d.download(x.data().unwrap())
+    block_on(d.download(x.data().unwrap()))
         .unwrap()
         .bytes()
         .chunks_exact(4)

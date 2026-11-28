@@ -1,6 +1,7 @@
 //! Exercise each load order in a fresh process; both devices stay live in each child.
-#![cfg(all(target_os = "linux", target_arch = "x86_64", feature = "qwen-example"))]
+#![cfg(all(target_os = "linux", target_arch = "x86_64", feature = "examples"))]
 
+use gnx_base::Device as _;
 use gnx_base::pass::Builder;
 use gnx_expr::{Value, VarInfo};
 use gnx_math::{
@@ -86,9 +87,8 @@ fn xla_conv(d: &XlaDevice, scale: f32) {
             },
         )
         .unwrap();
-    let host = d
-        .download(out[0].downcast::<DataHandle>().unwrap())
-        .unwrap();
+    let host =
+        futures_executor::block_on(d.download(out[0].downcast::<DataHandle>().unwrap())).unwrap();
     assert_eq!(
         host.bytes(),
         (72. * scale).to_le_bytes().repeat(Y.iter().product())

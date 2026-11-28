@@ -1,5 +1,6 @@
 // Reference values generated with jax.lax and jax.jvp on CPU (JAX 0.12.0.1).
 
+use gnx_base::Device as _;
 use gnx_base::pass::Builder;
 use gnx_expr::{Op, Value, VarInfo};
 use gnx_math::ops::{dtype, elementwise, special};
@@ -72,18 +73,19 @@ fn check(
             },
         )
         .unwrap();
-    let actual = device
-        .download(result[0].downcast::<DataHandle>().unwrap())
-        .unwrap();
+    let actual =
+        futures_executor::block_on(device.download(result[0].downcast::<DataHandle>().unwrap()))
+            .unwrap();
     if ty == DType::Bool {
         assert_eq!(actual.bytes(), expected.map(|v| v as u8), "{name}");
     } else {
         close(actual.bytes(), &expected, &name);
     }
     if let Some(tangent) = derivative {
-        let actual = device
-            .download(result[1].downcast::<DataHandle>().unwrap())
-            .unwrap();
+        let actual = futures_executor::block_on(
+            device.download(result[1].downcast::<DataHandle>().unwrap()),
+        )
+        .unwrap();
         close(actual.bytes(), &tangent, &format!("{name} JVP"));
     }
 }

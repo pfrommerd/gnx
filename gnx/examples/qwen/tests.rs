@@ -75,7 +75,7 @@ fn reference(ids: &[usize]) -> Vec<f32> {
     }
     EMBEDDING.iter().map(|&e| dot(e, norm(result))).collect()
 }
-fn check_logits<D: QwenDevice>(device: D) -> Result<()> {
+fn check_logits<D: Device>(device: D) -> Result<()> {
     let (model, w) = fixture();
     let capacity = 4;
     let model = load_model(model, w, &device)?;
@@ -85,7 +85,7 @@ fn check_logits<D: QwenDevice>(device: D) -> Result<()> {
             ArrayInfo::new(Shape::fixed([capacity, 1, 2]), DType::F32),
             f32::NAN.to_le_bytes().repeat(capacity * 2),
         )?;
-        let backing = device.upload(&DataHandle::new(init))?;
+        let backing = block_on(device.upload(&DataHandle::new(init), TransferPolicy::AllowCopy))?;
         let cache = start_session(&model, capacity, &device)?;
         let (k, v) = CacheKey::root().split().0.split();
         for key in [k, v] {
@@ -110,7 +110,7 @@ fn check_logits<D: QwenDevice>(device: D) -> Result<()> {
                     transfers: TransferPolicy::AllowCopy,
                 },
             ))?;
-            let logits = device.readback(logits.data().unwrap())?;
+            let logits = block_on(device.download(logits.data().unwrap()))?;
             for (actual, expected) in logits.bytes().chunks_exact(4).zip(reference(&ids[..=pos])) {
                 let actual = f32::from_le_bytes(actual.try_into()?);
                 assert!(
@@ -122,7 +122,6 @@ fn check_logits<D: QwenDevice>(device: D) -> Result<()> {
     }
     Ok(())
 }
-#[cfg(feature = "qwen-torch")]
 #[test]
 fn mapped_cache_forward_matches_independent_sessions() -> Result<()> {
     let device = gnx_torch::TorchDevice::cpu(gnx::cache::Cache::in_memory())?;
@@ -173,7 +172,9 @@ fn mapped_cache_forward_matches_independent_sessions() -> Result<()> {
     let (k, v) = CacheKey::root().split().0.split();
     let bytes = |x: &Array| -> Result<Vec<u8>> {
         block_on(device.eval(x, opts))?;
-        Ok(device.readback(x.data().unwrap())?.bytes().to_vec())
+        Ok(block_on(device.download(x.data().unwrap()))?
+            .bytes()
+            .to_vec())
     };
     let mut first_program = None;
     for tokens in [[0, 1], [1, 2], [2, 0]] {
@@ -214,7 +215,7 @@ fn mapped_cache_forward_matches_independent_sessions() -> Result<()> {
 
 // A tiny model with an untied output head and deterministic transition
 // 2 -> 0 -> 1 -> 2. Exercise the actual prefill, compiled loop and readback.
-fn check_reply<D: QwenDevice>(device: D) -> Result<()> {
+fn check_reply<D: Device>(device: D) -> Result<()> {
     let (mut cfg, mut weights) = fixture();
     cfg.tie_word_embeddings = false;
     let head = [EMBEDDING[2], EMBEDDING[0], EMBEDDING[1]].concat();
@@ -247,7 +248,6 @@ fn check_reply<D: QwenDevice>(device: D) -> Result<()> {
 // Check the depthwise kernel layout and both recurrent slots against a scalar
 // reference. Q/K/V/Z and output projections are identity; beta and decay are 1/2.
 #[test]
-#[cfg(feature = "qwen-torch")]
 fn torch_delta_logits() -> Result<()> {
     let device = gnx_torch::TorchDevice::cpu(gnx::cache::Cache::in_memory())?;
     let (mut config, mut w) = fixture();
@@ -310,7 +310,7 @@ fn torch_delta_logits() -> Result<()> {
                 transfers: TransferPolicy::AllowCopy,
             },
         ))?;
-        let actual = device.readback(logits.data().unwrap())?;
+        let actual = block_on(device.download(logits.data().unwrap()))?;
         for (bytes, e) in actual.bytes().chunks_exact(4).zip(EMBEDDING) {
             let expected = e[0] * hidden[0] + e[1] * hidden[1];
             assert!((f32::from_le_bytes(bytes.try_into()?) - expected).abs() < 2e-5);
@@ -319,29 +319,24 @@ fn torch_delta_logits() -> Result<()> {
     Ok(())
 }
 
-#[cfg(feature = "qwen-example")]
 #[test]
 fn xla_reply_loop() -> Result<()> {
-    check_reply(gnx_xla::XlaDevice::cpu(gnx::cache::Cache::in_memory())?)
+    check_reply("xla/cpu".parse::<DeviceHandle>()?)
 }
-#[cfg(feature = "qwen-torch")]
 #[test]
 fn torch_reply_loop() -> Result<()> {
-    check_reply(gnx_torch::TorchDevice::cpu(gnx::cache::Cache::in_memory())?)
+    check_reply("torch/cpu".parse::<DeviceHandle>()?)
 }
 
 #[test]
-#[cfg(feature = "qwen-example")]
 fn xla_decoder_logits() -> Result<()> {
     check_logits(gnx_xla::XlaDevice::cpu(gnx::cache::Cache::in_memory())?)
 }
 #[test]
-#[cfg(feature = "qwen-torch")]
 fn torch_decoder_logits() -> Result<()> {
     check_logits(gnx_torch::TorchDevice::cpu(gnx::cache::Cache::in_memory())?)
 }
 
-#[cfg(feature = "qwen-example")]
 #[test]
 #[ignore = "requires a CUDA device"]
 fn cuda_decoder_logits() -> Result<()> {

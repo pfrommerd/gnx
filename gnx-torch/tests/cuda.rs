@@ -1,4 +1,5 @@
 mod support;
+use gnx_base::Device as _;
 use gnx_base::pass::Builder;
 use gnx_expr::{Value, VarInfo};
 use gnx_math::{
@@ -46,8 +47,8 @@ fn cuda_import_compile_replay_and_readback() {
         )
         .unwrap(),
     );
-    assert!(d.import(&input, TransferPolicy::RequireZeroCopy).is_err());
-    let owned = same.import(&input, TransferPolicy::AllowCopy).unwrap();
+    assert!(futures_executor::block_on(d.upload(&input, TransferPolicy::RequireZeroCopy)).is_err());
+    let owned = futures_executor::block_on(same.upload(&input, TransferPolicy::AllowCopy)).unwrap();
     let mut v = Value::new(owned);
     for expected in [[1f32, 3., 5.], [1., 4., 7.]] {
         v = p.run(&[v], ExecOpts::default()).unwrap().pop().unwrap();
@@ -55,7 +56,7 @@ fn cuda_import_compile_replay_and_readback() {
         assert!(
             matches!(&out.shards()[0].location,MemoryLocation::Device{device,..} if *device==d.id())
         );
-        let buf = same.download(out).unwrap();
+        let buf = futures_executor::block_on(same.download(out)).unwrap();
         assert_eq!(
             buf.bytes(),
             expected

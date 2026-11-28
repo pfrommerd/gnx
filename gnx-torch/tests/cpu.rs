@@ -29,8 +29,7 @@ fn data(v: &Value) -> &DataHandle {
     v.downcast().unwrap()
 }
 fn read(device: &TorchDevice, value: &Value) -> Vec<f32> {
-    device
-        .download(data(value))
+    block_on(device.download(data(value)))
         .unwrap()
         .bytes()
         .chunks_exact(4)
@@ -75,7 +74,7 @@ fn replay_with_fresh_captures_and_inputs() {
             compiled.run(&args, ExecOpts::default()).unwrap_err().kind(),
             std::io::ErrorKind::Unsupported
         );
-        let args = args.map(|v| Value::new(d.import(data(&v), COPY.transfers).unwrap()));
+        let args = args.map(|v| Value::new(block_on(d.upload(data(&v), COPY.transfers)).unwrap()));
         let out = compiled.run(&args, ExecOpts::default()).unwrap();
         assert_eq!(read(&d, &out[0]), product);
         assert_eq!(read(&d, &out[2]), sum);

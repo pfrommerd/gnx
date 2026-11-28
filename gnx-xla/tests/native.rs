@@ -1,5 +1,6 @@
 use futures_executor::block_on;
 use gnx::Eval;
+use gnx_base::Device as _;
 use gnx_expr::{
     Capture, Eqn, EqnSource, ExprBuilder, Invocation, ObjectTracer, Op, Operation, SubExprBuilder,
     Trace, TraceContext, Value, VarInfo, VarScope,
@@ -29,8 +30,7 @@ fn floats(dims: &[usize], data: &[f32]) -> DataHandle {
     )
 }
 fn unpack(device: &XlaDevice, value: &Value) -> Vec<f32> {
-    device
-        .download(value.downcast::<DataHandle>().unwrap())
+    block_on(device.download(value.downcast::<DataHandle>().unwrap()))
         .unwrap()
         .bytes()
         .chunks_exact(4)
@@ -145,11 +145,7 @@ fn compile_nested_call_reuse_outputs_and_forward_remote_refs() {
         .unwrap();
     assert_eq!(unpack(&device, &outputs[0]), [8., 12.]);
     assert_eq!(allocation(&outputs[1]), remote_id);
-    assert!(
-        device
-            .download(outputs[1].downcast::<DataHandle>().unwrap())
-            .is_err()
-    );
+    assert!(block_on(device.download(outputs[1].downcast::<DataHandle>().unwrap())).is_err());
 }
 
 fn trace(data: DataHandle) -> Trace {
@@ -453,7 +449,10 @@ fn popcount_uses_the_operand_width() {
             )
             .unwrap();
     let data = result[0].downcast::<DataHandle>().unwrap();
-    assert_eq!(device.download(data).unwrap().bytes(), &[8, 1, 3, 0]);
+    assert_eq!(
+        block_on(device.download(data)).unwrap().bytes(),
+        &[8, 1, 3, 0]
+    );
 }
 
 #[test]
@@ -476,8 +475,7 @@ fn lapack_factorizations_execute_on_the_local_device() {
     assert_eq!(unpack(&device, &result[0]), [3., 0., 0., 2.]);
     for (result, expected) in [(&result[1], [1_i32, 1]), (&result[2], [1_i32, 0])] {
         assert_eq!(
-            device
-                .download(result.downcast::<DataHandle>().unwrap())
+            block_on(device.download(result.downcast::<DataHandle>().unwrap()))
                 .unwrap()
                 .bytes(),
             &expected
@@ -640,9 +638,7 @@ fn real_fft_and_top_k_return_the_expected_values_and_dtypes() {
         .run(&[Value::new(floats(&[4], &[1., 2., 3., 4.]))], COPY)
         .unwrap();
     assert_eq!(unpack(&device, &outputs[0]), [4., 3.]);
-    let indices = device
-        .download(outputs[1].downcast::<DataHandle>().unwrap())
-        .unwrap();
+    let indices = block_on(device.download(outputs[1].downcast::<DataHandle>().unwrap())).unwrap();
     assert_eq!(indices.bytes(), &[3, 0, 0, 0, 2, 0, 0, 0]);
     assert_eq!(unpack(&device, &outputs[2]), [10., 0., -2., 2., -2., 0.]);
 }

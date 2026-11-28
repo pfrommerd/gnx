@@ -3,6 +3,7 @@ use gnx::{
     Array, Eval, lax,
     nn::{InitializeWith, Rngs},
 };
+use gnx_base::Device as _;
 use gnx_math::{DType::F32, ExecOpts, TransferPolicy};
 use gnx_models::sphere::{BackboneConfig, Decoder, DecoderConfig, Encoder, EncoderConfig};
 use gnx_xla::XlaDevice;
@@ -16,8 +17,7 @@ fn eval(x: Array) -> Vec<f32> {
         },
     ))
     .unwrap();
-    device
-        .download(x.data().unwrap())
+    block_on(device.download(x.data().unwrap()))
         .unwrap()
         .bytes()
         .chunks_exact(4)

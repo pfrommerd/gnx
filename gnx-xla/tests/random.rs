@@ -4,6 +4,7 @@ use gnx::{
     nn::{InitializeWith, Linear, LinearConfig, Model, Rngs},
     random::{self, Algorithm::*},
 };
+use gnx_base::Device as _;
 use gnx_math::{DType, ExecOpts, Shape, TransferPolicy};
 use gnx_xla::XlaDevice;
 
@@ -15,7 +16,10 @@ fn bytes(device: &XlaDevice, x: Array) -> Vec<u8> {
         },
     ))
     .unwrap();
-    device.download(x.data().unwrap()).unwrap().bytes().to_vec()
+    block_on(device.download(x.data().unwrap()))
+        .unwrap()
+        .bytes()
+        .to_vec()
 }
 fn words(device: &XlaDevice, x: Array) -> Vec<u32> {
     bytes(device, x)

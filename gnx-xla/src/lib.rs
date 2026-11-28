@@ -6,8 +6,8 @@ use std::future::Future;
 use std::io::{self, ErrorKind};
 use std::sync::{Arc, Mutex};
 
-use futures_channel::oneshot;
 use gnx_base::cache::Cache;
+use gnx_base::device::run_blocking;
 use gnx_base::pass::{
     CheckSupported, Dce, FinalPipeline, Pass, PassError, Pipeline, PipelineError, RuntimePipeline,
 };
@@ -248,7 +248,7 @@ impl XlaDevice {
     }
 
     /// Explicit readback. Unknown owners are never contacted by this backend.
-    pub fn download(&self, data: &DataHandle) -> io::Result<HostBuffer> {
+    pub fn download_blocking(&self, data: &DataHandle) -> io::Result<HostBuffer> {
         if let Ok(host) = data.to_host() {
             return Ok(host);
         }
@@ -355,7 +355,7 @@ impl XlaExecutable {
                     }
                     let packed = self
                         .device
-                        .download(data)?
+                        .download_blocking(data)?
                         .resize_prefix(capacity.clone())?;
                     return self
                         .device
@@ -381,7 +381,10 @@ impl XlaExecutable {
                                 "unpadding a bounded result requires AllowCopy",
                             ));
                         }
-                        let compact = self.device.download(&data)?.resize_prefix(logical)?;
+                        let compact = self
+                            .device
+                            .download_blocking(&data)?
+                            .resize_prefix(logical)?;
                         return Ok(Value::new(
                             self.device
                                 .import(&DataHandle::new(compact), opts.transfers)?,
@@ -398,6 +401,16 @@ impl XlaExecutable {
 impl Device for XlaDevice {
     type Outputs = Vec<Value>;
 
+    async fn upload(&self, data: &DataHandle, policy: TransferPolicy) -> io::Result<DataHandle> {
+        let (device, data) = (self.clone(), data.clone());
+        run_blocking("gnx-xla", move || device.import(&data, policy)).await
+    }
+
+    async fn download(&self, data: &DataHandle) -> io::Result<HostBuffer> {
+        let (device, data) = (self.clone(), data.clone());
+        run_blocking("gnx-xla", move || device.download_blocking(&data)).await
+    }
+
     fn execute(
         &self,
         expr: Arc<RootExpr>,
@@ -406,19 +419,9 @@ impl Device for XlaDevice {
     ) -> impl Future<Output = io::Result<Self::Outputs>> + Send {
         let args: Vec<_> = args.into_iter().collect();
         let device = self.clone();
-        async move {
-            let (sender, receiver) = oneshot::channel();
-            std::thread::Builder::new()
-                .name("gnx-xla".into())
-                .spawn(move || {
-                    let result = futures_executor::block_on(device.compile(&expr))
-                        .and_then(|compiled| compiled.run(&args, opts));
-                    let _ = sender.send(result);
-                })?;
-            receiver
-                .await
-                .map_err(|_| io::Error::other("XLA execution worker stopped without a result"))?
-        }
+        run_blocking("gnx-xla", move || {
+            futures_executor::block_on(device.compile(&expr))?.run(&args, opts)
+        })
     }
 }
 
@@ -483,15 +486,20 @@ mod tests {
         let host = HostBuffer::copy_from_slice(info, &values).unwrap();
         let address = host.bytes().as_ptr();
         let source = DataHandle::new(host);
-        let buffer = device
-            .import(&source, TransferPolicy::RequireZeroCopy)
-            .unwrap();
+        let buffer =
+            futures_executor::block_on(device.upload(&source, TransferPolicy::RequireZeroCopy))
+                .unwrap();
         assert_eq!(
             device.resolve(&buffer).unwrap().unwrap().address().unwrap(),
             address
         );
         drop(source);
-        assert_eq!(device.download(&buffer).unwrap().bytes(), values);
+        assert_eq!(
+            futures_executor::block_on(device.download(&buffer))
+                .unwrap()
+                .bytes(),
+            values
+        );
     }
 
     #[test]
@@ -530,13 +538,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            device
-                .import(&data, TransferPolicy::RequireZeroCopy)
+            futures_executor::block_on(device.upload(&data, TransferPolicy::RequireZeroCopy))
                 .unwrap_err()
                 .kind(),
             ErrorKind::Unsupported
         );
-        let copied = device.import(&data, TransferPolicy::AllowCopy).unwrap();
-        assert_eq!(device.download(&copied).unwrap().bytes(), [0; 4]);
+        let copied =
+            futures_executor::block_on(device.upload(&data, TransferPolicy::AllowCopy)).unwrap();
+        assert_eq!(
+            futures_executor::block_on(device.download(&copied))
+                .unwrap()
+                .bytes(),
+            [0; 4]
+        );
     }
 }

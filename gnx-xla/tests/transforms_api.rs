@@ -1,6 +1,7 @@
 //! The jit-based transformation builders and macros (`map`, `jvp`, `vjp`,
 //! `grad`, `value_and_grad`, `hessian`), executed by the XLA backend.
 
+use gnx_base::Device as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_executor::block_on;
@@ -82,8 +83,7 @@ fn sum(a: &Array) -> Array {
 }
 
 fn values(device: &XlaDevice, array: &Array) -> Vec<f32> {
-    device
-        .download(array.data().expect("evaluated array"))
+    block_on(device.download(array.data().expect("evaluated array")))
         .unwrap()
         .bytes()
         .chunks_exact(4)

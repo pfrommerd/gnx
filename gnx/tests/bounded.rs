@@ -1,5 +1,5 @@
 //! The same program and the same boundary semantics on both CPU runtimes.
-#![cfg(feature = "qwen-torch")]
+#![cfg(feature = "examples")]
 use futures_executor::block_on;
 use gnx::{
     Array, ExecOpts, Shape,
@@ -11,6 +11,7 @@ use gnx::{
     jit,
     ops::bounded::{axis_length, pad_to_bound},
 };
+use gnx_base::Device as _;
 
 const COPY: ExecOpts = ExecOpts {
     transfers: gnx::buffer::TransferPolicy::AllowCopy,
@@ -65,7 +66,7 @@ macro_rules! exercise {
         let (p,_) = f.lower((arg(7),arg(7),arg(8))).unwrap();
         let exec = block_on(d.compile(&p)).unwrap();
         let read = |v: &Value| {
-            d.download(v.downcast::<DataHandle>().unwrap())
+            block_on(d.download(v.downcast::<DataHandle>().unwrap()))
                 .unwrap()
                 .bytes()
                 .chunks_exact(4)
@@ -76,8 +77,7 @@ macro_rules! exercise {
             let other = 3 - n;
             // Nonzero padding must never escape as a logical value, even when the
             // caller supplies device storage instead of a compact host tensor.
-            let backing = d
-                .import(&input(3, &[1, 2, 3, 4, 5, 6]), COPY.transfers)
+            let backing = block_on(d.upload(&input(3, &[1, 2, 3, 4, 5, 6]), COPY.transfers))
                 .unwrap();
             let a = Value::new(BoundedBuffer::new(backing, Shape::fixed([2, n])).unwrap());
             let b = Value::new(input(n, &vec![10; 2 * n]));
@@ -165,7 +165,7 @@ macro_rules! prefix_attention {
                 );
                 Value::new(
                     BoundedBuffer::new(
-                        d.import(&storage, COPY.transfers).unwrap(),
+                        block_on(d.upload(&storage, COPY.transfers)).unwrap(),
                         Shape::fixed([1, n, 1, 1]),
                     )
                     .unwrap(),
@@ -174,7 +174,7 @@ macro_rules! prefix_attention {
             let outputs = exec.run(&[input(true), input(false)], COPY).unwrap();
             let mean = |n| if n == 0 { 0. } else { (n as f32 + 1.) / 2. };
             for (out, visible) in outputs.iter().zip([[n, n], [n.saturating_sub(1), n]]) {
-                let data = d.download(out.downcast::<DataHandle>().unwrap()).unwrap();
+                let data = block_on(d.download(out.downcast::<DataHandle>().unwrap())).unwrap();
                 for (bytes, len) in data
                     .bytes()
                     .chunks_exact(4)
@@ -192,13 +192,11 @@ macro_rules! prefix_attention {
 fn torch_bounded_attention() {
     prefix_attention!(gnx_torch::TorchDevice::cpu(Cache::in_memory()).unwrap());
 }
-#[cfg(feature = "qwen-example")]
 #[test]
 fn xla_bounded_attention() {
     prefix_attention!(gnx_xla::XlaDevice::cpu(Cache::in_memory()).unwrap());
 }
 
-#[cfg(feature = "qwen-example")]
 #[test]
 fn xla_bounded() {
     exercise!(gnx_xla::XlaDevice::cpu(Cache::in_memory()).unwrap());

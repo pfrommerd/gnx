@@ -1,33 +1,13 @@
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::io;
 
 use std::sync::Arc;
 
 use gnx_expr::{ConcreteValue, Expr, ExprBuilder, Param, RootExpr, Value, Var};
 
-use crate::buffer::TransferPolicy;
+pub use gnx_base::device::{Device, ExecOpts};
 mod bounded;
 pub use bounded::{BoundSizes, BoundedBuffer};
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ExecOpts {
-    pub transfers: TransferPolicy,
-}
-
-/// Executes a lowered expression. Arguments are captures followed by explicit
-/// inputs; values are returned in `Expr::outputs()` order, including forwarded
-/// parameters. This interface does not apply cell updates or reconstruct cell handles.
-pub trait Device: Send + Sync {
-    type Outputs: IntoIterator<Item = Value>;
-
-    fn execute(
-        &self,
-        expr: Arc<RootExpr>,
-        args: impl IntoIterator<Item = Value>,
-        opts: ExecOpts,
-    ) -> impl Future<Output = io::Result<Self::Outputs>> + Send;
-}
 
 /// Output routing for an execution. Forwarding never imports or transfers a
 /// concrete parameter, and repeated results retain the same allocation.

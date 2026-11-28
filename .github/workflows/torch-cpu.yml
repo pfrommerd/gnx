@@ -33,7 +33,7 @@ jobs:
           env -u LD_LIBRARY_PATH "$test_bin" --exact reloaded_cond_executes_only_the_selected_branch
       - name: Verify the release Qwen executable uses the self-locating Torch bridge
         run: |
-          cargo build --locked --release -p gnx --features qwen-torch --example qwen
+          cargo build --locked --release -p gnx --features examples --example qwen
           qwen=target/release/examples/qwen
           env -u LD_LIBRARY_PATH "$qwen" --help
           # On Ubuntu libstdc++ is on the default search path, so a successful

@@ -52,7 +52,7 @@ impl PyXlaDevice {
             .data()
             .ok_or_else(|| PyValueError::new_err("array has not been evaluated"))?
             .clone();
-        let host = py.detach(|| self.0.download(&data))?;
+        let host = py.detach(|| self.0.download_blocking(&data))?;
         Ok(PyBytes::new(py, host.bytes()))
     }
 

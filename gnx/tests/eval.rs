@@ -52,6 +52,18 @@ struct MockDevice {
 }
 
 impl Device for MockDevice {
+    async fn upload(
+        &self,
+        data: &DataHandle,
+        policy: gnx::buffer::TransferPolicy,
+    ) -> io::Result<DataHandle> {
+        Ok(DataHandle::new(data.clone().into_host(policy)?))
+    }
+
+    async fn download(&self, data: &DataHandle) -> io::Result<HostBuffer> {
+        data.to_host()
+    }
+
     // Device-specific iterable: it needn't be Vec<Value>.
     type Outputs = std::vec::IntoIter<Value>;
 
